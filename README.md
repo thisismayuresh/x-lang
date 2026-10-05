@@ -113,60 +113,61 @@ configuration error.
 
 ## Language features implemented
 
-The interpreter currently supports:
+Implemented and currently demonstrated features:
 
-- `.x` source files, `//` comments, and `/* ... */` comments.
-- Primitive literals: integers, floating point numbers, strings, booleans, and
-  `null`.
-- Multiline backtick template literals with `{expression}` interpolation;
+- [x] `.x` source files, `//` comments, and `/* ... */` comments.
+- [x] Primitive literals: integers, floating point numbers, strings, booleans,
+  `null`/`Null`, and `undefined`/`Undefined`.
+- [x] Multiline backtick template literals with `{expression}` interpolation;
   `print` evaluates any number of arguments and separates their string forms
   with spaces.
-- `let` variables, `const` constants, inferred and explicit variable types,
+- [x] `let` variables, `const` constants, inferred and explicit variable types,
   `int` as an alias for `integer`, array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
   defaults, rest properties, and object spread.
-- Standalone functions, typed parameters, inferred/explicit return types,
+- [x] Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
   `object<K, V>` annotations validate dictionary key/value types at runtime.
-- Nested named functions in blocks; their declarations bind functions without
+- [x] Nested named functions in blocks; their declarations bind functions without
   executing their bodies, and the functions can capture surrounding locals.
-- Typed rest parameters (`integer ...values`), array/call-argument spread, and
+- [x] Typed rest parameters (`integer ...values`), array/call-argument spread, and
   object-literal spread.
-- Classes, nested classes, namespaces, fields, constructors, overloaded constructors, instance methods,
+- [x] Classes, nested classes, namespaces, fields, constructors, overloaded constructors, instance methods,
   static fields and methods, `new`, `this`, single inheritance, and explicit
   parent constructor/method calls through `super`.
-- Enforced `public`, `protected`, and `private` instance/static members.
+- [x] Enforced `public`, `protected`, and `private` instance/static members.
   Unmodified properties and methods are public. `protected` members are
   available within their declaring class and derived classes; `private`
   members are restricted to the declaring class. `final class Name` cannot be
   extended.
-- Function, class, constructor, and method decorators. The built-in `@trace`
+- [x] Function, class, constructor, and method decorators. The built-in `@trace`
   decorator logs calls/construction; custom decorators can transform a
   function or class by returning the target they receive.
-- Enums with implicit ordinal values, valid at module, class, function, and
+- [x] Enums with implicit ordinal values, valid at module, class, function, and
   nested block scope.
-- Arithmetic, comparison, equality, logical, assignment, and increment/
+- [x] Arithmetic, comparison, equality, logical, assignment, and increment/
   decrement operators.
-- Ternary conditional expressions and null-safe optional chaining for member
+- [x] Ternary conditional expressions and null-safe optional chaining for member
   access (`?.`), calls (`?.()`), and indexing (`?[index]`).
-- `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
+- [x] `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
   of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
-- Rust-inspired `match` expressions with wildcard, binding, literal, enum,
+- [x] Rust-inspired `match` expressions with wildcard, binding, literal, enum,
   array/object destructuring, alternatives, guards, and rest patterns.
-- `try`/`catch`/`finally` and `throw`.
-- Automatic statement terminators at line breaks, closing braces, and EOF.
-- JavaScript-like `==` coercion for supported primitive values and strict
+- [x] `try`/`catch`/`finally` and `throw`.
+- [x] Automatic statement terminators at line breaks, closing braces, and EOF.
+- [x] JavaScript-like `==` coercion for supported primitive values and strict
   `===` type/reference comparison. Enum members compare only within the same
   enum.
-- A compact `Object` helper namespace: `keys`, `values`, `entries`, `assign`,
+- [x] A compact `Object` helper namespace: `keys`, `values`, `entries`, `assign`,
   and `hasOwn`.
-- `async` functions, `await`, concurrent `Async.all`, and OS threads through
+- [x] `async` functions, `await`, concurrent `Async.all`, and OS threads through
   `Thread.start` and `join`.
-- Program arguments through `args`, plus the `print`, `range`, and `Exception`
+- [x] Program arguments through `args`, plus the `print`, `range`, and `Exception`
   built-ins, and the `typeOf` runtime type helper.
-- Project-relative named imports, grouped imports, and import aliases.
-- The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
+- [x] Project-relative named imports, grouped imports, wildcard imports, and
+  import aliases.
+- [x] The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
   modules described below.
 
 The interpreter executes code dynamically. It does **not** yet provide the
@@ -829,6 +830,11 @@ x run examples/pattern_matching/match.x
 x run --profile feature-tour examples/configuration/configured_args.x
 ```
 
+The [`examples/dsa/`](./examples/dsa/README.md) folder contains 20 standalone
+algorithm demonstrations grouped by common interview patterns, including
+sliding windows, two pointers, binary search, stacks, recursion, matrix
+traversal, and string encoding. Each `.x` file can be run independently.
+
 `Object` currently operates on X object literals and dictionaries. Object
 literals support identifier/string keys, shorthand properties, and spread;
 computed keys, symbols, prototypes, getters/setters, and anonymous methods are
@@ -862,6 +868,29 @@ x run examples/errors/runtime_error.x
 x check examples/errors/syntax_error.x
 ```
 
+## DSA examples and computational expressiveness
+
+I’ve tried solving 20 data-structures-and-algorithms problems in X to show how
+the language’s functions, loops, conditionals, arrays, objects, recursion, and
+mutable state work together on practical problems. The collection includes
+the longest substring without repeating characters, Container With Most
+Water, and run-length encoding/decoding (`aaab` to `a3b`).
+
+Browse the [DSA examples and pattern guide](./examples/dsa/README.md), then
+run an individual problem from the repository root, for example:
+
+```sh
+x run examples/dsa/05_longest_unique_substring.x
+x run examples/dsa/07_container_most_water.x
+x run examples/dsa/20_run_length_codec.x
+```
+
+These programs are a hands-on demonstration of X's general-purpose
+computational expressiveness and its Turing-completeness goal; the examples
+themselves are not a formal proof of Turing completeness. The current Python
+interpreter remains subject to practical memory, recursion, and execution-time
+limits.
+
 Strings are indexable and expose `.length`. Indexing follows Python sequence
 semantics: indices count Unicode code points, negative indices count backward
 from the end, and an out-of-range index reports a runtime error. It does not
@@ -870,17 +899,35 @@ indexing for some characters.
 
 ## Current limitations
 
-The specification includes features beyond this prototype. In particular:
+The specification includes features beyond this prototype. These are the
+remaining implementation goals and documented constraints:
 
-- Static type checking, definite assignment, and compile-time diagnostics.
-- Native or bytecode compilation; `build` is currently a syntax/import check.
-- Interfaces as enforceable contracts and abstract-method validation.
-- Generic type checking and type-parameter substitution.
-- Union/nullable type semantics, structural type validation, and records.
-- Wildcard imports and independent module namespaces.
-- Thread-safe collections, locks, atomics, cancellation, and full TypeScript
+- [ ] Static type checking, definite assignment, and compile-time type diagnostics.
+- [ ] Native or bytecode compilation; `build` is currently a syntax/import check.
+- [ ] Interfaces as enforceable contracts and abstract-method validation.
+- [ ] Generic type checking and type-parameter substitution.
+- [ ] Union/nullable type semantics, structural type validation, and records.
+- [ ] Independent module namespaces; imports are resolved, but declarations
+  are not isolated behind module namespace objects.
+- [ ] Thread-safe collections, locks, atomics, cancellation, and full TypeScript
   Promise compatibility.
-- A broader standard library beyond the built-ins documented here.
+- [ ] A broader standard library beyond the built-ins documented here.
+
+Known limitations and correctness edges (not an exhaustive bug tracker):
+
+- `/` currently performs floating-point division, so code needing an integer
+  index must ensure the calculation is integral. The DSA binary-search
+  examples use a logarithmic binary-lifting variant for that reason.
+- String indexing counts Unicode code points, not grapheme clusters or
+  JavaScript UTF-16 code units.
+- Parser recovery reports multiple recoverable lexical and syntax errors, but
+  malformed constructs can prevent discovery of later errors. Runtime
+  failures stop execution at the first failure.
+- Recursive algorithms such as flood fill can hit Python's recursion limit on
+  sufficiently large inputs.
+- The run-length codec example reserves digits for run counts and is intended
+  for letter-only input; it is an instructional example, not a general-purpose
+  escaping format.
 
 The detailed syntax proposal remains in [Draft.md](./Draft.md). Where the
 interpreter behavior is narrower than that draft, this README describes the
