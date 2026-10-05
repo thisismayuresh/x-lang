@@ -60,6 +60,7 @@ class Environment:
         self.constants: set[str] = set()
         self.array_types: dict[str, str] = {}
         self.object_types: dict[str, str] = {}
+        self.value_types: dict[str, str] = {}
 
     def define(
         self,
@@ -68,6 +69,7 @@ class Environment:
         constant: bool = False,
         array_type: str | None = None,
         object_type: str | None = None,
+        value_type: str | None = None,
     ) -> None:
         if name in self.values:
             raise RuntimeErrorX(f"'{name}' is already declared in this scope")
@@ -78,6 +80,8 @@ class Environment:
             self.array_types[name] = array_type
         if object_type is not None:
             self.object_types[name] = object_type
+        if value_type is not None:
+            self.value_types[name] = value_type
 
     def get(self, name: str) -> Any:
         if name in self.values:
@@ -98,6 +102,13 @@ class Environment:
             return self.object_types.get(name)
         if self.parent is not None:
             return self.parent.get_object_type(name)
+        return None
+
+    def get_value_type(self, name: str) -> str | None:
+        if name in self.values:
+            return self.value_types.get(name)
+        if self.parent is not None:
+            return self.parent.get_value_type(name)
         return None
 
     def assign(self, name: str, value: Any) -> None:
@@ -255,6 +266,14 @@ class XFunction:
                         argument_value,
                         f"parameter '{parameter.name}'",
                     )
+                    if self.interpreter._needs_runtime_type_check(
+                        parameter.type_name
+                    ):
+                        argument_value = self.interpreter._coerce_runtime_checked_type(
+                            parameter.type_name,
+                            argument_value,
+                            f"parameter '{parameter.name}'",
+                        )
                     argument_value = self.interpreter._coerce_typed_object(
                         parameter.type_name,
                         argument_value,
@@ -274,6 +293,14 @@ class XFunction:
                         parameter.type_name
                         if parameter.type_name is not None
                         and parameter.type_name.startswith("object<")
+                        else None
+                    ),
+                    value_type=(
+                        parameter.type_name
+                        if parameter.type_name is not None
+                        and self.interpreter._needs_runtime_type_check(
+                            parameter.type_name
+                        )
                         else None
                     ),
                 )

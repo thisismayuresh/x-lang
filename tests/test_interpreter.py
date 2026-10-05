@@ -23,22 +23,19 @@ class InterpreterTests(unittest.TestCase):
         return result, output
 
     def test_function_calls_and_string_concatenation(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             string function greet(string name) {
                 return "Hello " + name;
             }
             function main() {
                 print(greet("Ada"));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Hello Ada"])
 
     def test_type_of_reports_javascript_style_type_names(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function greet() {}
             class User {}
             enum Status { READY }
@@ -58,8 +55,7 @@ class InterpreterTests(unittest.TestCase):
                 print(typeOf(User));
                 print(typeOf(Status.READY));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -78,8 +74,7 @@ class InterpreterTests(unittest.TestCase):
         )
 
     def test_generic_object_type_validates_key_and_value_shapes(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let object<string, string> user = {
                     "name": "Maya",
@@ -88,60 +83,160 @@ class InterpreterTests(unittest.TestCase):
                 };
                 print(typeOf(user));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["object"])
 
         with self.assertRaisesRegex(
             RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
         ):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let object<string, string> user = {
                         "name": "Maya",
                         "age": 21
                     };
                 }
-                """
-            )
+                """)
 
         with self.assertRaisesRegex(
             RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
         ):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let object<string, string> user = {"age": "21"};
                     user = {"age": 21};
                 }
-                """
-            )
+                """)
 
         with self.assertRaisesRegex(
             RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
         ):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let object<string, string> user = {"age": "21"};
                     user.age = 21;
                 }
-                """
-            )
+                """)
 
-        with self.assertRaisesRegex(
-            RuntimeErrorX, "No overload of 'update' matches"
-        ):
-            self.run_x(
-                """
+        with self.assertRaisesRegex(RuntimeErrorX, "No overload of 'update' matches"):
+            self.run_x("""
                 function update(object<string, string> user) {}
                 function main() {
                     update({"age": 21});
                 }
-                """
-            )
+                """)
+
+    def test_callback_function_types_and_structural_interfaces(self):
+        result, output = self.run_x("""
+            interface Data {
+                string name,
+            }
+            export interface IMyInterface {
+                string getMessage(string message),
+                Data [] getData(int id),
+                Data primary,
+                Data[] records,
+                Function onComplete,
+            }
+            string function makeMessage() {
+                return "finished";
+            }
+            string function getMessage(string message) {
+                return "Hello " + message;
+            }
+            Data[] function getData(int id) {
+                return [{name: "item " + id}];
+            }
+            string function runCallback(Function callback) {
+                return callback();
+            }
+            class Service implements IMyInterface {
+                Data primary = {name: "class primary"};
+                Data[] records = [{name: "class cached"}];
+                Function onComplete = makeMessage;
+                string getMessage(string message) {
+                    return "Service " + message;
+                }
+                Data[] getData(int id) {
+                    return [{name: "service " + id}];
+                }
+            }
+            function main() {
+                let IMyInterface service = {
+                    getMessage: getMessage,
+                    getData: getData,
+                    primary: {name: "primary"},
+                    records: [{name: "cached"}],
+                    onComplete: makeMessage
+                };
+                let IMyInterface classService = new Service();
+                let Function callback = service.onComplete;
+                let function lowerCaseCallback = makeMessage;
+                let Data[] records = service.getData(1);
+                print(service.getMessage("Maya"));
+                print(records[0].name);
+                print(service.primary.name, service.records[0].name);
+                print(classService.getMessage("Maya"), classService.primary.name);
+                print(runCallback(callback), runCallback(lowerCaseCallback));
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "Hello Maya",
+                "item 1",
+                "primary cached",
+                "Service Maya class primary",
+                "finished finished",
+            ],
+        )
+
+    def test_function_and_interface_types_reject_mismatched_values(self):
+        with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Function'"):
+            self.run_x("""
+                function main() {
+                    let Function callback = 42;
+                }
+                """)
+
+        with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Profile'"):
+            self.run_x("""
+                interface Profile {
+                    string name,
+                }
+                function main() {
+                    let Profile user = {name: 21};
+                }
+                """)
+
+        with self.assertRaisesRegex(RuntimeErrorX, "Expected 'IMyInterface'"):
+            self.run_x("""
+                interface Data { string name, }
+                interface IMyInterface {
+                    string getMessage(string message),
+                    Data[] getData(int id),
+                }
+                integer function wrongMessage(int value) { return value; }
+                Data[] function getData(int id) { return []; }
+                function main() {
+                    let IMyInterface service = {
+                        getMessage: wrongMessage,
+                        getData: getData
+                    };
+                }
+                """)
+
+        with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Profile'"):
+            self.run_x("""
+                interface Profile {
+                    string name,
+                }
+                function main() {
+                    let Profile[] users = [{name: 21}];
+                }
+                """)
 
     def test_type_of_requires_exactly_one_argument(self):
         with self.assertRaisesRegex(RuntimeErrorX, "typeOf expects one argument"):
@@ -151,8 +246,7 @@ class InterpreterTests(unittest.TestCase):
             self.run_x("function main() { typeOf(1, 2); }")
 
     def test_null_and_undefined_literals_are_object_typed_and_distinct_values(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let empty = {};
                 let profile = [{name: "Maya"}];
@@ -164,8 +258,7 @@ class InterpreterTests(unittest.TestCase):
                 print(typeOf(empty?.missing), empty?.missing);
                 print(typeOf(profile[0]?.x), profile[0]?.x);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -181,22 +274,19 @@ class InterpreterTests(unittest.TestCase):
         )
 
     def test_object_can_be_an_inferred_variable_name_or_a_type(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let object = {name: "Maya"};
                 let object profile = {name: "Grace"};
                 print(object.name);
                 print(profile.name);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Maya", "Grace"])
 
     def test_nested_functions_are_declared_without_running_and_capture_locals(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let integer count = 0;
                 print("before declaration");
@@ -209,8 +299,7 @@ class InterpreterTests(unittest.TestCase):
                 print(greet("Maya"));
                 print(count);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -218,8 +307,7 @@ class InterpreterTests(unittest.TestCase):
         )
 
     def test_nested_function_can_be_declared_in_a_block_and_called_later(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 if (true) {
                     function add(integer left, integer right) {
@@ -228,14 +316,12 @@ class InterpreterTests(unittest.TestCase):
                     print(add(2, 3));
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["5"])
 
     def test_optional_chaining_handles_null_missing_and_out_of_range_values(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function greet(string name) {
                 return "Hello " + name;
             }
@@ -265,8 +351,7 @@ class InterpreterTests(unittest.TestCase):
                 print(user?.profile?.getName?.("Grace"));
                 print(({profile: {getName: greet}}).profile?.getName?.("Ada"));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -290,8 +375,7 @@ class InterpreterTests(unittest.TestCase):
         )
 
     def test_optional_access_coexists_with_ternary_expressions(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let users = ["Alice", "Bob"];
                 let first = true ? users?[0] : "no user";
@@ -301,35 +385,29 @@ class InterpreterTests(unittest.TestCase):
                 print(typeOf(second));
                 print(typeOf(values));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Alice", "object", "object"])
 
     def test_regular_access_still_errors_for_invalid_indexes(self):
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index 5"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let users = ["Alice"];
                     print(users[5]);
                 }
-                """
-            )
+                """)
 
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let users = ["Alice"];
                     print(users?["name"]);
                 }
-                """
-            )
+                """)
 
     def test_multiline_templates_interpolate_expressions_and_run_calls(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             enum Status { READY }
             class User {
                 public string name;
@@ -356,8 +434,7 @@ line three`);
                 print(``);
                 print();
             }
-            """
-        )
+            """)
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -369,7 +446,7 @@ line three`);
                 "escaped {name} and {name: Ada, status: READY}",
                 "line one\nline two Ada\nline three",
                 "first Maya then Maya count=2",
-                'comma Ada! [1, 2] {active: true} null',
+                "comma Ada! [1, 2] {active: true} null",
                 "",
                 "",
             ],
@@ -377,18 +454,17 @@ line three`);
 
     def test_template_interpolation_reports_empty_and_unterminated_expressions(self):
         with self.assertRaisesRegex(ParseError, "interpolation cannot be empty"):
-            self.run_x('function main() { print(`bad {}`); }')
+            self.run_x("function main() { print(`bad {}`); }")
 
         with self.assertRaisesRegex(ParseError, "Unterminated template interpolation"):
-            self.run_x('function main() { print(`bad {1 + 2`); }')
+            self.run_x("function main() { print(`bad {1 + 2`); }")
 
     def test_unterminated_multiline_template_is_a_lexer_error(self):
         with self.assertRaisesRegex(LexError, "Unterminated template literal"):
-            self.run_x('function main() { print(`unfinished); }')
+            self.run_x("function main() { print(`unfinished); }")
 
     def test_default_and_nullable_parameters_can_be_omitted(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class User {
                 public string id;
                 public User(string id) {
@@ -422,8 +498,7 @@ line three`);
                     print(error.name);
                 }
             }
-            """
-        )
+            """)
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -444,11 +519,9 @@ line three`);
         with self.assertRaisesRegex(
             ParseError, "Required parameters cannot follow optional parameters"
         ):
-            self.run_x(
-                """
+            self.run_x("""
                 function invalid(string? optional, string required) {}
-                """
-            )
+                """)
 
     def test_for_loop_range_and_command_line_arguments(self):
         result, output = self.run_x(
@@ -466,8 +539,7 @@ line three`);
         self.assertEqual(output, ["item0", "item1", "item2"])
 
     def test_classes_overloaded_constructors_and_methods(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class User {
                 private string name;
                 public User(integer id) {
@@ -484,14 +556,12 @@ line three`);
                 let User user = new User("Ada");
                 print(user.greet());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Hello Ada"])
 
     def test_inheritance_and_super_constructor(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Animal {
                 private string name;
                 public Animal(string name) {
@@ -512,14 +582,12 @@ line three`);
             function main() {
                 print(new Dog("Rex").speak());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Rex says woof"])
 
     def test_class_can_extend_a_deeply_nested_class(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Outer {
                 class Middle {
                     class Deep {
@@ -534,14 +602,12 @@ line three`);
                 let Outer.Middle.Deep.Base value = new Child();
                 print(value.identify());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["nested base"])
 
     def test_generic_class_and_function_syntax(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Box<T> {
                 private T value;
                 public Box(T value) {
@@ -558,14 +624,12 @@ line three`);
                 let Box<string> box = new Box<string>("hello");
                 print(identity<string>(box.get()));
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["hello"])
 
     def test_static_fields_and_methods(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Counter {
                 public static integer count = 0;
                 public static integer next() {
@@ -577,14 +641,12 @@ line three`);
                 print(Counter.next());
                 print(Counter.count);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["1", "1"])
 
     def test_new_exception_and_catch(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 try {
                     throw new Exception("expected");
@@ -593,14 +655,12 @@ line three`);
                     print(error.message);
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["expected"])
 
     def test_exception_hierarchy_catches_runtime_and_domain_errors(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 try {
                     let integer value = 1 / 0;
@@ -638,8 +698,7 @@ line three`);
                     print(error.name);
                 }
             }
-            """
-        )
+            """)
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -655,8 +714,7 @@ line three`);
         )
 
     def test_custom_exception_classes_support_inheritance_and_super(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class CustomException extends Exception {
                 public integer statusCode;
                 public CustomException(string message, integer statusCode) {
@@ -688,8 +746,7 @@ line three`);
                     print(error.name + ": " + error.message);
                 }
             }
-            """
-        )
+            """)
 
         self.assertIsNone(result)
         self.assertEqual(
@@ -909,47 +966,40 @@ line three`);
 
     def test_await_is_restricted_to_async_functions(self):
         with self.assertRaisesRegex(ParseError, "only valid inside an async function"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     await sleep(1);
                 }
-                """
-            )
+                """)
 
-        with self.assertRaisesRegex(RuntimeErrorX, "await requires an asynchronous operation"):
-            self.run_x(
-                """
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "await requires an asynchronous operation"
+        ):
+            self.run_x("""
                 async function main() {
                     await 42;
                 }
-                """
-            )
+                """)
 
     def test_sleep_requires_a_non_negative_millisecond_duration(self):
         start_time = monotonic()
-        self.run_x(
-            """
+        self.run_x("""
             async function main() {
                 await sleep(30);
             }
-            """
-        )
+            """)
         elapsed_seconds = monotonic() - start_time
         self.assertGreaterEqual(elapsed_seconds, 0.025)
 
         with self.assertRaisesRegex(RuntimeErrorX, "duration cannot be negative"):
-            self.run_x(
-                """
+            self.run_x("""
                 async function main() {
                     await sleep(-1);
                 }
-                """
-            )
+                """)
 
     def test_rest_parameters_and_array_call_object_spread(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             integer function sum(integer ...values) {
                 let integer total = 0;
                 for (integer value in values) {
@@ -967,14 +1017,12 @@ line three`);
                 let object profile = {...base, role: "Architect"};
                 print(profile.name + " " + profile.role);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["6", "0", "Ada Architect"])
 
     def test_async_await_and_concurrent_all(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             import System.concurrent.Async
             let string[] completed = [];
 
@@ -992,14 +1040,12 @@ line three`);
                 print(results[0] + ", " + results[1]);
                 print(completed[0]);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["slow, fast", "fast"])
 
     def test_thread_start_and_join(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             import System.concurrent.Thread
 
             integer function add(integer left, integer right) {
@@ -1017,14 +1063,12 @@ line three`);
                 let ThreadHandle noArgumentWorker = Thread.start(getAnswer);
                 print(noArgumentWorker.join());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["42", "false", "42"])
 
     def test_new_runs_constructor_and_super_calls_parent_constructor(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Parent {
                 private string name;
                 public Parent(string name) {
@@ -1046,28 +1090,24 @@ line three`);
                 let Child child = new Child("X");
                 print(child.describe());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["X from child"])
 
     def test_empty_array_remains_an_array_value(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let string[] values = [];
                 print(values.length);
                 values.add("ready");
                 print(values[0]);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["0", "ready"])
 
     def test_for_loop_accepts_let_and_const_bindings(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 for (let number in range(1, 3, 1)) {
                     print(number);
@@ -1076,14 +1116,12 @@ line three`);
                     print(label);
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["1", "2", "x", "y"])
 
     def test_all_loop_forms(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let integer total = 0;
                 for (let index = 0; index < 3; index++) {
@@ -1110,14 +1148,12 @@ line three`);
                 }
                 return sum;
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["first", "second", "5", "6", "6"])
 
     def test_runtime_exceptions_support_multiple_catches_and_finally(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let string[] events = [];
                 try {
@@ -1137,8 +1173,7 @@ line three`);
                     print(event);
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -1146,8 +1181,7 @@ line three`);
         )
 
     def test_finally_runs_when_try_returns_and_when_catch_throws(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             integer function returnsThroughFinally() {
                 try {
                     return 5;
@@ -1173,8 +1207,7 @@ line three`);
                     print(error.message);
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -1182,8 +1215,7 @@ line three`);
         )
 
     def test_match_expression_patterns_bind_and_guard(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             enum Status {
                 READY,
                 DONE
@@ -1208,8 +1240,7 @@ line three`);
                 };
                 print(label);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -1217,8 +1248,7 @@ line three`);
         )
 
     def test_enum_matching_and_cross_enum_equality(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             enum Foo {
                 SAME
             }
@@ -1232,14 +1262,12 @@ line three`);
                 print(1 == "1");
                 print(1 === "1");
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["true", "false", "false", "true", "false"])
 
     def test_enums_can_be_declared_in_function_and_nested_block_scopes(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 enum Status {
                     READY,
@@ -1261,14 +1289,12 @@ line three`);
                     });
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["done", "false", "inner done"])
 
     def test_function_and_class_decorators(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function identity(var target) { return target; }
             @trace
             function greet() { return "hello"; }
@@ -1285,8 +1311,7 @@ line three`);
                 print(unchanged());
                 print(new Box().value());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(
             output,
@@ -1301,8 +1326,7 @@ line three`);
         )
 
     def test_namespace_and_nested_class_construction(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             namespace App.Models {
                 class User {
                     public string name;
@@ -1321,14 +1345,12 @@ line three`);
                 print(user.name);
                 print(item.label);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Ada", "book"])
 
     def test_array_and_object_destructuring_declarations_and_assignment(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 const [first, second = 20, ...remaining] = [10];
                 let source = { name: "Ada", age: 36, active: true };
@@ -1345,27 +1367,23 @@ line three`);
                 print(name);
                 print(left + right);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["10", "20", "0", "Ada36", "true", "Grace", "7"])
 
     def test_for_of_supports_destructuring_bindings(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 for (const [name, score] of [["Ada", 10], ["Lin", 12]]) {
                     print(name + score);
                 }
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["Ada10", "Lin12"])
 
     def test_automatic_semicolon_insertion_int_alias_and_object_helpers(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             int function main()
             {
                 let value = 4
@@ -1379,81 +1397,67 @@ line three`);
                 print(Object.entries(copied).length)
                 return value
             }
-            """
-        )
+            """)
         self.assertEqual(result, 4)
         self.assertEqual(output, ["4", "sample", "2", "true", "2", "2"])
 
     def test_constants_cannot_be_reassigned(self):
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot reassign constant"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     const integer limit = 2;
                     limit = 3;
                 }
-                """
-            )
+                """)
 
     def test_typed_arrays_reject_wrong_elements_and_invalid_mutations(self):
         with self.assertRaisesRegex(
             RuntimeErrorX, "Expected 'integer'.*index 2.*got 'string'"
         ):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let integer[] values = [1, 2, "name"];
                 }
-                """
-            )
+                """)
 
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'integer' for array item"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let integer[] values = [1, 2];
                     values.add("name");
                 }
-                """
-            )
+                """)
 
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'integer' for array item"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let integer[] values = [1, 2];
                     values[0] = "name";
                 }
-                """
-            )
+                """)
 
     def test_typed_array_parameters_validate_each_element(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function appendValue(integer[] values) { values.add(2); }
             function main() {
                 let integer[] values = [1];
                 appendValue(values);
                 print(values.length);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["2"])
 
         with self.assertRaisesRegex(RuntimeErrorX, "No overload of 'accept' matches"):
-            self.run_x(
-                """
+            self.run_x("""
                 function accept(integer[] values) {}
                 function main() {
                     accept([1, "name"]);
                 }
-                """
-            )
+                """)
 
     def test_typed_array_metadata_does_not_leak_into_shadowed_variables(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let integer[] values = [1];
                 {
@@ -1463,8 +1467,7 @@ line three`);
                 }
                 print(values[0]);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["updated", "1"])
 
@@ -1491,8 +1494,7 @@ line three`);
             )
 
     def test_access_modifiers_are_enforced_with_public_default(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Base {
                 private string secret;
                 protected string inheritedValue;
@@ -1518,12 +1520,9 @@ line three`);
                 print(base.readSecret());
                 print(derived.inherited());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
-        self.assertEqual(
-            output, ["visible", "visible", "hidden", "inherited"]
-        )
+        self.assertEqual(output, ["visible", "visible", "hidden", "inherited"])
 
     def test_private_and_protected_members_cannot_be_accessed_externally(self):
         for access_expression, expected_access in (
@@ -1534,8 +1533,7 @@ line three`);
         ):
             with self.subTest(access_expression=access_expression):
                 with self.assertRaisesRegex(RuntimeErrorX, expected_access):
-                    self.run_x(
-                        f"""
+                    self.run_x(f"""
                         class Vault {{
                             private string secret;
                             protected string protectedValue;
@@ -1549,22 +1547,20 @@ line three`);
                             let Vault value = new Vault();
                             print({access_expression});
                         }}
-                        """
-                    )
+                        """)
 
     def test_final_class_cannot_be_extended(self):
-        with self.assertRaisesRegex(RuntimeErrorX, "Cannot extend final class 'Closed'"):
-            self.run_x(
-                """
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot extend final class 'Closed'"
+        ):
+            self.run_x("""
                 final class Closed {}
                 class Open extends Closed {}
                 function main() {}
-                """
-            )
+                """)
 
     def test_strings_support_unicode_code_point_indexing(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             function main() {
                 let string sample = "Aé🙂";
                 print(sample.length);
@@ -1572,14 +1568,12 @@ line three`);
                 print(sample[2]);
                 print(sample[-1]);
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["3", "A", "🙂", "🙂"])
 
     def test_static_private_members_are_accessible_only_inside_the_class(self):
-        result, output = self.run_x(
-            """
+        result, output = self.run_x("""
             class Credentials {
                 private static string secret = "hidden";
                 private static string readSecret() {
@@ -1592,30 +1586,25 @@ line three`);
             function main() {
                 print(Credentials.reveal());
             }
-            """
-        )
+            """)
         self.assertIsNone(result)
         self.assertEqual(output, ["hidden"])
         with self.assertRaisesRegex(RuntimeErrorX, "private property"):
-            self.run_x(
-                """
+            self.run_x("""
                 class Credentials {
                     private static string secret = "hidden";
                 }
                 function main() { print(Credentials.secret); }
-                """
-            )
+                """)
 
     def test_string_index_errors_include_runtime_failure(self):
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index 4"):
-            self.run_x(
-                """
+            self.run_x("""
                 function main() {
                     let string sample = "abc";
                     print(sample[4]);
                 }
-                """
-            )
+                """)
 
 
 if __name__ == "__main__":

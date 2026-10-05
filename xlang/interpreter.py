@@ -860,6 +860,16 @@ class Interpreter:
                         value,
                         f"property '{xclass.name}.{member.name}'",
                     )
+                if (
+                    member.type_name is not None
+                    and member.initializer is not None
+                    and self._needs_runtime_type_check(member.type_name)
+                ):
+                    value = self._coerce_runtime_checked_type(
+                        member.type_name,
+                        value,
+                        f"property '{xclass.name}.{member.name}'",
+                    )
                 xclass.static_fields[member.name] = value
 
         decorated_class = xclass
@@ -942,12 +952,23 @@ class Interpreter:
                     value = self._coerce_typed_object(
                         object_type, value, f"variable '{statement.name}'"
                     )
+                value_type = (
+                    statement.type_name
+                    if statement.type_name is not None
+                    and self._needs_runtime_type_check(statement.type_name)
+                    else None
+                )
+                if value_type is not None and statement.initializer is not None:
+                    value = self._coerce_runtime_checked_type(
+                        value_type, value, f"variable '{statement.name}'"
+                    )
                 environment.define(
                     statement.name,
                     value,
                     statement.constant,
                     array_type=array_type,
                     object_type=object_type,
+                    value_type=value_type,
                 )
         elif isinstance(statement, EnumDeclaration):
             self._define_enum(statement, environment)
@@ -1726,6 +1747,11 @@ class Interpreter:
                 value = self._coerce_typed_object(
                     object_type, value, f"variable '{target.name}'"
                 )
+            value_type = environment.get_value_type(target.name)
+            if value_type is not None:
+                value = self._coerce_runtime_checked_type(
+                    value_type, value, f"variable '{target.name}'"
+                )
             environment.assign(target.name, value)
             return
         if isinstance(target, Member):
@@ -2036,6 +2062,15 @@ class Interpreter:
                         value,
                         f"property '{field_owner.name}.{name}'",
                     )
+                if (
+                    field_declaration.type_name is not None
+                    and self._needs_runtime_type_check(field_declaration.type_name)
+                ):
+                    value = self._coerce_runtime_checked_type(
+                        field_declaration.type_name,
+                        value,
+                        f"property '{field_owner.name}.{name}'",
+                    )
             object_value.fields[name] = value
             return
         if isinstance(object_value, XClass):
@@ -2064,6 +2099,15 @@ class Interpreter:
                 and field_declaration.type_name.startswith("object<")
             ):
                 value = self._coerce_typed_object(
+                    field_declaration.type_name,
+                    value,
+                    f"property '{field_owner.name}.{name}'",
+                )
+            if (
+                field_declaration.type_name is not None
+                and self._needs_runtime_type_check(field_declaration.type_name)
+            ):
+                value = self._coerce_runtime_checked_type(
                     field_declaration.type_name,
                     value,
                     f"property '{field_owner.name}.{name}'",
@@ -2106,6 +2150,16 @@ class Interpreter:
                     and member.initializer is not None
                 ):
                     value = self._coerce_typed_object(
+                        member.type_name,
+                        value,
+                        f"property '{xclass.name}.{member.name}'",
+                    )
+                if (
+                    member.type_name is not None
+                    and member.initializer is not None
+                    and self._needs_runtime_type_check(member.type_name)
+                ):
+                    value = self._coerce_runtime_checked_type(
                         member.type_name,
                         value,
                         f"property '{xclass.name}.{member.name}'",
@@ -2289,6 +2343,11 @@ class Interpreter:
                 if self._type_match_score(element_type, element) is None:
                     return None
             return 3
+        if type_name.casefold() == "function":
+            return 3 if self._is_function_value(value) else None
+        interface = self._interface_type(type_name)
+        if interface is not None:
+            return 3 if self._interface_matches(interface, value) else None
         if type_name in ("integer", "int", "byte"):
             return 3 if isinstance(value, int) and not isinstance(value, bool) else None
         if type_name in ("float", "double"):
@@ -2308,6 +2367,165 @@ class Interpreter:
         if isinstance(value, XEnumMember) and value.enum_name == type_name.split(".")[-1]:
             return 3
         return 0
+
+    def _is_function_value(self, value: Any) -> bool:
+        return isinstance(value, (XFunction, BuiltinFunction, OverloadedFunction))
+
+    def _interface_type(self, type_name: str) -> XClass | None:
+        try:
+            value = self._resolve_name(self.globals, type_name)
+        except RuntimeErrorX:
+            return None
+        if isinstance(value, XClass) and value.declaration.is_interface:
+            return value
+        return None
+
+    def _interface_members(self, interface: XClass) -> list[Any]:
+        members = (
+            self._interface_members(interface.parent)
+            if interface.parent is not None
+            and interface.parent.declaration.is_interface
+            else []
+        )
+        members.extend(interface.declaration.members)
+        return members
+
+    def _interface_matches(self, interface: XClass, value: Any) -> bool:
+        if isinstance(value, dict):
+            def get_member(name: str) -> Any:
+                return value.get(name, UNDEFINED)
+
+            class_methods: dict[str, list[FunctionDeclaration]] = {}
+        elif isinstance(value, XInstance):
+            def get_member(name: str) -> Any:
+                return value.fields.get(name, UNDEFINED)
+
+            class_methods = {}
+            for parent in self._class_hierarchy(value.xclass):
+                for member in parent.declaration.members:
+                    if (
+                        isinstance(member, FunctionDeclaration)
+                        and "static" not in member.modifiers
+                        and not {"private", "protected"}.intersection(
+                            member.modifiers
+                        )
+                        and member.name != parent.name
+                    ):
+                        class_methods.setdefault(member.name, []).append(member)
+        else:
+            return False
+
+        for member in self._interface_members(interface):
+            if isinstance(member, FunctionDeclaration):
+                if isinstance(value, XInstance):
+                    implementations = class_methods.get(member.name, [])
+                    if not any(
+                        self._function_declaration_matches(actual, member)
+                        for actual in implementations
+                    ):
+                        return False
+                    continue
+                candidate = get_member(member.name)
+                if not self._is_function_value(candidate):
+                    return False
+                if not self._function_value_matches(candidate, member):
+                    return False
+            elif isinstance(member, VariableDeclaration):
+                if isinstance(value, XInstance):
+                    field_definition = self._find_field_owner(
+                        value.xclass, member.name
+                    )
+                    if (
+                        field_definition is None
+                        or {"private", "protected"}.intersection(
+                            field_definition[1].modifiers
+                        )
+                    ):
+                        return False
+                candidate = get_member(member.name)
+                if candidate is UNDEFINED or self._type_match_score(
+                    member.type_name, candidate
+                ) is None:
+                    return False
+        return True
+
+    def _function_value_matches(
+        self, value: Any, signature: FunctionDeclaration
+    ) -> bool:
+        if isinstance(value, XFunction):
+            return self._function_declaration_matches(value.declaration, signature)
+        if isinstance(value, OverloadedFunction):
+            return any(
+                self._function_declaration_matches(function.declaration, signature)
+                for function in value.functions
+            )
+        return True
+
+    def _function_declaration_matches(
+        self,
+        implementation: FunctionDeclaration,
+        signature: FunctionDeclaration,
+    ) -> bool:
+        implementation_parameters = implementation.parameters
+        signature_parameters = signature.parameters
+        implementation_required = sum(
+            not parameter.has_default
+            and not parameter.is_rest
+            and not (
+                parameter.type_name is not None
+                and parameter.type_name.endswith("?")
+            )
+            for parameter in implementation_parameters
+        )
+        signature_required = sum(
+            not parameter.has_default
+            and not parameter.is_rest
+            and not (
+                parameter.type_name is not None
+                and parameter.type_name.endswith("?")
+            )
+            for parameter in signature_parameters
+        )
+        if (
+            implementation_required > signature_required
+            or (
+                not any(parameter.is_rest for parameter in implementation_parameters)
+                and len(implementation_parameters) < len(signature_parameters)
+            )
+        ):
+            return False
+        for actual, expected in zip(
+            implementation_parameters, signature_parameters
+        ):
+            if (
+                actual.type_name is not None
+                and expected.type_name is not None
+                and actual.type_name.casefold() != expected.type_name.casefold()
+            ):
+                return False
+        return not (
+            implementation.return_type is not None
+            and signature.return_type is not None
+            and implementation.return_type.casefold()
+            != signature.return_type.casefold()
+        )
+
+    def _needs_runtime_type_check(self, type_name: str) -> bool:
+        return (
+            type_name.casefold() == "function"
+            or self._interface_type(type_name) is not None
+        )
+
+    def _coerce_runtime_checked_type(
+        self, type_name: str, value: Any, context: str
+    ) -> Any:
+        if self._type_match_score(type_name, value) is None:
+            raise RuntimeErrorX(
+                f"Expected '{type_name}' for {context}, "
+                f"got '{self._value_type_name(value)}'",
+                "TypeException",
+            )
+        return value
 
     def _generic_type_arguments(self, type_name: str) -> list[str]:
         opening = type_name.find("<")

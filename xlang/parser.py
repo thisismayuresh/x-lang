@@ -352,7 +352,10 @@ class Parser:
         if self._check("("):
             parameters = self._parameters()
             declaration_only = is_interface or "abstract" in modifiers
-            if declaration_only and self._match(";"):
+            if is_interface:
+                body = []
+                self._interface_member_terminator()
+            elif declaration_only and self._match(";"):
                 body = []
             else:
                 body = self._function_body(is_async)
@@ -379,8 +382,26 @@ class Parser:
                 name, type_name, None, modifiers=modifiers
             )
         initializer = self._expression() if self._match("=") else None
-        self._consume_statement_terminator("Expected ';' after field declaration")
+        if is_interface:
+            self._interface_member_terminator()
+        else:
+            self._consume_statement_terminator("Expected ';' after field declaration")
         return VariableDeclaration(name, type_name, initializer, modifiers=modifiers)
+
+    def _interface_member_terminator(self) -> None:
+        if self._match(",", ";"):
+            return
+        if (
+            self._check("}")
+            or self._check("EOF")
+            or self._line_terminator_before_current()
+        ):
+            return
+        raise ParseError(
+            "Expected ',' or ';' after interface member",
+            self._peek(),
+            self.source_name,
+        )
 
     def _enum_declaration(self, modifiers: set[str]) -> EnumDeclaration:
         name = self._consume("IDENTIFIER", "Expected enum name").value
@@ -519,7 +540,10 @@ class Parser:
             return VariableDeclaration(
                 "", None, initializer, constant=constant, pattern=pattern
             )
-        first = self._consume("IDENTIFIER", "Expected variable name or type")
+        first = self._consume(
+            "IDENTIFIER" if not self._check("function") else "function",
+            "Expected variable name or type",
+        )
         type_suffix = ""
         type_name_parts = [first.value]
         while self._match("."):
@@ -1339,6 +1363,8 @@ class Parser:
     def _parse_type(self) -> str:
         if self._match("void"):
             type_name = "void"
+        elif self._match("function"):
+            type_name = "Function"
         else:
             type_name = self._qualified_name()
             if self._match("<"):

@@ -129,6 +129,12 @@ Implemented and currently demonstrated features:
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
   `object<K, V>` annotations validate dictionary key/value types at runtime.
+- [x] `Function`/`function` callback annotations validate function values.
+  `interface` declarations support comma- or semicolon-separated fields and
+  method signatures, including nested interface types and typed arrays.
+  Interface-typed values are checked structurally at runtime; a method must
+  exist with a compatible signature and fields must satisfy their declared
+  types. This is runtime validation, not a static type checker.
 - [x] Nested named functions in blocks; their declarations bind functions without
   executing their bodies, and the functions can capture surrounding locals.
 - [x] Typed rest parameters (`integer ...values`), array/call-argument spread, and
