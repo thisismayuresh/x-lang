@@ -39,6 +39,7 @@ from .ast_nodes import (
     EnumPattern,
     ObjectPattern,
     ThisExpression,
+    TemplateLiteral,
     ThrowStatement,
     TryStatement,
     TypeDeclaration,
@@ -47,7 +48,7 @@ from .ast_nodes import (
     WhileStatement,
     WildcardPattern,
 )
-from .lexer import Token
+from .lexer import Lexer, Token
 
 
 class ParseError(Exception):
@@ -1003,6 +1004,8 @@ class Parser:
             return Literal(float(text) if "." in text else int(text))
         if self._match("STRING"):
             return Literal(self._previous().value)
+        if self._match("TEMPLATE_STRING"):
+            return self._parse_template_literal(self._previous())
         if self._match("this"):
             return ThisExpression()
         if self._match("super"):
@@ -1074,6 +1077,133 @@ class Parser:
                 )
             return AwaitExpression(self._unary())
         raise ParseError("Expected an expression", self._peek())
+
+    def _parse_template_literal(self, token: Token) -> TemplateLiteral:
+        raw = token.value
+        parts: list[str | Any] = []
+        text: list[str] = []
+        position = 0
+
+        def flush_text() -> None:
+            if text:
+                parts.append("".join(text))
+                text.clear()
+
+        while position < len(raw):
+            if raw.startswith("{{", position):
+                text.append("{")
+                position += 2
+                continue
+            if raw.startswith("}}", position):
+                text.append("}")
+                position += 2
+                continue
+            if raw[position] != "{":
+                text.append(raw[position])
+                position += 1
+                continue
+
+            flush_text()
+            expression_start = position + 1
+            expression_end = self._template_expression_end(
+                raw, expression_start, token
+            )
+            expression_source = raw[expression_start:expression_end]
+            if not expression_source.strip():
+                line, column = self._template_source_position(
+                    raw, expression_start, token
+                )
+                raise ParseError(
+                    "Template interpolation cannot be empty",
+                    Token("{", "{", line, column),
+                    self.source_name,
+                )
+            line, column = self._template_source_position(
+                raw, expression_start, token
+            )
+            expression_tokens = Lexer(
+                expression_source,
+                self.source_name,
+                initial_line=line,
+                initial_column=column,
+            ).tokenize()
+            expression_parser = Parser(
+                expression_tokens, self.features, self.source_name
+            )
+            expression = expression_parser._expression()
+            if not expression_parser._check("EOF"):
+                raise ParseError(
+                    "Expected '}' after template expression",
+                    expression_parser._peek(),
+                    self.source_name,
+                )
+            parts.append(expression)
+            position = expression_end + 1
+
+        flush_text()
+        return TemplateLiteral(parts)
+
+    def _template_expression_end(
+        self, raw: str, start: int, token: Token
+    ) -> int:
+        depth = 1
+        quote: str | None = None
+        escaped = False
+        line_comment = False
+        block_comment = False
+        position = start
+        while position < len(raw):
+            character = raw[position]
+            following = raw[position + 1] if position + 1 < len(raw) else ""
+            if line_comment:
+                if character == "\n":
+                    line_comment = False
+            elif block_comment:
+                if character == "*" and following == "/":
+                    block_comment = False
+                    position += 1
+            elif quote is not None:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = None
+            elif character in ("'", '"', "`"):
+                quote = character
+            elif character == "/" and following == "/":
+                line_comment = True
+                position += 1
+            elif character == "/" and following == "*":
+                block_comment = True
+                position += 1
+            elif character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    return position
+            position += 1
+
+        line, column = self._template_source_position(raw, start - 1, token)
+        raise ParseError(
+            "Unterminated template interpolation",
+            Token("{", "{", line, column),
+            self.source_name,
+        )
+
+    def _template_source_position(
+        self, raw: str, offset: int, token: Token
+    ) -> tuple[int, int]:
+        line = token.line
+        column = token.column + 1
+        for character in raw[:offset]:
+            if character == "\n":
+                line += 1
+                column = 1
+            else:
+                column += 1
+        return line, column
 
     def _arguments_after_open_paren(self) -> list[Any]:
         arguments: list[Any] = []

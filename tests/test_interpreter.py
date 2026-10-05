@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
 
+from xlang.lexer import LexError
 from xlang.module_loader import ModuleLoader
 from xlang.parser import ParseError
 from xlang.runtime import Interpreter, RuntimeErrorX
@@ -34,6 +35,65 @@ class InterpreterTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(output, ["Hello Ada"])
+
+    def test_multiline_templates_interpolate_expressions_and_run_calls(self):
+        result, output = self.run_x(
+            """
+            enum Status { READY }
+            class User {
+                public string name;
+                public User(string name) { this.name = name; }
+            }
+            let integer counter = 0;
+            string function nextName() {
+                counter++;
+                return "Maya";
+            }
+            function main() {
+                let string name = "Ada";
+                let User user = new User("Grace");
+                let object profile = {name: name, status: Status.READY};
+                print("My Name " + "is", "Maya");
+                print(`My Name ` + `is`, name);
+                print(`Hello {name}, {1 + 2}, {user.name}, {Status.READY}`);
+                print(`escaped {{name}} and {profile}`);
+                print(`line one
+line two {name}
+line three`);
+                print(`first {nextName()} then {nextName()} count={counter}`);
+                print("comma", name + "!", [1, 2], {active: true}, null);
+                print(``);
+                print();
+            }
+            """
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "My Name is Maya",
+                "My Name is Ada",
+                "Hello Ada, 3, Grace, READY",
+                "escaped {name} and {name: Ada, status: READY}",
+                "line one\nline two Ada\nline three",
+                "first Maya then Maya count=2",
+                'comma Ada! [1, 2] {active: true} null',
+                "",
+                "",
+            ],
+        )
+
+    def test_template_interpolation_reports_empty_and_unterminated_expressions(self):
+        with self.assertRaisesRegex(ParseError, "interpolation cannot be empty"):
+            self.run_x('function main() { print(`bad {}`); }')
+
+        with self.assertRaisesRegex(ParseError, "Unterminated template interpolation"):
+            self.run_x('function main() { print(`bad {1 + 2`); }')
+
+    def test_unterminated_multiline_template_is_a_lexer_error(self):
+        with self.assertRaisesRegex(LexError, "Unterminated template literal"):
+            self.run_x('function main() { print(`unfinished); }')
 
     def test_default_and_nullable_parameters_can_be_omitted(self):
         result, output = self.run_x(

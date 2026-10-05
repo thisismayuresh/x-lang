@@ -97,6 +97,9 @@ The interpreter currently supports:
 - `.x` source files, `//` comments, and `/* ... */` comments.
 - Primitive literals: integers, floating point numbers, strings, booleans, and
   `null`.
+- Multiline backtick template literals with `{expression}` interpolation;
+  `print` evaluates any number of arguments and separates their string forms
+  with spaces.
 - `let` variables, `const` constants, inferred and explicit variable types,
   `int` as an alias for `integer`, array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
@@ -541,6 +544,32 @@ let object profile = {...defaults, role: "Architect"};
 Typed arrays validate their elements when initialized or passed to a typed
 parameter. Their element type is also enforced by indexed writes and `add()`;
 for example, `integer[] values = [1, 2, "name"]` reports the invalid string.
+
+## Strings, templates, and print
+
+Single- and double-quoted strings remain single-line strings. Backticks create
+multiline template literals. Interpolations contain X expressions, including
+calls and arithmetic; calls are evaluated from left to right. Double braces
+(`{{` and `}}`) produce literal braces. Interpolation is expression-based, so
+it does not accept statement blocks.
+
+`print` accepts zero or more comma-separated expressions. Each argument is
+stringified and joined with one space; `+` concatenates values within an
+argument:
+
+```x
+let string name = "Maya";
+print("My Name " + "is", name); // My Name is Maya
+print(`Hello {name}, the result is {1 + 2}.`);
+print(`A multiline template:
+line two has {name}.`);
+```
+
+Run the complete example with:
+
+```sh
+x run examples/templates_and_print.x
+```
 
 ## Runnable examples
 

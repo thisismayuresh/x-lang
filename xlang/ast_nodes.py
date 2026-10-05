@@ -10,6 +10,11 @@ class Program:
 
 
 @dataclass
+class TemplateLiteral:
+    parts: list[str | Any]
+
+
+@dataclass
 class ImportDeclaration:
     targets: list[tuple[str, str | None]]
     wildcard: bool = False

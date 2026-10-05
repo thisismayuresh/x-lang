@@ -45,12 +45,18 @@ MULTI_CHARACTER_TOKENS = (
 
 
 class Lexer:
-    def __init__(self, source: str, source_name: str | None = None) -> None:
+    def __init__(
+        self,
+        source: str,
+        source_name: str | None = None,
+        initial_line: int = 1,
+        initial_column: int = 1,
+    ) -> None:
         self.source = source
         self.source_name = source_name
         self.position = 0
-        self.line = 1
-        self.column = 1
+        self.line = initial_line
+        self.column = initial_column
 
     def tokenize(self) -> list[Token]:
         tokens: list[Token] = []
@@ -81,6 +87,16 @@ class Lexer:
             if character in ('"', "'"):
                 tokens.append(
                     Token("STRING", self._read_string(character), start_line, start_column)
+                )
+                continue
+            if character == "`":
+                tokens.append(
+                    Token(
+                        "TEMPLATE_STRING",
+                        self._read_template_string(),
+                        start_line,
+                        start_column,
+                    )
                 )
                 continue
 
@@ -200,6 +216,33 @@ class Lexer:
                 self.source_name,
             )
         return value
+
+    def _read_template_string(self) -> str:
+        self._advance()
+        characters: list[str] = []
+        escape_values = {
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "\\": "\\",
+            "`": "`",
+        }
+        while not self._at_end() and self._peek() != "`":
+            character = self._advance()
+            if character == "\\" and not self._at_end():
+                escaped = self._advance()
+                characters.append(escape_values.get(escaped, "\\" + escaped))
+            else:
+                characters.append(character)
+        if self._at_end():
+            raise LexError(
+                "Unterminated template literal",
+                self.line,
+                self.column,
+                self.source_name,
+            )
+        self._advance()
+        return "".join(characters)
 
     def _skip_line_comment(self) -> None:
         while not self._at_end() and self._peek() != "\n":

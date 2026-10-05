@@ -3,6 +3,11 @@ import greeting.sayHello
 import greeting.*
 import greeting.* as Greet
 
+
+function test(){
+    print("Hello-----------------");
+}
+
 function main() {
     print(1+1+2);
   try {
@@ -12,10 +17,28 @@ function main() {
     // Code to handle the exception
     print("Cannot divide by zero: " + e);
 }
+
+    sleep(8000)
+
     print(sayGreet());
     sayHello();
     print(Greet.sayGreet());
     Greet.sayHello();
+
+
+
+     let string name = "Maya";
+    let integer count = 3;
+
+    print("My Name " + "is", "Maya");
+    print("My Name " + "is", name);
+    print(`Hello {name}. 2 + 1 = {2 + 1}.`);
+    print(`Hello {test()}. 2 + 1 = {2 + 1}.`);
+    print(`This template spans
+multiple lines, and still interpolates {count}.`);
+    print(`Use {{ and }} to show braces without interpolation.`);
+    print("Arrays:", [1, 2, 3], "objects:", {active: true});
+
 }
 
 main()

@@ -2027,6 +2027,24 @@ String concatenation uses `+`:
 let string message = "Hello " + name;
 ```
 
+Backtick template literals may contain newlines and interpolate expressions
+using braces without a `$` prefix:
+
+```
+let string greeting = `Hello {name}`;
+let string report = `User: {getUserName()}
+Status: {1 + 1}`;
+```
+
+Template interpolation evaluates expressions from left to right. `{{` and
+`}}` produce literal braces. Interpolation is expression-based, not a statement
+block. `print` accepts comma-separated expressions and joins their string
+representations with spaces; `+` concatenates values inside an argument:
+
+```
+print("My Name " + "is", "Maya");
+```
+
 The standard library should provide additional string operations.
 
 ---

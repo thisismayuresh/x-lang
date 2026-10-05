@@ -45,6 +45,7 @@ from .ast_nodes import (
     EnumPattern,
     ObjectPattern,
     ThisExpression,
+    TemplateLiteral,
     ThrowStatement,
     TryStatement,
     TypeDeclaration,
@@ -1458,6 +1459,13 @@ class Interpreter:
     def _evaluate(self, expression: Any, environment: Environment) -> Any:
         if isinstance(expression, Literal):
             return expression.value
+        if isinstance(expression, TemplateLiteral):
+            return "".join(
+                part
+                if isinstance(part, str)
+                else self._stringify(self._evaluate(part, environment))
+                for part in expression.parts
+            )
         if isinstance(expression, Identifier):
             value = environment.get(expression.name)
             if (
@@ -2522,6 +2530,16 @@ class Interpreter:
             return "false"
         if isinstance(value, list):
             return "[" + ", ".join(self._stringify(item) for item in value) + "]"
+        if isinstance(value, dict):
+            fields = ", ".join(
+                f"{name}: {self._stringify(item)}"
+                for name, item in value.items()
+            )
+            return "{" + fields + "}"
+        if isinstance(value, XInstance):
+            return f"[object {value.xclass.name}]"
+        if isinstance(value, XClass):
+            return f"[class {value.name}]"
         if isinstance(value, XEnumMember):
             return value.name
         if isinstance(value, XExceptionValue):
