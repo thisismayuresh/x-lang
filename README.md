@@ -238,6 +238,86 @@ The import loader currently combines project declarations into a shared runtime
 namespace. Aliased wildcard imports provide a namespace-like object containing
 the file's exports; they do not create an isolated module runtime.
 
+## Error and exception handling
+
+All built-in thrown errors derive from `Throwable`:
+
+```text
+Throwable
+├── Error
+│   └── DatabaseError
+└── Exception
+    ├── RuntimeException
+    │   ├── ArithmeticException
+    │   ├── TypeException
+    │   ├── IllegalArgumentException
+    │   └── IndexOutOfBoundsException
+    ├── IOException
+    │   └── FileSystemException
+    └── DatabaseException
+```
+
+Catch a specific type first, then a parent type. `catch (Throwable error)` is
+the broad fallback; `catch (Exception error)` catches checked and runtime
+exceptions, while `Error` is a separate branch. Catch variables provide
+`name`, `message`, `cause`, and `stack` properties. `stack` currently reports
+the source location where the error was raised. Errors can preserve a cause:
+
+```x
+try {
+    throw new DatabaseException(
+        "query failed",
+        new IOException("connection unavailable")
+    );
+}
+catch (DatabaseException error) {
+    print(error.message);
+    print(error.cause.message);
+}
+catch (Exception error) {
+    print("Other exception: " + error.name);
+}
+```
+
+Applications can define their own exception classes by extending `Exception`
+or `Error`. Constructor arguments and ordinary public fields provide
+application-specific details:
+
+```x
+class CustomException extends Exception {
+    public integer statusCode;
+
+    public CustomException(string message, integer statusCode) {
+        super(message);
+        this.statusCode = statusCode;
+    }
+}
+
+class BadRequestException extends CustomException {
+    public BadRequestException(string message) {
+        super(message, 400);
+    }
+}
+
+try {
+    throw new BadRequestException("invalid user id");
+}
+catch (CustomException error) {
+    print(error.name + ": " + error.message);
+    print(error.statusCode);
+}
+```
+
+Custom exception instances are catchable by their own class, any custom parent,
+`Exception` or `Error`, and `Throwable`. A custom constructor should call
+`super(message)` so the base exception's `name`, `message`, `cause`, and
+`stack` properties are initialized.
+
+Arithmetic failures use `ArithmeticException`; file-system operation failures
+use `FileSystemException`, which can also be caught as `IOException`,
+`Exception`, or `Throwable`. See the runnable
+[exception hierarchy example](./examples/exceptions/exception_hierarchy.x).
+
 ## File system standard library
 
 Import the built-in file system class using the X module path:
@@ -382,7 +462,9 @@ provide locks, atomics, or thread-safe collection guarantees. Coordinate shared
 mutable state yourself; prefer returning results and collecting them through
 `join`.
 
-## Rest and spread
+## Function arguments
+
+### Rest parameters
 
 The X parameter convention places types before names, so rest parameters are
 written as `Type ...name`. A rest parameter must be the final parameter and is
@@ -397,6 +479,52 @@ integer function sum(integer ...values) {
     return total;
 }
 ```
+
+### Optional parameters
+
+Parameters can also be optional by using a default value or a nullable type.
+Default expressions are evaluated when the argument is omitted, in the
+function's parameter scope, so they can refer to earlier parameters:
+
+```x
+User function getUsers(string id = "10001") {
+    return User(id);
+}
+
+User? function findUser(string? id) {
+    if (id == null) {
+        return null;
+    }
+    return User(id);
+}
+
+getUsers();       // uses "10001"
+getUsers("20002"); // uses "20002"
+findUser();       // receives null
+findUser("30003");
+```
+
+Required parameters must come before optional parameters. A nullable parameter
+without a default may be omitted and receives `null`; a parameter with a
+default uses that value when omitted.
+
+### General error handling
+
+For unknown failures, a broad catch can inspect the concrete exception name:
+
+```x
+try {
+    performOperation();
+}
+catch (Throwable error) {
+    print(error.name + ": " + error.message);
+}
+```
+
+Uncaught division by zero is reported as
+`Cannot divide by zero: Division by zero for '/'`.
+
+### Spread values
 
 Spread expands iterable values in array literals and function calls. Object
 spread copies fields from an object value; later fields override earlier ones:

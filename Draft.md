@@ -553,6 +553,35 @@ function add(integer a, integer b) {
 
 Multiple parameters are separated by commas.
 
+Defaulted parameters and nullable parameters are optional:
+
+```
+User function getUsers(string id = "10001") {
+    return User(id);
+}
+
+User? function findUser(string? id) {
+    if (id == null) {
+        return null;
+    }
+    return User(id);
+}
+```
+
+Calling `getUsers()` uses the default `"10001"`; providing an argument
+overrides it. Omitting `id` in `findUser()` binds `null`. Default expressions
+are evaluated at call time and can use earlier parameters. Required parameters
+cannot follow optional parameters.
+
+A broad catch can inspect the concrete exception when the caller does not know
+which error may occur:
+
+```
+catch (Throwable error) {
+    print(error.name + ": " + error.message);
+}
+```
+
 ---
 
 # 22\. First-Class Functions
@@ -1343,6 +1372,60 @@ Exceptions may be thrown using:
 ```
 throw new Exception("Something went wrong");
 ```
+
+Built-in exception values follow a small catchable hierarchy:
+
+```
+Throwable
+├── Error
+│   └── DatabaseError
+└── Exception
+    ├── RuntimeException
+    │   ├── ArithmeticException
+    │   ├── TypeException
+    │   ├── IllegalArgumentException
+    │   └── IndexOutOfBoundsException
+    ├── IOException
+    │   └── FileSystemException
+    └── DatabaseException
+```
+
+Specific exceptions can be thrown and caught by a parent type. A catch binding
+exposes `name`, `message`, `cause`, and `stack`; `stack` currently reports the
+source location where the error was raised. Supply a cause as the optional
+second constructor argument:
+
+```
+throw new DatabaseException(
+    "query failed",
+    new IOException("connection unavailable")
+);
+```
+
+`catch (Throwable error)` is the broad fallback for any thrown value.
+`Exception` catches runtime and file-system exceptions; `Error` is its
+separate sibling branch. Runtime errors produced by arithmetic and
+file-system operations retain their type when caught.
+
+Applications may define their own exception classes by extending `Exception`
+or `Error`. Call `super(message)` in a custom constructor to initialize the
+standard exception properties; custom fields and parent classes can represent
+domain-specific details:
+
+```
+class BadRequestException extends Exception {
+    public integer statusCode;
+    public BadRequestException(string message) {
+        super(message);
+        this.statusCode = 400;
+    }
+}
+
+throw new BadRequestException("invalid user id");
+```
+
+Custom thrown instances match catches for their own class, custom ancestors,
+their `Exception` or `Error` base, and `Throwable`.
 
 ---
 
@@ -3513,6 +3596,7 @@ examples/
 ├── control_flow/main.x
 ├── control_flow/main_file.x
 ├── decorators/trace.x
+├── exceptions/exception_hierarchy.x
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
 ├── objects/destructuring.x
@@ -3535,6 +3619,7 @@ Run from the repository root:
 x run --profile feature-tour examples/configuration/configured_args.x
 x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
+x run examples/exceptions/exception_hierarchy.x examples/errors/missing.txt
 x run examples/exceptions/try_catch_finally.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x

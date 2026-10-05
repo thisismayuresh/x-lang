@@ -122,6 +122,62 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("^", errors)
         self.assertNotIn("\x1b[", errors)
 
+    def test_uncaught_exception_diagnostic_includes_exception_type(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "broken.x"
+            source_file.write_text(
+                'function main() { throw new ArithmeticException("divide by zero"); }\n',
+                encoding="utf-8",
+            )
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", "--color", "never", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("Uncaught ArithmeticException: divide by zero", errors)
+        self.assertIn(f"{source_file}:1:", errors)
+
+    def test_uncaught_custom_exception_shows_its_class_name_and_message(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "broken.x"
+            source_file.write_text(
+                """
+                class BadRequestException extends Exception {}
+                function main() {
+                    throw new BadRequestException("invalid user id");
+                }
+                """,
+                encoding="utf-8",
+            )
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", "--color", "never", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("Uncaught BadRequestException: invalid user id", errors)
+        self.assertIn(f"{source_file}:4:", errors)
+
+    def test_uncaught_arithmetic_failure_diagnostic_includes_exception_type(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "broken.x"
+            source_file.write_text(
+                "function main() { let integer result = 1 / 0; }\n",
+                encoding="utf-8",
+            )
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", "--color", "never", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn(
+            "Cannot divide by zero: Division by zero for '/'",
+            errors,
+        )
+        self.assertIn(f"{source_file}:1:", errors)
+
     def test_error_diagnostic_color_can_be_forced(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source_file = Path(temporary_directory) / "broken.x"

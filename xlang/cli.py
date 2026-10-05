@@ -14,7 +14,13 @@ from .diagnostics import render_diagnostic, render_warning
 from .lexer import LexError
 from .module_loader import ModuleLoader
 from .parser import ParseError
-from .runtime import Interpreter, RuntimeErrorX, ThrownValue, XExceptionValue
+from .runtime import (
+    Interpreter,
+    RuntimeErrorX,
+    ThrownValue,
+    XExceptionValue,
+    XInstance,
+)
 
 
 USAGE = """X language interpreter
@@ -131,6 +137,24 @@ def main(argv: list[str] | None = None) -> int:
         print("x: main must return void or an integer exit code", file=sys.stderr)
         return 1
     except (LexError, ParseError, RuntimeErrorX) as error:
+        if (
+            isinstance(error, RuntimeErrorX)
+            and error.exception_name != "RuntimeException"
+        ):
+            display_name = (
+                "Cannot divide by zero"
+                if error.exception_name == "ArithmeticException"
+                and "Division by zero" in error.message
+                else error.exception_name
+            )
+            typed_error = RuntimeErrorX(
+                f"{display_name}: {error.message}",
+                error.exception_name,
+            )
+            typed_error.line = error.line
+            typed_error.column = error.column
+            typed_error.source_name = error.source_name
+            error = typed_error
         return _report_source_error(
             error,
             loader.sources,
@@ -140,10 +164,20 @@ def main(argv: list[str] | None = None) -> int:
     except ThrownValue as thrown:
         value = thrown.value
         if isinstance(value, XExceptionValue):
-            message = value.message
+            display_name = (
+                "Cannot divide by zero"
+                if value.name == "ArithmeticException"
+                and "Division by zero" in value.message
+                else f"Uncaught {value.name}"
+            )
+            message = f"{display_name}: {value.message}"
+        elif isinstance(value, XInstance) and _is_exception_instance(value):
+            exception_name = value.xclass.name
+            exception_message = value.fields.get("message", "")
+            message = f"Uncaught {exception_name}: {exception_message}"
         else:
-            message = str(value)
-        uncaught_error = RuntimeErrorX(f"Uncaught exception: {message}")
+            message = f"Uncaught exception: {value}"
+        uncaught_error = RuntimeErrorX(message)
         uncaught_error.line = thrown.line
         uncaught_error.column = thrown.column
         uncaught_error.source_name = thrown.source_name
@@ -157,6 +191,15 @@ def main(argv: list[str] | None = None) -> int:
         source_name = getattr(error, "filename", None) or str(source_path)
         print(f"x: cannot read '{source_name}': {error}", file=sys.stderr)
         return 2
+
+
+def _is_exception_instance(value: XInstance) -> bool:
+    current_class = value.xclass
+    while current_class is not None:
+        if current_class.is_exception_base:
+            return True
+        current_class = current_class.parent
+    return False
 
 
 def _create_argument_parser() -> argparse.ArgumentParser:

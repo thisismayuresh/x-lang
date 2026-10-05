@@ -38,6 +38,8 @@ class Parameter:
     name: str
     type_name: str | None
     is_rest: bool = False
+    default_value: Any | None = None
+    has_default: bool = False
 
 
 @dataclass

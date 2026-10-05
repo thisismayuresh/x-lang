@@ -57,9 +57,12 @@ from .config import XConfig
 
 
 class RuntimeErrorX(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self, message: str, exception_name: str = "RuntimeException"
+    ) -> None:
         super().__init__(message)
         self.message = message
+        self.exception_name = exception_name
         self.line: int | None = None
         self.column: int | None = None
         self.source_name: str | None = None
@@ -197,9 +200,17 @@ class XFunction:
             self.interpreter.output(f"Calling {self.declaration.name}")
         parameters = self.declaration.parameters
         has_rest_parameter = bool(parameters and parameters[-1].is_rest)
-        required_count = len(parameters) - (1 if has_rest_parameter else 0)
+        required_count = sum(
+            not parameter.is_rest
+            and not parameter.has_default
+            and not (
+                parameter.type_name is not None
+                and parameter.type_name.endswith("?")
+            )
+            for parameter in parameters
+        )
         if len(arguments) < required_count or (
-            not has_rest_parameter and len(arguments) != len(parameters)
+            not has_rest_parameter and len(arguments) > len(parameters)
         ):
             raise RuntimeErrorX(
                 f"'{self.declaration.name}' expects "
@@ -220,7 +231,14 @@ class XFunction:
             if parameter.is_rest:
                 call_environment.define(parameter.name, arguments[parameter_index:])
             else:
-                argument_value = arguments[parameter_index]
+                if parameter_index < len(arguments):
+                    argument_value = arguments[parameter_index]
+                elif parameter.has_default:
+                    argument_value = self.interpreter._evaluate(
+                        parameter.default_value, call_environment
+                    )
+                else:
+                    argument_value = None
                 if parameter.type_name is not None:
                     argument_value = self.interpreter._coerce_typed_array(
                         parameter.type_name,
@@ -263,6 +281,7 @@ class XClass:
     nested_types: dict[str, XClass] = field(default_factory=dict)
     traced: bool = False
     enclosing_class: XClass | None = None
+    is_exception_base: bool = False
 
     @property
     def name(self) -> str:
@@ -300,6 +319,9 @@ class XClass:
             self.interpreter.output(f"Constructing {self.name}")
         instance = XInstance(self)
         self.interpreter._initialize_fields(instance, self)
+        if self.is_exception_base:
+            self.interpreter._initialize_exception_instance(instance, arguments)
+            return instance
         constructors = self.find_constructors()
         if constructors:
             constructor = self.interpreter._select_overload(self.name, constructors, arguments)
@@ -310,6 +332,8 @@ class XClass:
                 constructor.decorators, constructor_function, self.closure
             )
             constructor_function.call(arguments)
+        elif self.parent is not None and self.parent.is_exception_base:
+            self.interpreter._initialize_exception_instance(instance, arguments)
         elif arguments:
             raise RuntimeErrorX(
                 f"'{self.name}' has no constructor accepting {len(arguments)} argument(s)"
@@ -351,6 +375,20 @@ class XThreadHandle:
 
 
 class Interpreter:
+    EXCEPTION_PARENTS = {
+        "Error": "Throwable",
+        "Exception": "Throwable",
+        "RuntimeException": "Exception",
+        "ArithmeticException": "RuntimeException",
+        "TypeException": "RuntimeException",
+        "IllegalArgumentException": "RuntimeException",
+        "IndexOutOfBoundsException": "RuntimeException",
+        "IOException": "Exception",
+        "FileSystemException": "IOException",
+        "DatabaseException": "Exception",
+        "DatabaseError": "Error",
+    }
+
     def __init__(
         self,
         arguments: list[str] | None = None,
@@ -480,7 +518,46 @@ class Interpreter:
         self.globals.define("range", BuiltinFunction("range", self._builtin_range))
         if self.config.enabled("async"):
             self.globals.define("sleep", BuiltinFunction("sleep", self._builtin_sleep))
-        self.globals.define("Exception", BuiltinFunction("Exception", self._builtin_exception))
+        throwable = XClass(
+            ClassDeclaration("Throwable", []),
+            self,
+            self.globals,
+            is_exception_base=True,
+        )
+        self.globals.define("Throwable", throwable)
+        for name in ("Exception", "Error"):
+            self.globals.define(
+                name,
+                XClass(
+                    ClassDeclaration(name, [], parent_name="Throwable"),
+                    self,
+                    self.globals,
+                    throwable,
+                    is_exception_base=True,
+                ),
+            )
+
+        exception_types = (
+            "RuntimeException",
+            "ArithmeticException",
+            "TypeException",
+            "IllegalArgumentException",
+            "IndexOutOfBoundsException",
+            "FileSystemException",
+            "IOException",
+            "DatabaseException",
+            "DatabaseError",
+        )
+        for exception_type in exception_types:
+            self.globals.define(
+                exception_type,
+                BuiltinFunction(
+                    exception_type,
+                    lambda arguments, name=exception_type: self._builtin_exception(
+                        name, arguments
+                    ),
+                ),
+            )
         if self.config.enabled("decorators"):
             self.globals.define("trace", BuiltinFunction("trace", self._builtin_trace))
         if self.config.enabled("object_literals"):
@@ -525,6 +602,13 @@ class Interpreter:
         error.source_name = source_name
         error.line = line
         error.column = column
+
+    def _source_stack(
+        self, source_name: str | None, line: int | None, column: int | None
+    ) -> str:
+        if source_name is None or line is None:
+            return ""
+        return f"at {source_name}:{line}:{column or 1}"
 
     def _builtin_trace(self, arguments: list[Any]) -> Any:
         if len(arguments) != 1:
@@ -742,7 +826,10 @@ class Interpreter:
         self._validate_argument_count(operation, arguments, 1)
         path_value = arguments[0]
         if not isinstance(path_value, str):
-            raise RuntimeErrorX(f"FileSystem.{operation} expects a string path")
+            raise RuntimeErrorX(
+                f"FileSystem.{operation} expects a string path",
+                "TypeException",
+            )
         return Path(path_value)
 
     def _filesystem_exists(self, arguments: list[Any]) -> bool:
@@ -750,14 +837,20 @@ class Interpreter:
         try:
             return path.exists()
         except OSError as error:
-            raise RuntimeErrorX(f"Cannot check whether '{path}' exists: {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot check whether '{path}' exists: {error}",
+                "FileSystemException",
+            ) from error
 
     def _filesystem_is_file(self, arguments: list[Any]) -> bool:
         path = self._filesystem_path("isFile", arguments)
         try:
             return path.is_file()
         except OSError as error:
-            raise RuntimeErrorX(f"Cannot check whether '{path}' is a file: {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot check whether '{path}' is a file: {error}",
+                "FileSystemException",
+            ) from error
 
     def _filesystem_is_directory(self, arguments: list[Any]) -> bool:
         path = self._filesystem_path("isDirectory", arguments)
@@ -765,7 +858,8 @@ class Interpreter:
             return path.is_dir()
         except OSError as error:
             raise RuntimeErrorX(
-                f"Cannot check whether '{path}' is a directory: {error}"
+                f"Cannot check whether '{path}' is a directory: {error}",
+                "FileSystemException",
             ) from error
 
     def _filesystem_read_text(self, arguments: list[Any]) -> str:
@@ -773,35 +867,52 @@ class Interpreter:
         try:
             return path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
-            raise RuntimeErrorX(f"Cannot read text file '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot read text file '{path}': {error}",
+                "FileSystemException",
+            ) from error
 
     def _filesystem_write_text(self, arguments: list[Any]) -> None:
         self._validate_argument_count("writeText", arguments, 2)
         path_value, text = arguments
         if not isinstance(path_value, str):
-            raise RuntimeErrorX("FileSystem.writeText expects a string path")
+            raise RuntimeErrorX(
+                "FileSystem.writeText expects a string path", "TypeException"
+            )
         if not isinstance(text, str):
-            raise RuntimeErrorX("FileSystem.writeText expects string content")
+            raise RuntimeErrorX(
+                "FileSystem.writeText expects string content", "TypeException"
+            )
         path = Path(path_value)
         try:
             path.write_text(text, encoding="utf-8")
         except (OSError, UnicodeError) as error:
-            raise RuntimeErrorX(f"Cannot write text file '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot write text file '{path}': {error}",
+                "FileSystemException",
+            ) from error
         return None
 
     def _filesystem_append_text(self, arguments: list[Any]) -> None:
         self._validate_argument_count("appendText", arguments, 2)
         path_value, text = arguments
         if not isinstance(path_value, str):
-            raise RuntimeErrorX("FileSystem.appendText expects a string path")
+            raise RuntimeErrorX(
+                "FileSystem.appendText expects a string path", "TypeException"
+            )
         if not isinstance(text, str):
-            raise RuntimeErrorX("FileSystem.appendText expects string content")
+            raise RuntimeErrorX(
+                "FileSystem.appendText expects string content", "TypeException"
+            )
         path = Path(path_value)
         try:
             with path.open("a", encoding="utf-8") as output_file:
                 output_file.write(text)
         except (OSError, UnicodeError) as error:
-            raise RuntimeErrorX(f"Cannot append to text file '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot append to text file '{path}': {error}",
+                "FileSystemException",
+            ) from error
         return None
 
     def _filesystem_create_directory(self, arguments: list[Any]) -> None:
@@ -809,7 +920,10 @@ class Interpreter:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as error:
-            raise RuntimeErrorX(f"Cannot create directory '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot create directory '{path}': {error}",
+                "FileSystemException",
+            ) from error
         return None
 
     def _filesystem_list_directory(self, arguments: list[Any]) -> list[str]:
@@ -817,14 +931,20 @@ class Interpreter:
         try:
             return sorted(entry.name for entry in path.iterdir())
         except OSError as error:
-            raise RuntimeErrorX(f"Cannot list directory '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot list directory '{path}': {error}",
+                "FileSystemException",
+            ) from error
 
     def _filesystem_delete_file(self, arguments: list[Any]) -> None:
         path = self._filesystem_path("deleteFile", arguments)
         try:
             path.unlink()
         except OSError as error:
-            raise RuntimeErrorX(f"Cannot delete file '{path}': {error}") from error
+            raise RuntimeErrorX(
+                f"Cannot delete file '{path}': {error}",
+                "FileSystemException",
+            ) from error
         return None
 
     def _filesystem_delete_directory(self, arguments: list[Any]) -> None:
@@ -833,7 +953,8 @@ class Interpreter:
             path.rmdir()
         except OSError as error:
             raise RuntimeErrorX(
-                f"Cannot delete directory '{path}'; it must be empty: {error}"
+                f"Cannot delete directory '{path}'; it must be empty: {error}",
+                "FileSystemException",
             ) from error
         return None
 
@@ -864,10 +985,31 @@ class Interpreter:
             raise RuntimeErrorX("range step cannot be zero")
         return range(start, stop, step)
 
-    def _builtin_exception(self, arguments: list[Any]) -> XExceptionValue:
-        if len(arguments) != 1:
-            raise RuntimeErrorX("Exception expects one message")
-        return XExceptionValue(self._stringify(arguments[0]))
+    def _builtin_exception(
+        self, name: str, arguments: list[Any]
+    ) -> XExceptionValue:
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX(f"{name} expects a message and optional cause")
+        return XExceptionValue(
+            self._stringify(arguments[0]),
+            name,
+            arguments[1] if len(arguments) == 2 else None,
+        )
+
+    def _initialize_exception_instance(
+        self, instance: XInstance, arguments: list[Any]
+    ) -> None:
+        if len(arguments) not in (0, 1, 2):
+            raise RuntimeErrorX(
+                f"{instance.xclass.name} expects a message and optional cause"
+            )
+        if arguments:
+            instance.fields["message"] = self._stringify(arguments[0])
+        instance.fields["name"] = instance.xclass.name
+        if len(arguments) == 2:
+            instance.fields["cause"] = arguments[1]
+        instance.fields.setdefault("cause", None)
+        instance.fields.setdefault("stack", "")
 
     def _define_function(self, declaration: FunctionDeclaration, environment: Environment) -> None:
         self._set_declaration_location(declaration)
@@ -1179,6 +1321,18 @@ class Interpreter:
             self._execute_block(statement.body.statements, Environment(environment))
         except ThrownValue as thrown:
             self.annotate_error(thrown)
+            if isinstance(thrown.value, XExceptionValue) and not thrown.value.stack:
+                thrown.value.stack = self._source_stack(
+                    thrown.source_name, thrown.line, thrown.column
+                )
+            elif (
+                isinstance(thrown.value, XInstance)
+                and self._is_throwable_instance(thrown.value)
+                and not thrown.value.fields.get("stack")
+            ):
+                thrown.value.fields["stack"] = self._source_stack(
+                    thrown.source_name, thrown.line, thrown.column
+                )
             pending_error = thrown
             self._run_matching_catch(
                 thrown.value, statement.catches, environment, thrown
@@ -1186,17 +1340,36 @@ class Interpreter:
             pending_error = None
         except RuntimeErrorX as error:
             self.annotate_error(error)
-            runtime_value = XExceptionValue(str(error), "RuntimeException", error)
+            cause = (
+                XExceptionValue(str(error.__cause__), "Exception")
+                if error.__cause__ is not None
+                else None
+            )
+            runtime_value = XExceptionValue(
+                str(error),
+                error.exception_name,
+                cause,
+                self._source_stack(
+                    error.source_name, error.line, error.column
+                ),
+            )
             pending_error = error
             self._run_matching_catch(
                 runtime_value, statement.catches, environment, error
             )
             pending_error = None
         except (ArithmeticError, TypeError, ValueError, IndexError, KeyError) as error:
-            wrapped_error = RuntimeErrorX(str(error))
+            exception_name = self._native_exception_name(error)
+            wrapped_error = RuntimeErrorX(str(error), exception_name)
             self.annotate_error(wrapped_error)
             runtime_value = XExceptionValue(
-                str(error), "RuntimeException", wrapped_error
+                str(error),
+                exception_name,
+                stack=self._source_stack(
+                    wrapped_error.source_name,
+                    wrapped_error.line,
+                    wrapped_error.column,
+                ),
             )
             pending_error = wrapped_error
             self._run_matching_catch(
@@ -1241,23 +1414,19 @@ class Interpreter:
         )
 
     def _exception_matches(self, value: Any, type_name: str | None) -> bool:
-        if type_name is None or type_name in ("Exception", "Throwable"):
+        if type_name is None:
             return True
         requested_types = type_name.split("|")
         if isinstance(value, XExceptionValue):
             for requested_type in requested_types:
-                if requested_type in ("Exception", "Throwable"):
-                    return True
-                if requested_type in ("RuntimeException", "Error") and value.name in (
-                    "RuntimeException",
-                    "Error",
-                ):
-                    return True
-                if requested_type == value.name:
-                    return True
-                if requested_type.endswith("Exception") and value.name == "Exception":
-                    return True
+                current_type: str | None = value.name
+                while current_type is not None:
+                    if current_type == requested_type:
+                        return True
+                    current_type = self.EXCEPTION_PARENTS.get(current_type)
             return False
+        if "Throwable" in requested_types:
+            return True
         if isinstance(value, XInstance):
             for requested_type in requested_types:
                 current_class: XClass | None = value.xclass
@@ -1266,6 +1435,25 @@ class Interpreter:
                         return True
                     current_class = current_class.parent
         return False
+
+    def _is_throwable_instance(self, value: XInstance) -> bool:
+        current_class: XClass | None = value.xclass
+        while current_class is not None:
+            if current_class.is_exception_base:
+                return True
+            current_class = current_class.parent
+        return False
+
+    def _native_exception_name(self, error: BaseException) -> str:
+        if isinstance(error, ArithmeticError):
+            return "ArithmeticException"
+        if isinstance(error, (TypeError, ValueError)):
+            return "TypeException"
+        if isinstance(error, (IndexError, KeyError)):
+            return "IndexOutOfBoundsException"
+        if isinstance(error, OSError):
+            return "FileSystemException"
+        return "RuntimeException"
 
     def _evaluate(self, expression: Any, environment: Environment) -> Any:
         if isinstance(expression, Literal):
@@ -1590,8 +1778,14 @@ class Interpreter:
                 return left >= right
             if operator == "in":
                 return left in right
-        except (TypeError, ZeroDivisionError) as error:
-            raise RuntimeErrorX(f"Invalid operands for '{operator}'") from error
+        except ZeroDivisionError as error:
+            raise RuntimeErrorX(
+                f"Division by zero for '{operator}'", "ArithmeticException"
+            ) from error
+        except TypeError as error:
+            raise RuntimeErrorX(
+                f"Invalid operands for '{operator}'", "TypeException"
+            ) from error
         raise RuntimeErrorX(f"Unknown binary operator '{operator}'")
 
     def _strict_equal(self, left: Any, right: Any) -> bool:
@@ -1772,6 +1966,18 @@ class Interpreter:
         name: str,
         access_context: XClass | None = None,
     ) -> Any:
+        if isinstance(object_value, XExceptionValue):
+            if name == "message":
+                return object_value.message
+            if name == "name":
+                return object_value.name
+            if name == "cause":
+                return object_value.cause
+            if name == "stack":
+                return object_value.stack
+            raise RuntimeErrorX(
+                f"{object_value.name} has no property '{name}'"
+            )
         if isinstance(object_value, XThreadHandle):
             if name == "join":
                 return BuiltinFunction(
@@ -1890,14 +2096,6 @@ class Interpreter:
                 return object_value.name
             if name == "value":
                 return object_value.value
-        if isinstance(object_value, XExceptionValue) and name == "message":
-            return object_value.message
-        if isinstance(object_value, XExceptionValue) and name == "name":
-            return object_value.name
-        if isinstance(object_value, XExceptionValue) and name == "cause":
-            return object_value.cause
-        if isinstance(object_value, XExceptionValue) and name == "stack":
-            return object_value.stack
         if isinstance(object_value, XClass):
             if name in object_value.nested_types:
                 nested_declaration = next(
@@ -2022,6 +2220,11 @@ class Interpreter:
     def _initialize_fields(self, instance: XInstance, xclass: XClass) -> None:
         if xclass.parent is not None:
             self._initialize_fields(instance, xclass.parent)
+        if xclass.is_exception_base:
+            instance.fields.setdefault("message", "")
+            instance.fields.setdefault("name", instance.xclass.name)
+            instance.fields.setdefault("cause", None)
+            instance.fields.setdefault("stack", "")
         for member in xclass.declaration.members:
             if isinstance(member, VariableDeclaration):
                 if "static" in member.modifiers:
@@ -2066,6 +2269,9 @@ class Interpreter:
         if isinstance(callee, XClass):
             return callee.construct(arguments)
         if isinstance(callee, XSuper):
+            if callee.parent_class.is_exception_base:
+                self._initialize_exception_instance(callee.instance, arguments)
+                return None
             constructors = callee.parent_class.find_constructors()
             if constructors:
                 constructor = self._select_overload(
@@ -2155,6 +2361,8 @@ class Interpreter:
                         score += parameter_score
                         argument_index += 1
                     break
+                if argument_index >= len(arguments):
+                    continue
                 parameter_score = self._type_match_score(
                     parameter.type_name, arguments[argument_index]
                 )
@@ -2179,10 +2387,18 @@ class Interpreter:
 
     def _accepts_argument_count(self, parameters: list[Any], argument_count: int) -> bool:
         has_rest_parameter = bool(parameters and parameters[-1].is_rest)
-        required_count = len(parameters) - (1 if has_rest_parameter else 0)
+        required_count = sum(
+            not parameter.is_rest
+            and not parameter.has_default
+            and not (
+                parameter.type_name is not None
+                and parameter.type_name.endswith("?")
+            )
+            for parameter in parameters
+        )
         if has_rest_parameter:
             return argument_count >= required_count
-        return argument_count == required_count
+        return required_count <= argument_count <= len(parameters)
 
     def _type_match_score(self, type_name: str | None, value: Any) -> int | None:
         if type_name is None or type_name == "var":
@@ -2228,7 +2444,8 @@ class Interpreter:
             return value
         if not isinstance(value, list):
             raise RuntimeErrorX(
-                f"Expected an array for {context} of type '{type_name}'"
+                f"Expected an array for {context} of type '{type_name}'",
+                "TypeException",
             )
 
         element_type = type_name[:-2]
@@ -2246,7 +2463,8 @@ class Interpreter:
                     actual_type = self._value_type_name(element)
                     raise RuntimeErrorX(
                         f"Expected '{element_type}' for {item_context}, "
-                        f"got '{actual_type}'"
+                        f"got '{actual_type}'",
+                        "TypeException",
                     )
                 checked_value = element
             checked_values.append(checked_value)
@@ -2259,7 +2477,8 @@ class Interpreter:
         if self._type_match_score(type_name, value) is None:
             actual_type = self._value_type_name(value)
             raise RuntimeErrorX(
-                f"Expected '{type_name}' for array item, got '{actual_type}'"
+                f"Expected '{type_name}' for array item, got '{actual_type}'",
+                "TypeException",
             )
         return value
 

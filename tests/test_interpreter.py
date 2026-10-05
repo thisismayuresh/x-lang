@@ -35,6 +35,70 @@ class InterpreterTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(output, ["Hello Ada"])
 
+    def test_default_and_nullable_parameters_can_be_omitted(self):
+        result, output = self.run_x(
+            """
+            class User {
+                public string id;
+                public User(string id) {
+                    this.id = id;
+                }
+            }
+            User function getUsers(string id = "10001") {
+                return User(id);
+            }
+            User? function getOptionalId(string? id) {
+                if (id == null) {
+                    return null;
+                }
+                return User(id);
+            }
+            integer function addOffset(integer value, integer offset = value + 1) {
+                return value + offset;
+            }
+            function main() {
+                print(getUsers().id);
+                print(getUsers("20002").id);
+                print(getOptionalId() == null);
+                print(getOptionalId(null) == null);
+                print(getOptionalId("30003").id);
+                print(addOffset(4));
+                print(addOffset(4, 10));
+                try {
+                    throw new DatabaseError("unknown database failure");
+                }
+                catch (Throwable error) {
+                    print(error.name);
+                }
+            }
+            """
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "10001",
+                "20002",
+                "true",
+                "true",
+                "30003",
+                "9",
+                "14",
+                "DatabaseError",
+            ],
+        )
+
+    def test_required_parameter_cannot_follow_optional_parameter(self):
+        with self.assertRaisesRegex(
+            ParseError, "Required parameters cannot follow optional parameters"
+        ):
+            self.run_x(
+                """
+                function invalid(string? optional, string required) {}
+                """
+            )
+
     def test_for_loop_range_and_command_line_arguments(self):
         result, output = self.run_x(
             """
@@ -182,6 +246,137 @@ class InterpreterTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(output, ["expected"])
+
+    def test_exception_hierarchy_catches_runtime_and_domain_errors(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                try {
+                    let integer value = 1 / 0;
+                }
+                catch (ArithmeticException error) {
+                    print(error.name + ": " + error.message);
+                    print(error.stack != "");
+                }
+                catch (Throwable error) {
+                    print("fallback");
+                }
+
+                try {
+                    let int[] invalidValues = [1, "bad"];
+                }
+                catch (TypeException error) {
+                    print(error.name);
+                }
+
+                try {
+                    throw new DatabaseException(
+                        "query failed",
+                        new IOException("connection unavailable")
+                    );
+                }
+                catch (Exception error) {
+                    print(error.name + ": " + error.message);
+                    print(error.cause.message);
+                }
+
+                try {
+                    throw new DatabaseError("database invariant failed");
+                }
+                catch (Error error) {
+                    print(error.name);
+                }
+            }
+            """
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "ArithmeticException: Division by zero for '/'",
+                "true",
+                "TypeException",
+                "DatabaseException: query failed",
+                "connection unavailable",
+                "DatabaseError",
+            ],
+        )
+
+    def test_custom_exception_classes_support_inheritance_and_super(self):
+        result, output = self.run_x(
+            """
+            class CustomException extends Exception {
+                public integer statusCode;
+                public CustomException(string message, integer statusCode) {
+                    super(message);
+                    this.statusCode = statusCode;
+                }
+            }
+            class BadRequestException extends CustomException {
+                public BadRequestException(string message) {
+                    super(message, 400);
+                }
+            }
+            class SimpleException extends Exception {}
+
+            function main() {
+                try {
+                    throw new BadRequestException("invalid user id");
+                }
+                catch (CustomException error) {
+                    print(error.name + ": " + error.message);
+                    print(error.statusCode);
+                    print(error.stack != "");
+                }
+
+                try {
+                    throw new SimpleException("simple custom error");
+                }
+                catch (Exception error) {
+                    print(error.name + ": " + error.message);
+                }
+            }
+            """
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "BadRequestException: invalid user id",
+                "400",
+                "true",
+                "SimpleException: simple custom error",
+            ],
+        )
+
+    def test_file_system_failures_are_catchable_as_io_or_file_system_errors(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            source_file = project_root / "main.x"
+            source_file.write_text(
+                """
+                import System.io.FileSystem
+                function main(string[] args) {
+                    try {
+                        FileSystem.readText(args[0]);
+                    }
+                    catch (IOException error) {
+                        print(error.name);
+                        print(error.stack != "");
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            missing_file = str(project_root / "not-found.txt")
+            program = ModuleLoader(project_root).load_program(source_file)
+            output = []
+            result = Interpreter([missing_file], output.append).interpret(program)
+
+        self.assertIsNone(result)
+        self.assertEqual(output, ["FileSystemException", "true"])
 
     def test_grouped_import_with_alias(self):
         with TemporaryDirectory() as temporary_directory:
@@ -596,7 +791,7 @@ class InterpreterTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(
             output,
-            ["RuntimeException", "Invalid operands for '-'", "finally"],
+            ["TypeException", "Invalid operands for '-'", "finally"],
         )
 
     def test_finally_runs_when_try_returns_and_when_catch_throws(self):

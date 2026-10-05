@@ -443,19 +443,42 @@ class Parser:
     def _parameters(self) -> list[Parameter]:
         self._consume("(", "Expected '(' before parameters")
         parameters: list[Parameter] = []
+        optional_parameter_seen = False
         if not self._check(")"):
             while True:
                 first = self._parse_type()
                 is_rest = self._match("...")
                 if is_rest:
                     self._require_feature("spread", self._previous())
+                name = None
                 if self._check("IDENTIFIER"):
                     name = self._advance().value
-                    parameters.append(Parameter(name, first, is_rest))
+                elif is_rest:
+                    raise ParseError(
+                        "Expected a name after rest parameter type", self._peek()
+                    )
                 else:
-                    if is_rest:
-                        raise ParseError("Expected a name after rest parameter type", self._peek())
-                    parameters.append(Parameter(first, None))
+                    name = first
+                    first = None
+
+                has_default = self._match("=")
+                if is_rest and has_default:
+                    raise ParseError(
+                        "Rest parameters cannot have default values", self._previous()
+                    )
+                default_value = self._expression() if has_default else None
+                optional_parameter = has_default or (
+                    first is not None and first.endswith("?")
+                )
+                if optional_parameter_seen and not (optional_parameter or is_rest):
+                    raise ParseError(
+                        "Required parameters cannot follow optional parameters",
+                        self._peek(),
+                    )
+                optional_parameter_seen = optional_parameter_seen or optional_parameter
+                parameters.append(
+                    Parameter(name, first, is_rest, default_value, has_default)
+                )
                 if is_rest and not self._check(")"):
                     raise ParseError("Rest parameter must be last", self._peek())
                 if not self._match(","):
