@@ -7,6 +7,7 @@ name = "x-language"
 version = "0.1.0"
 description = "A Python interpreter for the experimental X programming language"
 requires-python = ">=3.10"
+dependencies = ["tomli>=2; python_version < '3.11'"]
 
 [project.scripts]
 x = "xlang.cli:main"

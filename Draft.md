@@ -756,6 +756,10 @@ class Outer {
 }
 ```
 
+A class can extend a nested class through a dotted type path at any nesting
+depth, for example `class Child extends Outer.Middle.Deep.Base {}`. The same
+qualified path can be used with `new` and in a declared variable type.
+
 The fully qualified type is:
 
 ```
@@ -2986,7 +2990,6 @@ Potential future features include:
 
 - lambda expressions
 - closures
-- async/await
 - generators
 - pattern matching
 - destructuring
@@ -3180,6 +3183,506 @@ x run main.x argument1 argument2
 
 # End of X Language Specification — Draft 0.1
 
+---
+
+# Reference Interpreter Implementation Addendum
+
+This addendum documents experimental features implemented by the Python
+reference interpreter after the Draft 0.1 language proposal. These additions
+describe the current interpreter; they do not claim source compatibility with
+TypeScript or JavaScript and may change before a future X language edition.
+Project setup, the full implemented-feature list, and runnable command examples
+are maintained in `README.md`.
+
+## A.1 Implementation Architecture
+
+The interpreter follows this pipeline:
+
+```text
+CLI arguments and project root
+    |
+    v
+ModuleLoader: resolve project imports and recognize built-in modules
+    |
+    v
+Lexer: source text -> positioned tokens
+    |
+    v
+Parser: tokens -> AST
+    |
+    v
+Interpreter: register declarations and initialize module values
+    |
+    v
+Evaluator: execute statements and evaluate expressions
+    |
+    v
+Runtime values: environments, functions, classes, objects, enums, tasks, threads
+```
+
+The source responsibilities are:
+
+- `xlang/cli.py`: command parsing, source execution, diagnostics, exit status.
+- `xlang/module_loader.py`: project-relative import expansion and built-in
+  standard-library imports.
+- `xlang/lexer.py`: tokenization, keyword recognition, and source positions.
+- `xlang/parser.py`: recursive-descent declarations and statements, and
+  precedence-based expression parsing.
+- `xlang/ast_nodes.py`: dataclasses representing source syntax.
+- `xlang/runtime.py`: lexical environments, evaluation, class construction,
+  built-ins, filesystem operations, asynchronous work, and thread handles.
+
+The parser produces AST nodes. The interpreter first registers top-level
+functions, classes, and enums so declarations can refer to each other, then
+binds imports and initializes top-level variables. An environment stores local
+names and a link to its parent environment. Function-call environments link to
+the function's defining environment, providing lexical name lookup.
+
+The implementation is an interpreter, not a native compiler. `x check` parses
+the entry source and imports; `x build` currently performs this same check and
+does not emit machine code or bytecode. Declared X types guide syntax and
+runtime overload matching but are not checked by a static type checker.
+
+## A.2 Constructor and Parent-Class Semantics
+
+`new Type(arguments)` constructs a class instance. Construction allocates the
+instance, initializes parent fields before child fields, resolves the
+constructor by argument count and runtime argument types, executes it, and
+returns the instance.
+
+```x
+class User {
+    private string name;
+
+    public User(string name) {
+        this.name = name;
+    }
+}
+
+let User user = new User("Ada");
+```
+
+Calling a class as `User("Ada")` is also supported as a convenience and uses
+the same constructor dispatch.
+
+A derived constructor explicitly calls its parent constructor through
+`super(arguments...)`. A parent method is called through
+`super.method(arguments...)`.
+
+```x
+class Animal {
+    private string name;
+
+    public Animal(string name) {
+        this.name = name;
+    }
+
+    public string getName() {
+        return this.name;
+    }
+}
+
+class Dog extends Animal {
+    public Dog(string name) {
+        super(name);
+    }
+
+    public string speak() {
+        return super.getName() + " says woof";
+    }
+}
+
+let Dog dog = new Dog("Rex");
+```
+
+Parent constructor calls are explicit; the interpreter does not implicitly
+invoke a parent constructor. Abstract-class instantiation checks and full
+override validation are not implemented.
+
+## A.3 Rest and Spread
+
+X keeps its type-before-name parameter convention. The final parameter may be
+variadic by putting `...` before its name. The body receives that parameter as
+an array, including when no remaining arguments were passed.
+
+```x
+integer function sum(integer ...values) {
+    let integer total = 0;
+    for (integer value in values) {
+        total += value;
+    }
+    return total;
+}
+```
+
+Spread syntax expands arrays, tuples, or strings in array literals and call
+arguments. Strings expand to their characters.
+
+```x
+let integer[] values = [1, 2, 3];
+let integer[] combined = [0, ...values, 4];
+let integer total = sum(...combined);
+```
+
+Object literals support `...object` entries. Object spread copies fields from
+the source object; properties written later override earlier copied
+properties.
+
+```x
+let object defaults = {name: "Ada", role: "Engineer"};
+let object profile = {...defaults, role: "Architect"};
+```
+
+Object spread accepts object-literal maps and X instances' current fields. It
+does not invoke getters, copy methods, or clone nested values.
+
+## A.4 Iterable Loop Bindings
+
+The iterable loop accepts explicit type syntax and inferred declaration syntax:
+
+```x
+for (integer value in values) {
+    print(value);
+}
+
+for (let value in values) {
+    print(value);
+}
+
+for (const value in values) {
+    print(value);
+}
+```
+
+`const` loop bindings cannot be reassigned within their iteration body.
+
+## A.5 Asynchronous Functions
+
+`async function` declares an asynchronous function. Calling it returns an
+awaitable result. `await` evaluates an awaitable to its resolved value. An
+async `main` is automatically awaited by the interpreter.
+
+The built-in module is imported with:
+
+```x
+import System.concurrent.Async
+```
+
+`Async.delay(milliseconds, result?)` accepts a non-negative integer or
+floating-point duration, waits for it, and resolves to `result`, or `null` when
+no result is provided. `Async.all(awaitables)` accepts one array, waits for
+every awaitable concurrently, and returns values in the original input order.
+Non-awaitable values in that array pass through unchanged. `awaitable` is
+descriptive runtime terminology here, not a statically checked X type.
+
+```x
+import System.concurrent.Async
+
+async function load(string label, integer milliseconds) {
+    await Async.delay(milliseconds);
+    return label;
+}
+
+async function main() {
+    let string[] results = await Async.all([
+        load("first", 30),
+        load("second", 10)
+    ]);
+    print(results[0]);
+    print(results[1]);
+}
+```
+
+The interpreter's statement evaluator is synchronous. To support concurrent
+awaitables without making every evaluator operation asynchronous, an X async
+function's synchronous body runs on Python's worker-thread executor. Awaiting
+an X awaitable runs the Python asyncio coroutine; `Async.all` schedules all
+provided awaitables together. This is a prototype execution model, not the
+ECMAScript event loop, Promise job queue, or TypeScript type system. Async code
+is intended for overlapping awaitable/I/O-style work; it does not promise CPU
+parallelism.
+
+## A.6 OS Threads
+
+The built-in thread module is imported with:
+
+```x
+import System.concurrent.Thread
+```
+
+`Thread.start(function, arguments?)` starts a real Python operating-system
+thread that invokes an X function. The optional arguments value is an array;
+omitting it invokes the function with no arguments. It returns a thread handle.
+
+- `handle.join()` waits and returns the worker function's result.
+- `handle.join(timeoutSeconds)` waits for at most the timeout and returns
+  `null` if the thread is still running.
+- `handle.isAlive()` returns whether the thread is still active.
+- A worker failure is surfaced as an X runtime error when joining a completed
+  worker.
+
+Threads share the interpreter, environments, and mutable object instances. The
+runtime does not add synchronization around shared values and currently has no
+locks, atomics, cancellation, or thread-safe collection guarantees. Programs
+must avoid unsynchronized shared mutable state.
+
+## A.7 Demo Programs
+
+The repository's executable examples are:
+
+```text
+examples/
+├── configuration/
+│   └── configured_args.x
+├── control_flow/loops.x
+├── decorators/trace.x
+├── exceptions/try_catch_finally.x
+├── namespaces/nested_classes.x
+├── objects/destructuring.x
+├── pattern_matching/match.x
+├── errors/                  # deliberately failing diagnostic demonstrations
+├── async_demo.x
+├── filesystem_demo.x
+├── oop_demo.x
+├── queue_tests.x
+├── rest_spread_demo.x
+├── thread_demo.x
+└── queue/
+    ├── Queue.x
+    └── QueueDemo.x
+```
+
+Run from the repository root:
+
+```sh
+x run --profile feature-tour examples/configuration/configured_args.x
+x run examples/control_flow/loops.x
+x run examples/decorators/trace.x
+x run examples/exceptions/try_catch_finally.x
+x run examples/namespaces/nested_classes.x
+x run examples/objects/destructuring.x
+x run examples/pattern_matching/match.x
+x run examples/queue_tests.x Ada
+x run examples/filesystem_demo.x
+x run examples/oop_demo.x
+x run examples/rest_spread_demo.x
+x run examples/async_demo.x
+x run examples/thread_demo.x
+```
+
+These examples demonstrate grouped imports, generic classes, arrays,
+loop forms, matching and destructuring, decorators, namespaces, nested
+classes, enums, command-line arguments, queue tests, UTF-8 file operations,
+`new`, constructors, inheritance, `super`, rest and spread, async/await, and
+OS threads. Each example is implemented in X source and executed by the
+Python interpreter.
+
+## A.8 Current Boundaries
+
+The runtime features in this addendum do not imply implementation of every
+feature from the proposal. In particular, there is no static type checker,
+native backend, isolated module namespace, wildcard import implementation,
+full generic substitution, enforced interfaces/abstract methods, thread
+synchronization API, task cancellation, Promise rejection model, or
+binary-file API. Refer to `README.md` for the current tested feature inventory
+and API signatures.
+
 One important thing I changed from the earlier draft is that **`range(0, 10, 1)` is now explicitly defined as `0` through `9`** (end-exclusive), so the language standard isn't ambiguous there.
+
+## A.9 Additional Implemented Syntax and Runtime Contracts
+
+This section documents the implemented interpreter subset, rather than
+promising all ECMAScript, TypeScript, Java, or Rust semantics.
+
+### A.9.1 Integer alias and automatic statement termination
+
+`int` and `integer` are accepted as numeric type names and receive the same
+runtime overload score. A statement may omit `;` when the next token begins on
+a later source line, when the next token is `}`, or at EOF. Semicolons are
+still required between the clauses of a classic `for` loop. This is a
+statement-boundary rule, not a full ECMAScript ASI implementation. In
+particular, a following `(` or `[` may continue the previous expression;
+write an explicit semicolon when such a line could be ambiguous.
+
+```x
+int function main() {
+    let int count = 2
+    print(count)
+    return count
+}
+```
+
+### A.9.2 Destructuring, object literals, and Object helpers
+
+Array and object destructuring declarations support nesting, defaults for
+missing/null values, and rest bindings. Plain variable targets are supported
+in destructuring assignment; assignment targets such as `object.field` are
+not. Object literals accept identifier keys, quoted string keys, shorthand
+properties, and spread. Spread copies enumerable dictionary fields into a new
+object literal. They do not have JavaScript prototypes or property descriptors.
+
+```x
+const [head, fallback = 0, ...tail] = [10]
+const {name, role: title, ...metadata} = {
+    name: "Ada",
+    role: "engineer",
+    active: true
+}
+let first = 0
+let second = 0
+[first, second] = [1, 2]
+```
+
+The built-in `Object` namespace exposes `keys(object)`, `values(object)`,
+`entries(object)`, `assign(target, source...)`, and `hasOwn(object, key)`.
+These operations accept X object-literal dictionaries only. Computed keys,
+symbols, object prototypes, anonymous methods, getters/setters, and complete
+ECMAScript destructuring behavior are outside this implementation.
+
+### A.9.3 Loops and matching
+
+Supported loops are `while`, `do { ... } while (condition)`, classic
+`for (initializer; condition; increment)`, `for (let item of values)`, and
+`for (let key in object)`. In an `in` loop, maps and instances yield field
+names; other iterable values yield their values for compatibility with X's
+original typed `for (Type value in iterable)` form. `of` yields iterable
+values. Loop bindings may use array/object destructuring. `break` and
+`continue` are supported.
+
+`match expression { pattern => expression, ... }` supports `_`, bindings,
+primitive literals, enum members, array/object patterns, array/object rest,
+alternatives with `|`, and `if` guards. A match expression must include at
+least one arm; runtime selection is first-match-wins. The interpreter does not
+perform exhaustiveness or unreachable-arm analysis, and enum variants do not
+carry payloads.
+
+### A.9.4 Exceptions and equality
+
+`try` may have multiple ordered `catch` clauses, each optionally typed, and an
+optional `finally`. Catch types may be listed as a union using `|`. Thrown X
+values retain their value; supported interpreter/runtime failures are wrapped
+as `RuntimeException` values exposing `name`, `message`, `cause`, and `stack`.
+The first matching catch executes. Unmatched errors propagate, and `finally`
+runs during normal completion, thrown errors, and control-flow returns. This
+runtime exception hierarchy is intentionally smaller than Java's.
+
+`==` performs a limited conversion among `null`, booleans, numbers, and numeric
+strings. `===` does not convert types; arrays, dictionaries, instances,
+classes, and functions compare by reference identity. Enum members compare
+equal only when both the enum name and member name match, including for `==`;
+equal payload values from different enums are not equal.
+
+### A.9.5 Decorators, namespaces, and nested classes
+
+Decorators use `@decorator` syntax on functions, classes, constructors, and
+methods. They are evaluated when the declaration is registered, applied from
+bottom to top, and must return a function or class of the corresponding kind.
+The built-in `@trace` logs function calls and class construction. The runtime
+does not yet implement decorator metadata or property/field decorators.
+
+`namespace A.B { ... }` creates reopenable nested namespace scopes. Names are
+accessed by qualified member syntax, such as `A.B.make()`. Nested class
+declarations are members of an enclosing class and support lookup/construction
+as `Outer.Inner` and `new Outer.Inner(...)`. These scopes use the interpreter's
+chained `Environment` objects; they are not isolated compiled modules or
+access-control boundaries.
+
+### A.9.6 Interpreter architecture update
+
+Declaration registration builds top-level and nested `Environment` scopes.
+Function and class decorators execute during registration; class registration
+recursively registers nested classes and captures the class environment.
+Statement execution dispatches loops and try/catch/finally nodes through the
+same evaluator. Destructuring uses pattern AST nodes shared with `match`, but
+has a separate binding phase because declarations create names while
+assignments update existing names. Object helpers are built-in runtime
+functions, and ASI decisions use the source line/column positions retained on
+lexer tokens. The full implementation and runnable tests are in `xlang/` and
+`tests/test_interpreter.py`.
+
+## A.10 TOML Project Configuration and CLI Arguments
+
+The interpreter loads `x.toml` by searching upward from the working
+directory. An explicit `--config path/to/file.toml` selects a configuration;
+`--no-config` disables both explicit and discovered configuration. TOML is
+validated strictly: unknown section keys, unknown feature names, invalid
+value types, invalid color modes, and missing run profiles are reported as
+configuration errors. Python 3.11+ reads TOML with `tomllib`; Python 3.10 uses
+the conditional `tomli` dependency.
+
+The supported schema is:
+
+```toml
+[cli]
+default-command = "run" # run, check, or build; used by x file.x shorthand
+color = "auto"          # auto, always, or never
+
+[features]
+classes = true
+pattern_matching = false
+
+[run]
+args = ["configured", "value with spaces"]
+
+[run.environment]
+APP_MODE = "development"
+
+[run.profiles.test]
+args = ["test-only"]
+
+[run.profiles.test.environment]
+APP_MODE = "test"
+```
+
+Feature flags available in this implementation are `async`, `classes`,
+`decorators`, `destructuring`, `enums`, `equality`, `exceptions`, `filesystem`,
+`loops`, `namespaces`, `object_literals`, `pattern_matching`, `spread`, and
+`threads`; each is enabled by default. A flag set to `false` makes the parser
+reject corresponding syntax or prevents loading its standard-library module.
+For example, `--feature classes=off` overrides a TOML setting for one CLI
+invocation. `--feature NAME=on|off` may be repeated to set multiple flags.
+
+At runtime, arguments are concatenated in this order: `[run].args`, selected
+profile arguments, then command-line arguments after the `--` delimiter.
+Array entries are preserved as individual strings, including spaces.
+Configured environment values overlay the process environment, and profile
+values overlay base run values. X code reads an effective environment value
+directly as `System.Environment.NAME`, without importing the environment
+module or mutating the parent process. `System.Environment.has(name)` and
+`System.Environment.all()` are also available. Profiles are selected with
+`--profile NAME`.
+Explicit `run`, `check`, or `build` commands override `default-command`.
+
+## A.11 Access Modifiers, Final Classes, and Diagnostics
+
+Class properties and methods support enforced `public`, `protected`, and
+`private` access. No modifier means `public`. Private members are accessible
+only from code executing in their declaring class. Protected members are
+accessible from the declaring class and derived classes. These checks cover
+instance and static properties, assignments, method lookup, and nested class
+lookup. The prototype rejects `internal`: its module loader currently merges
+project declarations and has no module/package visibility boundary.
+
+`final class Name { ... }` prevents any later class declaration from extending
+`Name`; class registration reports the error before `main` begins. Static
+type-checking and access diagnostics at compile time are not provided; the
+interpreter detects illegal member access at runtime.
+
+Lexer, parser, runtime, and TOML errors are rendered with an error heading,
+source path, line and column when known, the relevant source line, and a
+caret. ANSI colors are enabled automatically on a terminal, can be forced
+with `--color always`, and can be disabled with `--color never` or `NO_COLOR`.
+Runtime errors use the beginning of the active statement as their location;
+the current AST does not track token spans for each expression.
+
+The intentionally invalid programs under `examples/errors/` show private
+member access, final-class extension, runtime arithmetic failure, and syntax
+error diagnostics.
+
+String values support integer indexing and `.length`. Indexes follow Python
+sequence behavior: each index is a Unicode code point, negative indexes count
+from the end, and out-of-range indexes raise a runtime error. Grapheme
+clusters are not counted, and this differs from JavaScript UTF-16 indexing for
+some Unicode characters.
 
 The next logical step is to turn this from a **feature-level specification into an actual implementable X v0.1 specification**: define the complete grammar and then design the Rust compiler's `lexer → parser → AST → type checker → interpreter` in detail.

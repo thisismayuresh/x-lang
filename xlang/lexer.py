@@ -12,30 +12,42 @@ class Token:
 
 
 class LexError(Exception):
-    def __init__(self, message: str, line: int, column: int) -> None:
-        super().__init__(f"{line}:{column}: {message}")
+    def __init__(
+        self,
+        message: str,
+        line: int,
+        column: int,
+        source_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
         self.line = line
         self.column = column
+        self.source_name = source_name
 
 
 KEYWORDS = {
-    "abstract", "as", "break", "catch", "class", "const", "continue",
-    "else", "enum", "extends", "false", "finally", "for", "function",
+    "abstract", "as", "async", "await", "break", "catch", "class", "const", "continue",
+    "do", "else", "enum", "extends", "false", "finally", "for", "function",
     "if", "implements", "import", "in", "interface", "internal", "let", "new",
-    "null", "package", "private", "protected", "public", "return",
+    "match", "namespace", "null", "of", "package", "private", "protected", "public", "return",
     "static", "super", "this", "throw", "true", "try", "type", "void",
-    "while", "export", "override", "virtual", "record",
+    "while", "export", "override", "virtual", "final",
 }
 
 MULTI_CHARACTER_TOKENS = (
+    "===", "!==",
+    "...",
+    "=>",
     "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=",
     "++", "--",
 )
 
 
 class Lexer:
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, source_name: str | None = None) -> None:
         self.source = source
+        self.source_name = source_name
         self.position = 0
         self.line = 1
         self.column = 1
@@ -85,11 +97,16 @@ class Lexer:
                     self._advance()
                 tokens.append(Token(matched_operator, matched_operator, start_line, start_column))
                 continue
-            if character in "{}()[];,.?:|+-*/%!=<>":
+            if character in "{}()[];,.?:|+-*/%!=<>@":
                 self._advance()
                 tokens.append(Token(character, character, start_line, start_column))
                 continue
-            raise LexError(f"Unexpected character {character!r}", self.line, self.column)
+            raise LexError(
+                f"Unexpected character {character!r}",
+                self.line,
+                self.column,
+                self.source_name,
+            )
 
         tokens.append(Token("EOF", "", self.line, self.column))
         return tokens
@@ -138,7 +155,12 @@ class Lexer:
         while not self._at_end() and self._peek() != quote:
             character = self._advance()
             if character == "\n":
-                raise LexError("String literal cannot contain a newline", self.line, self.column)
+                raise LexError(
+                    "String literal cannot contain a newline",
+                    self.line,
+                    self.column,
+                    self.source_name,
+                )
             if character == "\\":
                 if self._at_end():
                     break
@@ -152,16 +174,31 @@ class Lexer:
                     "'": "'",
                 }
                 if escaped not in escape_values:
-                    raise LexError(f"Unknown escape sequence \\{escaped}", self.line, self.column)
+                    raise LexError(
+                        f"Unknown escape sequence \\{escaped}",
+                        self.line,
+                        self.column,
+                        self.source_name,
+                    )
                 characters.append(escape_values[escaped])
             else:
                 characters.append(character)
         if self._at_end():
-            raise LexError("Unterminated string literal", self.line, self.column)
+            raise LexError(
+                "Unterminated string literal",
+                self.line,
+                self.column,
+                self.source_name,
+            )
         self._advance()
         value = "".join(characters)
         if quote == "'" and len(value) != 1:
-            raise LexError("Character literals must contain exactly one character", self.line, self.column)
+            raise LexError(
+                "Character literals must contain exactly one character",
+                self.line,
+                self.column,
+                self.source_name,
+            )
         return value
 
     def _skip_line_comment(self) -> None:
@@ -176,6 +213,11 @@ class Lexer:
         while not self._at_end() and not self._starts_with("*/"):
             self._advance()
         if self._at_end():
-            raise LexError("Unterminated block comment", start_line, start_column)
+            raise LexError(
+                "Unterminated block comment",
+                start_line,
+                start_column,
+                self.source_name,
+            )
         self._advance()
         self._advance()

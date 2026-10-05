@@ -21,9 +21,16 @@ class ImportAlias:
 
 
 @dataclass
+class NamespaceDeclaration:
+    name: str
+    declarations: list[Any]
+
+
+@dataclass
 class Parameter:
     name: str
     type_name: str | None
+    is_rest: bool = False
 
 
 @dataclass
@@ -34,6 +41,8 @@ class FunctionDeclaration:
     return_type: str | None = None
     modifiers: set[str] = field(default_factory=set)
     generic_parameters: list[str] = field(default_factory=list)
+    is_async: bool = False
+    decorators: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +52,7 @@ class VariableDeclaration:
     initializer: Any | None
     constant: bool = False
     modifiers: set[str] = field(default_factory=set)
+    pattern: Any | None = None
 
 
 @dataclass
@@ -52,6 +62,7 @@ class ClassDeclaration:
     parent_name: str | None = None
     modifiers: set[str] = field(default_factory=set)
     is_interface: bool = False
+    decorators: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -92,11 +103,80 @@ class WhileStatement:
 
 
 @dataclass
+class DoWhileStatement:
+    body: Block
+    condition: Any
+
+
+@dataclass
 class ForStatement:
     variable: str
     type_name: str | None
     iterable: Any
     body: Block
+    constant: bool = False
+    iteration_mode: str = "legacy"
+    binding_pattern: Any | None = None
+
+
+@dataclass
+class ClassicForStatement:
+    initializer: Any | None
+    condition: Any | None
+    increment: Any | None
+    body: Block
+
+
+@dataclass
+class MatchArm:
+    pattern: Any
+    guard: Any | None
+    body: Any
+
+
+@dataclass
+class MatchExpression:
+    value: Any
+    arms: list[MatchArm]
+
+
+@dataclass
+class WildcardPattern:
+    pass
+
+
+@dataclass
+class BindingPattern:
+    name: str
+
+
+@dataclass
+class LiteralPattern:
+    value: Any
+
+
+@dataclass
+class EnumPattern:
+    enum_name: str
+    member_name: str
+
+
+@dataclass
+class ArrayPattern:
+    items: list[Any]
+    rest_name: str | None = None
+
+
+@dataclass
+class ObjectPattern:
+    fields: list[tuple[str, Any]]
+    rest_name: str | None = None
+
+
+@dataclass
+class DefaultPattern:
+    pattern: Any
+    default_value: Any
 
 
 @dataclass
@@ -138,7 +218,17 @@ class ArrayLiteral:
 
 @dataclass
 class ObjectLiteral:
-    fields: dict[str, Any]
+    entries: list[tuple[str | None, Any]]
+
+
+@dataclass
+class Spread:
+    value: Any
+
+
+@dataclass
+class AwaitExpression:
+    value: Any
 
 
 @dataclass

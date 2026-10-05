@@ -1,31 +1,48 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
+import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from .ast_nodes import (
     ArrayLiteral,
     Assignment,
+    AwaitExpression,
     Binary,
     Block,
     BreakStatement,
     Call,
     ClassDeclaration,
+    ClassicForStatement,
+    DoWhileStatement,
+    DefaultPattern,
     EnumDeclaration,
     ExpressionStatement,
     ForStatement,
     FunctionDeclaration,
+    ImportDeclaration,
     ImportAlias,
     Identifier,
     IfStatement,
     Index,
     Literal,
+    LiteralPattern,
+    MatchExpression,
     Member,
     NewExpression,
+    NamespaceDeclaration,
     ObjectLiteral,
     Program,
     ReturnStatement,
+    Spread,
+    ArrayPattern,
+    BindingPattern,
+    EnumPattern,
+    ObjectPattern,
     ThisExpression,
     ThrowStatement,
     TryStatement,
@@ -33,11 +50,18 @@ from .ast_nodes import (
     Unary,
     VariableDeclaration,
     WhileStatement,
+    WildcardPattern,
 )
+from .config import XConfig
 
 
 class RuntimeErrorX(Exception):
-    pass
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.line: int | None = None
+        self.column: int | None = None
+        self.source_name: str | None = None
 
 
 class ReturnSignal(Exception):
@@ -51,8 +75,17 @@ class LoopSignal(Exception):
 
 
 class ThrownValue(Exception):
-    def __init__(self, value: Any) -> None:
+    def __init__(
+        self,
+        value: Any,
+        source_name: str | None = None,
+        line: int | None = None,
+        column: int | None = None,
+    ) -> None:
         self.value = value
+        self.line = line
+        self.column = column
+        self.source_name = source_name
 
 
 class Environment:
@@ -60,13 +93,22 @@ class Environment:
         self.parent = parent
         self.values: dict[str, Any] = {}
         self.constants: set[str] = set()
+        self.array_types: dict[str, str] = {}
 
-    def define(self, name: str, value: Any, constant: bool = False) -> None:
+    def define(
+        self,
+        name: str,
+        value: Any,
+        constant: bool = False,
+        array_type: str | None = None,
+    ) -> None:
         if name in self.values:
             raise RuntimeErrorX(f"'{name}' is already declared in this scope")
         self.values[name] = value
         if constant:
             self.constants.add(name)
+        if array_type is not None:
+            self.array_types[name] = array_type
 
     def get(self, name: str) -> Any:
         if name in self.values:
@@ -74,6 +116,13 @@ class Environment:
         if self.parent is not None:
             return self.parent.get(name)
         raise RuntimeErrorX(f"Name '{name}' is not defined")
+
+    def get_array_type(self, name: str) -> str | None:
+        if name in self.values:
+            return self.array_types.get(name)
+        if self.parent is not None:
+            return self.parent.get_array_type(name)
+        return None
 
     def assign(self, name: str, value: Any) -> None:
         if name in self.values:
@@ -87,6 +136,41 @@ class Environment:
         raise RuntimeErrorX(f"Cannot assign to undefined name '{name}'")
 
 
+class XArray(list[Any]):
+    def __init__(
+        self,
+        values: list[Any],
+        element_type: str,
+        validate_value: Callable[[str, Any], Any],
+    ) -> None:
+        super().__init__(values)
+        self.element_type = element_type
+        self.validate_value = validate_value
+
+    def append(self, value: Any) -> None:
+        super().append(self.validate_value(self.element_type, value))
+
+    def extend(self, values: Any) -> None:
+        for value in values:
+            self.append(value)
+
+    def insert(self, index: int, value: Any) -> None:
+        super().insert(index, self.validate_value(self.element_type, value))
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        if isinstance(index, slice):
+            validated_values = [
+                self.validate_value(self.element_type, item) for item in value
+            ]
+            super().__setitem__(index, validated_values)
+            return
+        super().__setitem__(index, self.validate_value(self.element_type, value))
+
+    def __iadd__(self, values: Any) -> XArray:
+        self.extend(values)
+        return self
+
+
 @dataclass
 class XFunction:
     declaration: FunctionDeclaration
@@ -94,26 +178,69 @@ class XFunction:
     interpreter: Interpreter
     bound_this: Any = None
     parent_class: XClass | None = None
+    traced: bool = False
 
     def call(self, arguments: list[Any]) -> Any:
-        if len(arguments) != len(self.declaration.parameters):
+        if self.declaration.is_async:
+            return self._call_async(arguments)
+        return self._call_sync(arguments)
+
+    async def _call_async(self, arguments: list[Any]) -> Any:
+        return await asyncio.to_thread(self._call_sync, arguments)
+
+    def _call_sync(self, arguments: list[Any]) -> Any:
+        if self.traced:
+            self.interpreter.output(f"Calling {self.declaration.name}")
+        parameters = self.declaration.parameters
+        has_rest_parameter = bool(parameters and parameters[-1].is_rest)
+        required_count = len(parameters) - (1 if has_rest_parameter else 0)
+        if len(arguments) < required_count or (
+            not has_rest_parameter and len(arguments) != len(parameters)
+        ):
             raise RuntimeErrorX(
                 f"'{self.declaration.name}' expects "
-                f"{len(self.declaration.parameters)} argument(s), got {len(arguments)}"
+                f"{required_count}"
+                f"{' or more' if has_rest_parameter else ''} argument(s), "
+                f"got {len(arguments)}"
             )
         call_environment = Environment(self.closure)
+        if self.parent_class is not None:
+            call_environment.define("__x_current_class__", self.parent_class)
         if self.bound_this is not None:
             call_environment.define("this", self.bound_this)
             if self.parent_class is not None and self.parent_class.parent is not None:
                 call_environment.define(
                     "super", XSuper(self.bound_this, self.parent_class.parent)
                 )
-        for parameter, argument in zip(self.declaration.parameters, arguments):
-            call_environment.define(parameter.name, argument)
+        for parameter_index, parameter in enumerate(parameters):
+            if parameter.is_rest:
+                call_environment.define(parameter.name, arguments[parameter_index:])
+            else:
+                argument_value = arguments[parameter_index]
+                if parameter.type_name is not None:
+                    argument_value = self.interpreter._coerce_typed_array(
+                        parameter.type_name,
+                        argument_value,
+                        f"parameter '{parameter.name}'",
+                    )
+                parameter_array_type = (
+                    parameter.type_name
+                    if parameter.type_name is not None
+                    and parameter.type_name.endswith("[]")
+                    else None
+                )
+                call_environment.define(
+                    parameter.name,
+                    argument_value,
+                    array_type=parameter_array_type,
+                )
         try:
             self.interpreter._execute_block(self.declaration.body, call_environment)
         except ReturnSignal as returned:
             return returned.value
+        except (RuntimeErrorX, ThrownValue) as error:
+            self.interpreter.annotate_error(error)
+            raise
         return None
 
 @dataclass
@@ -129,6 +256,9 @@ class XClass:
     closure: Environment
     parent: XClass | None = None
     static_fields: dict[str, Any] = field(default_factory=dict)
+    nested_types: dict[str, XClass] = field(default_factory=dict)
+    traced: bool = False
+    enclosing_class: XClass | None = None
 
     @property
     def name(self) -> str:
@@ -162,12 +292,20 @@ class XClass:
         ]
 
     def construct(self, arguments: list[Any]) -> XInstance:
+        if self.traced:
+            self.interpreter.output(f"Constructing {self.name}")
         instance = XInstance(self)
         self.interpreter._initialize_fields(instance, self)
         constructors = self.find_constructors()
         if constructors:
             constructor = self.interpreter._select_overload(self.name, constructors, arguments)
-            XFunction(constructor, self.closure, self.interpreter, instance, self).call(arguments)
+            constructor_function = XFunction(
+                constructor, self.closure, self.interpreter, instance, self
+            )
+            constructor_function = self.interpreter._apply_function_decorators(
+                constructor.decorators, constructor_function, self.closure
+            )
+            constructor_function.call(arguments)
         elif arguments:
             raise RuntimeErrorX(
                 f"'{self.name}' has no constructor accepting {len(arguments)} argument(s)"
@@ -195,6 +333,16 @@ class XEnumMember:
 @dataclass
 class XExceptionValue:
     message: str
+    name: str = "Exception"
+    cause: Any = None
+    stack: str = ""
+
+
+@dataclass
+class XThreadHandle:
+    thread: threading.Thread
+    result_value: Any = None
+    error: BaseException | None = None
 
 
 class Interpreter:
@@ -202,7 +350,14 @@ class Interpreter:
         self,
         arguments: list[str] | None = None,
         output: Callable[[str], None] = print,
+        config: XConfig | None = None,
+        environment: dict[str, str] | None = None,
     ) -> None:
+        self.config = config or XConfig()
+        self.environment = dict(os.environ)
+        if environment is not None:
+            self.environment.update(environment)
+        self.current_location: tuple[str | None, int | None, int | None] | None = None
         self.globals = Environment()
         self.output = output
         self._install_builtins(arguments or [])
@@ -216,6 +371,8 @@ class Interpreter:
                 self._define_class(declaration, self.globals)
             elif isinstance(declaration, EnumDeclaration):
                 self._define_enum(declaration, self.globals)
+            elif isinstance(declaration, NamespaceDeclaration):
+                self._define_namespace(declaration, self.globals)
 
         for declaration in declarations:
             if isinstance(declaration, ImportAlias):
@@ -242,13 +399,22 @@ class Interpreter:
             main_function = valid_entries[0]
             if len(main_function.declaration.parameters) == 1:
                 arguments = self.globals.get("args")
-                return self._select_overload("main", [main_function], [arguments]).call(
+                result = self._select_overload("main", [main_function], [arguments]).call(
                     [arguments]
                 )
+                if inspect.isawaitable(result):
+                    return asyncio.run(self._await_result(result))
+                return result
             if main_function.declaration.parameters:
                 raise RuntimeErrorX("main may accept zero parameters or one string[] parameter")
-            return main_function.call([])
+            result = main_function.call([])
+            if inspect.isawaitable(result):
+                return asyncio.run(self._await_result(result))
+            return result
         return None
+
+    async def _await_result(self, awaitable: Awaitable[Any]) -> Any:
+        return await awaitable
 
     def _resolve_import(self, qualified_name: str) -> Any:
         parts = qualified_name.split(".")
@@ -262,11 +428,185 @@ class Interpreter:
         self.globals.define("print", BuiltinFunction("print", self._builtin_print))
         self.globals.define("range", BuiltinFunction("range", self._builtin_range))
         self.globals.define("Exception", BuiltinFunction("Exception", self._builtin_exception))
+        if self.config.enabled("decorators"):
+            self.globals.define("trace", BuiltinFunction("trace", self._builtin_trace))
+        if self.config.enabled("object_literals"):
+            self.globals.define("Object", self._object_members())
         system_namespace = Environment()
         io_namespace = Environment(system_namespace)
-        io_namespace.define("FileSystem", self._filesystem_members())
+        if self.config.enabled("filesystem"):
+            io_namespace.define("FileSystem", self._filesystem_members())
         system_namespace.define("io", io_namespace)
+        concurrent_namespace = Environment(system_namespace)
+        if self.config.enabled("threads"):
+            concurrent_namespace.define("Thread", self._thread_members())
+        if self.config.enabled("async"):
+            concurrent_namespace.define("Async", self._async_members())
+        system_namespace.define("concurrent", concurrent_namespace)
+        environment_namespace = Environment(system_namespace)
+        environment_namespace.define(
+            "has", BuiltinFunction("Environment.has", self._environment_has)
+        )
+        environment_namespace.define(
+            "all", BuiltinFunction("Environment.all", self._environment_all)
+        )
+        for name, value in self.environment.items():
+            environment_namespace.values[name] = value
+        system_namespace.define("Environment", environment_namespace)
         self.globals.define("System", system_namespace)
+
+    def _environment_has(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1 or not isinstance(arguments[0], str):
+            raise RuntimeErrorX("Environment.has expects one string key")
+        return arguments[0] in self.environment
+
+    def _environment_all(self, arguments: list[Any]) -> dict[str, str]:
+        if arguments:
+            raise RuntimeErrorX("Environment.all expects no arguments")
+        return dict(self.environment)
+
+    def annotate_error(self, error: RuntimeErrorX | ThrownValue) -> None:
+        if self.current_location is None or error.line is not None:
+            return
+        source_name, line, column = self.current_location
+        error.source_name = source_name
+        error.line = line
+        error.column = column
+
+    def _builtin_trace(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("@trace expects one function or class")
+        target = arguments[0]
+        if isinstance(target, XFunction):
+            target.traced = True
+            return target
+        if isinstance(target, XClass):
+            target.traced = True
+            return target
+        raise RuntimeErrorX("@trace can only decorate a function or class")
+
+    def _object_members(self) -> Environment:
+        object_namespace = Environment()
+        object_namespace.define("keys", BuiltinFunction("Object.keys", self._object_keys))
+        object_namespace.define(
+            "values", BuiltinFunction("Object.values", self._object_values)
+        )
+        object_namespace.define(
+            "entries", BuiltinFunction("Object.entries", self._object_entries)
+        )
+        object_namespace.define(
+            "assign", BuiltinFunction("Object.assign", self._object_assign)
+        )
+        object_namespace.define(
+            "hasOwn", BuiltinFunction("Object.hasOwn", self._object_has_own)
+        )
+        return object_namespace
+
+    def _object_record(self, operation: str, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) != 1 or not isinstance(arguments[0], dict):
+            raise RuntimeErrorX(f"Object.{operation} expects one object")
+        return arguments[0]
+
+    def _object_keys(self, arguments: list[Any]) -> list[str]:
+        return list(self._object_record("keys", arguments).keys())
+
+    def _object_values(self, arguments: list[Any]) -> list[Any]:
+        return list(self._object_record("values", arguments).values())
+
+    def _object_entries(self, arguments: list[Any]) -> list[list[Any]]:
+        return [
+            [key, value]
+            for key, value in self._object_record("entries", arguments).items()
+        ]
+
+    def _object_assign(self, arguments: list[Any]) -> dict[str, Any]:
+        if not arguments or not isinstance(arguments[0], dict):
+            raise RuntimeErrorX("Object.assign expects a target object")
+        target = arguments[0]
+        for source in arguments[1:]:
+            if not isinstance(source, dict):
+                raise RuntimeErrorX("Object.assign sources must be objects")
+            target.update(source)
+        return target
+
+    def _object_has_own(self, arguments: list[Any]) -> bool:
+        if (
+            len(arguments) != 2
+            or not isinstance(arguments[0], dict)
+            or not isinstance(arguments[1], str)
+        ):
+            raise RuntimeErrorX("Object.hasOwn expects an object and a string key")
+        return arguments[1] in arguments[0]
+
+    def _thread_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "start": BuiltinFunction("Thread.start", self._thread_start),
+        }
+
+    def _async_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "delay": BuiltinFunction("Async.delay", self._async_delay),
+            "all": BuiltinFunction("Async.all", self._async_all),
+        }
+
+    def _thread_start(self, arguments: list[Any]) -> XThreadHandle:
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX("Thread.start expects a function and optional argument array")
+        function = arguments[0]
+        function_arguments = [] if len(arguments) == 1 else arguments[1]
+        if not isinstance(function, (XFunction, OverloadedFunction)):
+            raise RuntimeErrorX("Thread.start expects an X function")
+        if not isinstance(function_arguments, list):
+            raise RuntimeErrorX("Thread.start arguments must be an array")
+
+        handle = XThreadHandle(threading.Thread())
+
+        def run_thread() -> None:
+            try:
+                thread_result = self._call(function, function_arguments)
+                if inspect.isawaitable(thread_result):
+                    thread_result = asyncio.run(self._await_result(thread_result))
+                handle.result_value = thread_result
+            except Exception as error:
+                handle.error = error
+
+        handle.thread = threading.Thread(target=run_thread, daemon=False)
+        handle.thread.start()
+        return handle
+
+    def _async_delay(self, arguments: list[Any]) -> Any:
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX("Async.delay expects milliseconds and optional result")
+        milliseconds = arguments[0]
+        if not isinstance(milliseconds, (int, float)) or isinstance(milliseconds, bool):
+            raise RuntimeErrorX("Async.delay duration must be a number of milliseconds")
+        if milliseconds < 0:
+            raise RuntimeErrorX("Async.delay duration cannot be negative")
+        result = None if len(arguments) == 1 else arguments[1]
+
+        async def delay() -> Any:
+            await asyncio.sleep(milliseconds / 1000)
+            return result
+
+        return delay()
+
+    def _async_all(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1 or not isinstance(arguments[0], list):
+            raise RuntimeErrorX("Async.all expects one array of async results")
+        tasks = arguments[0]
+
+        async def wait_for_all() -> list[Any]:
+            resolved_values: list[Any] = []
+            for task in tasks:
+                if inspect.isawaitable(task):
+                    resolved_values.append(task)
+                else:
+                    async def resolved(value: Any = task) -> Any:
+                        return value
+                    resolved_values.append(resolved())
+            return list(await asyncio.gather(*resolved_values))
+
+        return wait_for_all()
 
     def _filesystem_members(self) -> dict[str, BuiltinFunction]:
         return {
@@ -426,51 +766,193 @@ class Interpreter:
         return XExceptionValue(self._stringify(arguments[0]))
 
     def _define_function(self, declaration: FunctionDeclaration, environment: Environment) -> None:
+        self._set_declaration_location(declaration)
         function = XFunction(declaration, environment, self)
+        function = self._apply_function_decorators(
+            declaration.decorators, function, environment
+        )
         existing = environment.values.get(declaration.name)
         if existing is None:
             environment.define(declaration.name, [function])
         else:
-            if not isinstance(existing, list) or any(not isinstance(item, XFunction) for item in existing):
+            if not isinstance(existing, list) or any(
+                not isinstance(item, XFunction) for item in existing
+            ):
                 raise RuntimeErrorX(f"'{declaration.name}' is already declared")
             existing.append(function)
 
-    def _define_class(self, declaration: ClassDeclaration, environment: Environment) -> None:
+    def _apply_function_decorators(
+        self, decorators: list[Any], function: XFunction, environment: Environment
+    ) -> XFunction:
+        decorated_function = function
+        for decorator_expression in reversed(decorators):
+            decorator = self._evaluate(decorator_expression, environment)
+            decorated_value = self._call(decorator, [decorated_function])
+            if not isinstance(decorated_value, XFunction):
+                raise RuntimeErrorX(
+                    f"Decorator for '{function.declaration.name}' must return a function"
+                )
+            decorated_function = decorated_value
+        return decorated_function
+
+    def _define_namespace(
+        self, declaration: NamespaceDeclaration, environment: Environment
+    ) -> None:
+        namespace_environment = environment
+        for name in declaration.name.split("."):
+            existing_value = namespace_environment.values.get(name)
+            if existing_value is None:
+                nested_environment = Environment(namespace_environment)
+                namespace_environment.define(name, nested_environment)
+                namespace_environment = nested_environment
+            elif isinstance(existing_value, Environment):
+                namespace_environment = existing_value
+            else:
+                raise RuntimeErrorX(
+                    f"Cannot declare namespace '{declaration.name}': '{name}' is not a namespace"
+                )
+
+        for nested_declaration in declaration.declarations:
+            if isinstance(nested_declaration, FunctionDeclaration):
+                self._define_function(nested_declaration, namespace_environment)
+            elif isinstance(nested_declaration, ClassDeclaration):
+                self._define_class(nested_declaration, namespace_environment)
+            elif isinstance(nested_declaration, EnumDeclaration):
+                self._define_enum(nested_declaration, namespace_environment)
+            elif isinstance(nested_declaration, NamespaceDeclaration):
+                self._define_namespace(nested_declaration, namespace_environment)
+            elif isinstance(nested_declaration, ImportDeclaration):
+                raise RuntimeErrorX(
+                    "Imports inside namespace blocks are not supported; import at module scope"
+                )
+
+        for nested_declaration in declaration.declarations:
+            if isinstance(nested_declaration, VariableDeclaration):
+                self._execute(nested_declaration, namespace_environment)
+
+    def _define_class(
+        self,
+        declaration: ClassDeclaration,
+        environment: Environment,
+        enclosing_class: XClass | None = None,
+    ) -> None:
+        self._set_declaration_location(declaration)
         parent = None
         if declaration.parent_name:
-            parent_value = environment.get(declaration.parent_name.split(".")[-1])
+            parent_value = self._resolve_name(environment, declaration.parent_name)
             if not isinstance(parent_value, XClass):
                 raise RuntimeErrorX(f"Parent type '{declaration.parent_name}' is not a class")
+            if "final" in parent_value.declaration.modifiers:
+                final_class_error = RuntimeErrorX(
+                    f"Cannot extend final class '{parent_value.name}'"
+                )
+                self.annotate_error(final_class_error)
+                raise final_class_error
             parent = parent_value
-        environment.define(
-            declaration.name,
-            XClass(declaration, self, environment, parent),
+        class_environment = Environment(environment)
+        xclass = XClass(
+            declaration,
+            self,
+            class_environment,
+            parent,
+            enclosing_class=enclosing_class,
         )
-        xclass = environment.get(declaration.name)
-        if isinstance(xclass, XClass):
-            for member in declaration.members:
+        environment.define(declaration.name, xclass)
+        class_environment.define(declaration.name, xclass)
+        class_environment.define("__x_current_class__", xclass)
+        for member in declaration.members:
+            if isinstance(member, ClassDeclaration):
+                self._define_class(member, class_environment, xclass)
+                nested_class = class_environment.get(member.name)
+                if isinstance(nested_class, XClass):
+                    xclass.nested_types[member.name] = nested_class
+            elif isinstance(member, VariableDeclaration) and "static" in member.modifiers:
+                value = None if member.initializer is None else self._evaluate(
+                    member.initializer,
+                    self._field_initializer_environment(xclass, member),
+                )
                 if (
-                    isinstance(member, VariableDeclaration)
-                    and "static" in member.modifiers
+                    member.type_name is not None
+                    and member.type_name.endswith("[]")
+                    and member.initializer is not None
                 ):
-                    value = None if member.initializer is None else self._evaluate(
-                        member.initializer, environment
+                    value = self._coerce_typed_array(
+                        member.type_name,
+                        value,
+                        f"property '{xclass.name}.{member.name}'",
                     )
-                    xclass.static_fields[member.name] = value
+                xclass.static_fields[member.name] = value
+
+        decorated_class = xclass
+        for decorator_expression in reversed(declaration.decorators):
+            decorator = self._evaluate(decorator_expression, environment)
+            decorated_value = self._call(decorator, [decorated_class])
+            if not isinstance(decorated_value, XClass):
+                raise RuntimeErrorX(
+                    f"Decorator for class '{declaration.name}' must return a class"
+                )
+            decorated_class = decorated_value
+        environment.values[declaration.name] = decorated_class
+        class_environment.values[declaration.name] = decorated_class
+
+    def _resolve_name(self, environment: Environment, qualified_name: str) -> Any:
+        parts = qualified_name.split(".")
+        value = environment.get(parts[0])
+        for part in parts[1:]:
+            value = self._get_member(value, part)
+        return value
 
     def _define_enum(self, declaration: EnumDeclaration, environment: Environment) -> None:
+        self._set_declaration_location(declaration)
         enum_values = Environment()
         for index, (name, expression) in enumerate(declaration.members):
             value = index if expression is None else self._evaluate(expression, environment)
             enum_values.define(name, XEnumMember(declaration.name, name, value))
         environment.define(declaration.name, enum_values)
 
+    def _set_declaration_location(self, declaration: Any) -> None:
+        declaration_line = getattr(declaration, "line", None)
+        if declaration_line is None:
+            return
+        self.current_location = (
+            getattr(declaration, "source_name", None),
+            declaration_line,
+            getattr(declaration, "column", None),
+        )
+
     def _execute(self, statement: Any, environment: Environment) -> None:
+        statement_line = getattr(statement, "line", None)
+        if statement_line is not None:
+            self.current_location = (
+                getattr(statement, "source_name", None),
+                statement_line,
+                getattr(statement, "column", None),
+            )
         if isinstance(statement, Block):
             self._execute_block(statement.statements, Environment(environment))
         elif isinstance(statement, VariableDeclaration):
             value = None if statement.initializer is None else self._evaluate(statement.initializer, environment)
-            environment.define(statement.name, value, statement.constant)
+            if statement.pattern is not None:
+                self._bind_destructuring(
+                    statement.pattern, value, environment, statement.constant
+                )
+            else:
+                array_type = (
+                    statement.type_name
+                    if statement.type_name is not None
+                    and statement.type_name.endswith("[]")
+                    else None
+                )
+                if array_type is not None and statement.initializer is not None:
+                    value = self._coerce_typed_array(
+                        array_type, value, f"variable '{statement.name}'"
+                    )
+                environment.define(
+                    statement.name,
+                    value,
+                    statement.constant,
+                    array_type=array_type,
+                )
         elif isinstance(statement, ExpressionStatement):
             self._evaluate(statement.expression, environment)
         elif isinstance(statement, IfStatement):
@@ -480,8 +962,12 @@ class Interpreter:
                 self._execute(statement.else_branch, environment)
         elif isinstance(statement, WhileStatement):
             self._execute_while(statement, environment)
+        elif isinstance(statement, DoWhileStatement):
+            self._execute_do_while(statement, environment)
         elif isinstance(statement, ForStatement):
             self._execute_for(statement, environment)
+        elif isinstance(statement, ClassicForStatement):
+            self._execute_classic_for(statement, environment)
         elif isinstance(statement, ReturnStatement):
             value = None if statement.value is None else self._evaluate(statement.value, environment)
             raise ReturnSignal(value)
@@ -506,61 +992,217 @@ class Interpreter:
                 if not loop_signal.is_continue:
                     break
 
+    def _execute_do_while(
+        self, statement: DoWhileStatement, environment: Environment
+    ) -> None:
+        while True:
+            should_continue = True
+            try:
+                self._execute_block(statement.body.statements, Environment(environment))
+            except LoopSignal as loop_signal:
+                should_continue = loop_signal.is_continue
+            if not should_continue:
+                break
+            if not self._is_truthy(self._evaluate(statement.condition, environment)):
+                break
+
     def _execute_for(self, statement: ForStatement, environment: Environment) -> None:
         iterable = self._evaluate(statement.iterable, environment)
-        try:
-            iterator = iter(iterable)
-        except TypeError as error:
-            raise RuntimeErrorX("Value in for loop is not iterable") from error
+        if statement.iteration_mode == "in":
+            if isinstance(iterable, dict):
+                iterator = iter(iterable.keys())
+            elif isinstance(iterable, XInstance):
+                iterator = iter(iterable.fields.keys())
+            else:
+                try:
+                    iterator = iter(iterable)
+                except TypeError as error:
+                    raise RuntimeErrorX(
+                        "for-in requires an object or iterable value"
+                    ) from error
+        else:
+            try:
+                iterator = iter(iterable)
+            except TypeError as error:
+                raise RuntimeErrorX("Value in for loop is not iterable") from error
         for value in iterator:
             loop_environment = Environment(environment)
-            loop_environment.define(statement.variable, value)
+            if statement.binding_pattern is not None:
+                self._bind_destructuring(
+                    statement.binding_pattern,
+                    value,
+                    loop_environment,
+                    statement.constant,
+                )
+            else:
+                loop_environment.define(
+                    statement.variable, value, constant=statement.constant
+                )
             try:
                 self._execute_block(statement.body.statements, loop_environment)
             except LoopSignal as loop_signal:
                 if not loop_signal.is_continue:
                     break
 
+    def _execute_classic_for(
+        self, statement: ClassicForStatement, environment: Environment
+    ) -> None:
+        loop_environment = Environment(environment)
+        if statement.initializer is not None:
+            self._execute(statement.initializer, loop_environment)
+        while statement.condition is None or self._is_truthy(
+            self._evaluate(statement.condition, loop_environment)
+        ):
+            should_break = False
+            try:
+                self._execute_block(statement.body.statements, loop_environment)
+            except LoopSignal as loop_signal:
+                should_break = not loop_signal.is_continue
+            if should_break:
+                break
+            if statement.increment is not None:
+                self._evaluate(statement.increment, loop_environment)
+
     def _execute_try(self, statement: TryStatement, environment: Environment) -> None:
+        pending_error: BaseException | None = None
         try:
             self._execute_block(statement.body.statements, Environment(environment))
         except ThrownValue as thrown:
-            handled = False
-            for catch_type, catch_name, catch_body in statement.catches:
-                if self._exception_matches(thrown.value, catch_type):
-                    catch_environment = Environment(environment)
-                    catch_environment.define(catch_name, thrown.value)
-                    self._execute_block(catch_body.statements, catch_environment)
-                    handled = True
-                    break
-            if not handled:
-                raise
+            self.annotate_error(thrown)
+            pending_error = thrown
+            self._run_matching_catch(
+                thrown.value, statement.catches, environment, thrown
+            )
+            pending_error = None
+        except RuntimeErrorX as error:
+            self.annotate_error(error)
+            runtime_value = XExceptionValue(str(error), "RuntimeException", error)
+            pending_error = error
+            self._run_matching_catch(
+                runtime_value, statement.catches, environment, error
+            )
+            pending_error = None
+        except (ArithmeticError, TypeError, ValueError, IndexError, KeyError) as error:
+            wrapped_error = RuntimeErrorX(str(error))
+            self.annotate_error(wrapped_error)
+            runtime_value = XExceptionValue(
+                str(error), "RuntimeException", wrapped_error
+            )
+            pending_error = wrapped_error
+            self._run_matching_catch(
+                runtime_value, statement.catches, environment, wrapped_error
+            )
+            pending_error = None
         finally:
             if statement.finally_body is not None:
                 self._execute_block(statement.finally_body.statements, Environment(environment))
 
+        if pending_error is not None:
+            raise pending_error
+
+    def _run_matching_catch(
+        self,
+        value: Any,
+        catches: list[tuple[str | None, str, Block]],
+        environment: Environment,
+        source_error: RuntimeErrorX | ThrownValue | None = None,
+    ) -> None:
+        for catch_type, catch_name, catch_body in catches:
+            if self._exception_matches(value, catch_type):
+                catch_environment = Environment(environment)
+                catch_environment.define(catch_name, value)
+                self._execute_block(catch_body.statements, catch_environment)
+                return
+        if isinstance(value, XExceptionValue):
+            raise ThrownValue(
+                value,
+                getattr(source_error, "source_name", None)
+                or getattr(value.cause, "source_name", None),
+                getattr(source_error, "line", None)
+                or getattr(value.cause, "line", None),
+                getattr(source_error, "column", None)
+                or getattr(value.cause, "column", None),
+            )
+        raise ThrownValue(
+            value,
+            getattr(source_error, "source_name", None),
+            getattr(source_error, "line", None),
+            getattr(source_error, "column", None),
+        )
+
     def _exception_matches(self, value: Any, type_name: str | None) -> bool:
         if type_name is None or type_name in ("Exception", "Throwable"):
             return True
-        if type_name == "RuntimeError":
-            return isinstance(value, XExceptionValue)
-        return isinstance(value, XExceptionValue) and type_name.endswith("Exception")
+        requested_types = type_name.split("|")
+        if isinstance(value, XExceptionValue):
+            for requested_type in requested_types:
+                if requested_type in ("Exception", "Throwable"):
+                    return True
+                if requested_type in ("RuntimeException", "Error") and value.name in (
+                    "RuntimeException",
+                    "Error",
+                ):
+                    return True
+                if requested_type == value.name:
+                    return True
+                if requested_type.endswith("Exception") and value.name == "Exception":
+                    return True
+            return False
+        if isinstance(value, XInstance):
+            for requested_type in requested_types:
+                current_class: XClass | None = value.xclass
+                while current_class is not None:
+                    if current_class.name == requested_type:
+                        return True
+                    current_class = current_class.parent
+        return False
 
     def _evaluate(self, expression: Any, environment: Environment) -> Any:
         if isinstance(expression, Literal):
             return expression.value
         if isinstance(expression, Identifier):
             value = environment.get(expression.name)
-            if isinstance(value, list) and all(isinstance(item, XFunction) for item in value):
+            if (
+                isinstance(value, list)
+                and value
+                and all(isinstance(item, XFunction) for item in value)
+            ):
                 return OverloadedFunction(expression.name, value)
             return value
         if isinstance(expression, ArrayLiteral):
-            return [self._evaluate(item, environment) for item in expression.items]
+            items: list[Any] = []
+            for item in expression.items:
+                if isinstance(item, Spread):
+                    items.extend(self._spread_values(self._evaluate(item.value, environment)))
+                else:
+                    items.append(self._evaluate(item, environment))
+            return items
         if isinstance(expression, ObjectLiteral):
-            return {
-                name: self._evaluate(value, environment)
-                for name, value in expression.fields.items()
-            }
+            fields: dict[str, Any] = {}
+            for name, value in expression.entries:
+                if name is None:
+                    spread_fields = self._evaluate(value.value, environment)
+                    if isinstance(spread_fields, XInstance):
+                        spread_fields = spread_fields.fields
+                    if not isinstance(spread_fields, dict):
+                        raise RuntimeErrorX("Object spread requires an object value")
+                    fields.update(spread_fields)
+                else:
+                    fields[name] = self._evaluate(value, environment)
+            return fields
+        if isinstance(expression, AwaitExpression):
+            value = self._evaluate(expression.value, environment)
+            if not inspect.isawaitable(value):
+                return value
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(self._await_result(value))
+            raise RuntimeErrorX(
+                "Cannot await inside an active Python event loop in this interpreter"
+            )
+        if isinstance(expression, MatchExpression):
+            return self._evaluate_match(expression, environment)
         if isinstance(expression, ThisExpression):
             if expression.is_super:
                 return environment.get("super")
@@ -574,11 +1216,12 @@ class Interpreter:
             return self._assign(expression.target, expression.operator, value, environment)
         if isinstance(expression, Call):
             callee = self._evaluate(expression.callee, environment)
-            arguments = [self._evaluate(argument, environment) for argument in expression.arguments]
+            arguments = self._evaluate_call_arguments(expression.arguments, environment)
             return self._call(callee, arguments)
         if isinstance(expression, NewExpression):
-            class_value = environment.get(expression.class_name.split(".")[-1])
-            arguments = [self._evaluate(argument, environment) for argument in expression.arguments]
+            class_name = expression.class_name.split("<", 1)[0]
+            class_value = self._resolve_name(environment, class_name)
+            arguments = self._evaluate_call_arguments(expression.arguments, environment)
             if isinstance(class_value, BuiltinFunction):
                 return self._call(class_value, arguments)
             if not isinstance(class_value, XClass):
@@ -586,7 +1229,8 @@ class Interpreter:
             return class_value.construct(arguments)
         if isinstance(expression, Member):
             object_value = self._evaluate(expression.object, environment)
-            return self._get_member(object_value, expression.name)
+            access_context = self._access_context(environment)
+            return self._get_member(object_value, expression.name, access_context)
         if isinstance(expression, Index):
             object_value = self._evaluate(expression.object, environment)
             index = self._evaluate(expression.index, environment)
@@ -595,6 +1239,174 @@ class Interpreter:
             except (IndexError, KeyError, TypeError) as error:
                 raise RuntimeErrorX(f"Cannot access index {self._stringify(index)}") from error
         raise RuntimeErrorX(f"Unsupported expression '{type(expression).__name__}'")
+
+    def _evaluate_match(
+        self, expression: MatchExpression, environment: Environment
+    ) -> Any:
+        value = self._evaluate(expression.value, environment)
+        for arm in expression.arms:
+            bindings = self._match_pattern(arm.pattern, value)
+            if bindings is None:
+                continue
+            arm_environment = Environment(environment)
+            for name, binding_value in bindings.items():
+                arm_environment.define(name, binding_value)
+            if arm.guard is not None and not self._is_truthy(
+                self._evaluate(arm.guard, arm_environment)
+            ):
+                continue
+            if isinstance(arm.body, Block):
+                self._execute_block(arm.body.statements, Environment(arm_environment))
+                return None
+            return self._evaluate(arm.body, arm_environment)
+        raise RuntimeErrorX("No pattern matched the value")
+
+    def _match_pattern(self, pattern: Any, value: Any) -> dict[str, Any] | None:
+        if isinstance(pattern, WildcardPattern):
+            return {}
+        if isinstance(pattern, BindingPattern):
+            return {pattern.name: value}
+        if isinstance(pattern, LiteralPattern):
+            if self._strict_equal(value, pattern.value):
+                return {}
+            return None
+        if isinstance(pattern, EnumPattern):
+            enum_value = self.globals.get(pattern.enum_name)
+            if not isinstance(enum_value, Environment):
+                return None
+            try:
+                expected_member = enum_value.get(pattern.member_name)
+            except RuntimeErrorX:
+                return None
+            if self._strict_equal(value, expected_member):
+                return {}
+            return None
+        if isinstance(pattern, tuple) and pattern and pattern[0] == "or":
+            for alternative in pattern[1]:
+                alternative_bindings = self._match_pattern(alternative, value)
+                if alternative_bindings is not None:
+                    return alternative_bindings
+            return None
+        if isinstance(pattern, ArrayPattern):
+            if not isinstance(value, (list, tuple, str)):
+                return None
+            if len(value) < len(pattern.items):
+                return None
+            if pattern.rest_name is None and len(value) != len(pattern.items):
+                return None
+            array_bindings: dict[str, Any] = {}
+            for index, child_pattern in enumerate(pattern.items):
+                child_bindings = self._match_pattern(child_pattern, value[index])
+                if child_bindings is None:
+                    return None
+                array_bindings.update(child_bindings)
+            if pattern.rest_name is not None:
+                array_bindings[pattern.rest_name] = list(value[len(pattern.items):])
+            return array_bindings
+        if isinstance(pattern, ObjectPattern):
+            object_value = value.fields if isinstance(value, XInstance) else value
+            if not isinstance(object_value, dict):
+                return None
+            object_bindings: dict[str, Any] = {}
+            for name, child_pattern in pattern.fields:
+                if name not in object_value:
+                    return None
+                child_bindings = self._match_pattern(child_pattern, object_value[name])
+                if child_bindings is None:
+                    return None
+                object_bindings.update(child_bindings)
+            if pattern.rest_name is not None:
+                object_bindings[pattern.rest_name] = {
+                    name: field_value
+                    for name, field_value in object_value.items()
+                    if name not in {field_name for field_name, _ in pattern.fields}
+                }
+            return object_bindings
+        return None
+
+    def _bind_destructuring(
+        self,
+        pattern: Any,
+        value: Any,
+        environment: Environment,
+        constant: bool,
+        declare: bool = True,
+    ) -> None:
+        if isinstance(pattern, DefaultPattern):
+            selected_value = value
+            if selected_value is None:
+                selected_value = self._evaluate(pattern.default_value, environment)
+            self._bind_destructuring(
+                pattern.pattern, selected_value, environment, constant, declare
+            )
+            return
+        if isinstance(pattern, BindingPattern):
+            if declare:
+                environment.define(pattern.name, value, constant)
+            else:
+                environment.assign(pattern.name, value)
+            return
+        if isinstance(pattern, ArrayPattern):
+            if not isinstance(value, (list, tuple, str)):
+                raise RuntimeErrorX("Array destructuring requires an array-like value")
+            for item_index, item_pattern in enumerate(pattern.items):
+                item_value = value[item_index] if item_index < len(value) else None
+                self._bind_destructuring(
+                    item_pattern, item_value, environment, constant, declare
+                )
+            if pattern.rest_name is not None:
+                rest_value = list(value[len(pattern.items):])
+                if declare:
+                    environment.define(pattern.rest_name, rest_value, constant)
+                else:
+                    environment.assign(pattern.rest_name, rest_value)
+            return
+        if isinstance(pattern, ObjectPattern):
+            if isinstance(value, XInstance):
+                source_fields = value.fields
+            elif isinstance(value, dict):
+                source_fields = value
+            else:
+                raise RuntimeErrorX("Object destructuring requires an object value")
+            used_names: set[str] = set()
+            for field_name, field_pattern in pattern.fields:
+                used_names.add(field_name)
+                self._bind_destructuring(
+                    field_pattern,
+                    source_fields.get(field_name),
+                    environment,
+                    constant,
+                    declare,
+                )
+            if pattern.rest_name is not None:
+                remaining_fields = {
+                    field_name: field_value
+                    for field_name, field_value in source_fields.items()
+                    if field_name not in used_names
+                }
+                if declare:
+                    environment.define(pattern.rest_name, remaining_fields, constant)
+                else:
+                    environment.assign(pattern.rest_name, remaining_fields)
+            return
+        raise RuntimeErrorX("Unsupported destructuring pattern")
+
+    def _evaluate_call_arguments(
+        self, expressions: list[Any], environment: Environment
+    ) -> list[Any]:
+        arguments: list[Any] = []
+        for expression in expressions:
+            if isinstance(expression, Spread):
+                spread_value = self._evaluate(expression.value, environment)
+                arguments.extend(self._spread_values(spread_value))
+            else:
+                arguments.append(self._evaluate(expression, environment))
+        return arguments
+
+    def _spread_values(self, value: Any) -> list[Any]:
+        if isinstance(value, (list, tuple, str)):
+            return list(value)
+        raise RuntimeErrorX("Spread value must be an array, tuple, or string")
 
     def _evaluate_unary(self, expression: Unary, environment: Environment) -> Any:
         if expression.operator in ("++", "--"):
@@ -637,9 +1449,13 @@ class Interpreter:
             if operator == "%":
                 return left % right
             if operator == "==":
-                return left == right
+                return self._loose_equal(left, right)
             if operator == "!=":
-                return left != right
+                return not self._loose_equal(left, right)
+            if operator == "===":
+                return self._strict_equal(left, right)
+            if operator == "!==":
+                return not self._strict_equal(left, right)
             if operator == "<":
                 return left < right
             if operator == ">":
@@ -654,7 +1470,65 @@ class Interpreter:
             raise RuntimeErrorX(f"Invalid operands for '{operator}'") from error
         raise RuntimeErrorX(f"Unknown binary operator '{operator}'")
 
+    def _strict_equal(self, left: Any, right: Any) -> bool:
+        if isinstance(left, XEnumMember) or isinstance(right, XEnumMember):
+            return (
+                isinstance(left, XEnumMember)
+                and isinstance(right, XEnumMember)
+                and left.enum_name == right.enum_name
+                and left.name == right.name
+            )
+        if self._is_number(left) and self._is_number(right):
+            return left == right
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, (list, dict, XInstance, XClass, XFunction)):
+            return left is right
+        return left == right
+
+    def _loose_equal(self, left: Any, right: Any) -> bool:
+        if isinstance(left, XEnumMember) or isinstance(right, XEnumMember):
+            return self._strict_equal(left, right)
+        if left is None or right is None:
+            return left is None and right is None
+        if self._is_number(left) and self._is_number(right):
+            return left == right
+        if type(left) is type(right):
+            return self._strict_equal(left, right)
+        if isinstance(left, bool):
+            return self._loose_equal(int(left), right)
+        if isinstance(right, bool):
+            return self._loose_equal(left, int(right))
+        if isinstance(left, str) and self._is_number(right):
+            converted_left = self._string_to_number(left)
+            return converted_left is not None and converted_left == right
+        if isinstance(right, str) and self._is_number(left):
+            converted_right = self._string_to_number(right)
+            return converted_right is not None and left == converted_right
+        return False
+
+    def _is_number(self, value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def _string_to_number(self, value: str) -> int | float | None:
+        stripped_value = value.strip()
+        if stripped_value == "":
+            return 0
+        try:
+            if "." not in stripped_value:
+                return int(stripped_value)
+            return float(stripped_value)
+        except ValueError:
+            return None
+
     def _assign(self, target: Any, operator: str, value: Any, environment: Environment) -> Any:
+        if isinstance(target, (ArrayPattern, ObjectPattern)):
+            if operator != "=":
+                raise RuntimeErrorX("Destructuring assignment only supports '='")
+            self._bind_destructuring(
+                target, value, environment, constant=False, declare=False
+            )
+            return value
         if operator != "=":
             current = self._read_target(target, environment)
             base_operator = operator[0]
@@ -679,18 +1553,29 @@ class Interpreter:
         if isinstance(target, Identifier):
             return environment.get(target.name)
         if isinstance(target, Member):
-            return self._get_member(self._evaluate(target.object, environment), target.name)
+            access_context = self._access_context(environment)
+            return self._get_member(
+                self._evaluate(target.object, environment),
+                target.name,
+                access_context,
+            )
         if isinstance(target, Index):
             return self._evaluate(target.object, environment)[self._evaluate(target.index, environment)]
         raise RuntimeErrorX("Invalid assignment target")
 
     def _write_target(self, target: Any, value: Any, environment: Environment) -> None:
         if isinstance(target, Identifier):
+            array_type = environment.get_array_type(target.name)
+            if array_type is not None:
+                value = self._coerce_typed_array(
+                    array_type, value, f"variable '{target.name}'"
+                )
             environment.assign(target.name, value)
             return
         if isinstance(target, Member):
             object_value = self._evaluate(target.object, environment)
-            self._set_member(object_value, target.name, value)
+            access_context = self._access_context(environment)
+            self._set_member(object_value, target.name, value, access_context)
             return
         if isinstance(target, Index):
             object_value = self._evaluate(target.object, environment)
@@ -699,41 +1584,162 @@ class Interpreter:
             return
         raise RuntimeErrorX("Invalid assignment target")
 
-    def _get_member(self, object_value: Any, name: str) -> Any:
+    def _access_context(self, environment: Environment) -> XClass | None:
+        current_environment: Environment | None = environment
+        while current_environment is not None:
+            declaring_class = current_environment.values.get("__x_current_class__")
+            if isinstance(declaring_class, XClass):
+                return declaring_class
+            current_environment = current_environment.parent
+        return None
+
+    def _class_is_or_extends(self, candidate: XClass | None, target: XClass) -> bool:
+        current_class = candidate
+        while current_class is not None:
+            if current_class is target:
+                return True
+            current_class = current_class.parent
+        return False
+
+    def _can_access_member(
+        self, modifiers: set[str], owner: XClass, requester: XClass | None
+    ) -> bool:
+        visibility = self._visibility(modifiers)
+        if visibility == "public":
+            return True
+        if visibility == "private":
+            return requester is owner
+        return self._class_is_or_extends(requester, owner)
+
+    def _visibility(self, modifiers: set[str]) -> str:
+        for visibility in ("private", "protected", "public"):
+            if visibility in modifiers:
+                return visibility
+        return "public"
+
+    def _find_field_owner(
+        self, xclass: XClass, name: str, is_static: bool = False
+    ) -> tuple[XClass, VariableDeclaration] | None:
+        current_class: XClass | None = xclass
+        while current_class is not None:
+            for member in current_class.declaration.members:
+                if (
+                    isinstance(member, VariableDeclaration)
+                    and member.name == name
+                    and ("static" in member.modifiers) == is_static
+                ):
+                    return current_class, member
+            current_class = current_class.parent
+        return None
+
+    def _find_method_owner(
+        self, xclass: XClass, method: FunctionDeclaration
+    ) -> XClass | None:
+        current_class: XClass | None = xclass
+        while current_class is not None:
+            if any(member is method for member in current_class.declaration.members):
+                return current_class
+            current_class = current_class.parent
+        return None
+
+    def _get_member(
+        self,
+        object_value: Any,
+        name: str,
+        access_context: XClass | None = None,
+    ) -> Any:
+        if isinstance(object_value, XThreadHandle):
+            if name == "join":
+                return BuiltinFunction(
+                    "ThreadHandle.join",
+                    lambda arguments: self._thread_join(object_value, arguments),
+                )
+            if name == "isAlive":
+                return BuiltinFunction(
+                    "ThreadHandle.isAlive",
+                    lambda arguments: self._thread_is_alive(object_value, arguments),
+                )
         if isinstance(object_value, XInstance):
             if name in object_value.fields:
+                field_definition = self._find_field_owner(object_value.xclass, name)
+                if field_definition is not None:
+                    field_owner, field_declaration = field_definition
+                    if not self._can_access_member(
+                        field_declaration.modifiers, field_owner, access_context
+                    ):
+                        visibility = self._visibility(field_declaration.modifiers)
+                        raise RuntimeErrorX(
+                            f"Cannot access {visibility} property "
+                            f"'{object_value.xclass.name}.{name}'"
+                        )
                 return object_value.fields[name]
             methods = object_value.xclass.find_methods(name)
             if methods:
+                bound_methods: list[XFunction] = []
+                denied_visibility: str | None = None
+                for method in methods:
+                    method_owner = self._find_method_owner(object_value.xclass, method)
+                    if method_owner is not None and not self._can_access_member(
+                        method.modifiers, method_owner, access_context
+                    ):
+                        denied_visibility = self._visibility(method.modifiers)
+                        continue
+                    bound_function = XFunction(
+                        method,
+                        method_owner.closure if method_owner is not None else object_value.xclass.closure,
+                        self,
+                        object_value,
+                        method_owner or object_value.xclass,
+                    )
+                    bound_function = self._apply_function_decorators(
+                        method.decorators, bound_function, object_value.xclass.closure
+                    )
+                    bound_methods.append(bound_function)
+                if not bound_methods and denied_visibility is not None:
+                    raise RuntimeErrorX(
+                        f"Cannot access {denied_visibility} method "
+                        f"'{object_value.xclass.name}.{name}'"
+                    )
                 return OverloadedFunction(
                     name,
-                    [
-                        XFunction(
-                            method,
-                            object_value.xclass.closure,
-                            self,
-                            object_value,
-                            object_value.xclass,
-                        )
-                        for method in methods
-                    ],
+                    bound_methods,
                 )
             raise RuntimeErrorX(f"'{object_value.xclass.name}' has no member '{name}'")
         if isinstance(object_value, XSuper):
             methods = object_value.parent_class.find_methods(name)
             if methods:
+                bound_methods: list[XFunction] = []
+                denied_visibility: str | None = None
+                for method in methods:
+                    method_owner = self._find_method_owner(
+                        object_value.parent_class, method
+                    )
+                    if method_owner is not None and not self._can_access_member(
+                        method.modifiers, method_owner, access_context
+                    ):
+                        denied_visibility = self._visibility(method.modifiers)
+                        continue
+                    bound_function = XFunction(
+                        method,
+                        method_owner.closure if method_owner is not None else object_value.parent_class.closure,
+                        self,
+                        object_value.instance,
+                        method_owner or object_value.parent_class,
+                    )
+                    bound_function = self._apply_function_decorators(
+                        method.decorators,
+                        bound_function,
+                        object_value.parent_class.closure,
+                    )
+                    bound_methods.append(bound_function)
+                if not bound_methods and denied_visibility is not None:
+                    raise RuntimeErrorX(
+                        f"Cannot access {denied_visibility} method "
+                        f"'{object_value.parent_class.name}.{name}'"
+                    )
                 return OverloadedFunction(
                     name,
-                    [
-                        XFunction(
-                            method,
-                            object_value.parent_class.closure,
-                            self,
-                            object_value.instance,
-                            object_value.parent_class,
-                        )
-                        for method in methods
-                    ],
+                    bound_methods,
                 )
             raise RuntimeErrorX(f"Parent class has no method '{name}'")
         if isinstance(object_value, Environment):
@@ -762,24 +1768,127 @@ class Interpreter:
                 return object_value.value
         if isinstance(object_value, XExceptionValue) and name == "message":
             return object_value.message
+        if isinstance(object_value, XExceptionValue) and name == "name":
+            return object_value.name
+        if isinstance(object_value, XExceptionValue) and name == "cause":
+            return object_value.cause
+        if isinstance(object_value, XExceptionValue) and name == "stack":
+            return object_value.stack
         if isinstance(object_value, XClass):
-            if name in object_value.static_fields:
-                return object_value.static_fields[name]
-            for member in object_value.declaration.members:
-                if isinstance(member, FunctionDeclaration) and member.name == name and "static" in member.modifiers:
-                    return XFunction(member, object_value.closure, self)
+            if name in object_value.nested_types:
+                nested_declaration = next(
+                    (
+                        member
+                        for member in object_value.declaration.members
+                        if isinstance(member, ClassDeclaration) and member.name == name
+                    ),
+                    None,
+                )
+                if nested_declaration is not None and not self._can_access_member(
+                    nested_declaration.modifiers, object_value, access_context
+                ):
+                    visibility = self._visibility(nested_declaration.modifiers)
+                    raise RuntimeErrorX(
+                        f"Cannot access {visibility} nested class "
+                        f"'{object_value.name}.{name}'"
+                    )
+                return object_value.nested_types[name]
+            static_field = self._find_field_owner(object_value, name, is_static=True)
+            if static_field is not None:
+                field_owner, field_declaration = static_field
+                if not self._can_access_member(
+                    field_declaration.modifiers, field_owner, access_context
+                ):
+                    visibility = self._visibility(field_declaration.modifiers)
+                    raise RuntimeErrorX(
+                        f"Cannot access {visibility} property '{field_owner.name}.{name}'"
+                    )
+                return field_owner.static_fields[name]
+            for candidate_class in self._class_hierarchy(object_value):
+                for member in candidate_class.declaration.members:
+                    if (
+                        isinstance(member, FunctionDeclaration)
+                        and member.name == name
+                        and "static" in member.modifiers
+                    ):
+                        if not self._can_access_member(
+                            member.modifiers, candidate_class, access_context
+                        ):
+                            visibility = self._visibility(member.modifiers)
+                            raise RuntimeErrorX(
+                                f"Cannot access {visibility} method "
+                                f"'{candidate_class.name}.{name}'"
+                            )
+                        function = XFunction(
+                            member, candidate_class.closure, self, parent_class=candidate_class
+                        )
+                        return self._apply_function_decorators(
+                            member.decorators, function, candidate_class.closure
+                        )
         if object_value is None:
             raise RuntimeErrorX(f"Cannot access member '{name}' on null")
         raise RuntimeErrorX(f"Value has no member '{name}'")
 
-    def _set_member(self, object_value: Any, name: str, value: Any) -> None:
+    def _class_hierarchy(self, xclass: XClass) -> list[XClass]:
+        hierarchy: list[XClass] = []
+        current_class: XClass | None = xclass
+        while current_class is not None:
+            hierarchy.append(current_class)
+            current_class = current_class.parent
+        return hierarchy
+
+    def _set_member(
+        self,
+        object_value: Any,
+        name: str,
+        value: Any,
+        access_context: XClass | None = None,
+    ) -> None:
         if isinstance(object_value, XInstance):
+            field_definition = self._find_field_owner(object_value.xclass, name)
+            if field_definition is not None:
+                field_owner, field_declaration = field_definition
+                if not self._can_access_member(
+                    field_declaration.modifiers, field_owner, access_context
+                ):
+                    visibility = self._visibility(field_declaration.modifiers)
+                    raise RuntimeErrorX(
+                        f"Cannot modify {visibility} property "
+                        f"'{object_value.xclass.name}.{name}'"
+                    )
+                if (
+                    field_declaration.type_name is not None
+                    and field_declaration.type_name.endswith("[]")
+                ):
+                    value = self._coerce_typed_array(
+                        field_declaration.type_name,
+                        value,
+                        f"property '{field_owner.name}.{name}'",
+                    )
             object_value.fields[name] = value
             return
         if isinstance(object_value, XClass):
-            if name not in object_value.static_fields:
+            field_definition = self._find_field_owner(object_value, name, is_static=True)
+            if field_definition is None:
                 raise RuntimeErrorX(f"'{object_value.name}' has no static field '{name}'")
-            object_value.static_fields[name] = value
+            field_owner, field_declaration = field_definition
+            if not self._can_access_member(
+                field_declaration.modifiers, field_owner, access_context
+            ):
+                visibility = self._visibility(field_declaration.modifiers)
+                raise RuntimeErrorX(
+                    f"Cannot modify {visibility} property '{field_owner.name}.{name}'"
+                )
+            if (
+                field_declaration.type_name is not None
+                and field_declaration.type_name.endswith("[]")
+            ):
+                value = self._coerce_typed_array(
+                    field_declaration.type_name,
+                    value,
+                    f"property '{field_owner.name}.{name}'",
+                )
+            field_owner.static_fields[name] = value
             return
         if isinstance(object_value, dict):
             object_value[name] = value
@@ -794,9 +1903,33 @@ class Interpreter:
                 if "static" in member.modifiers:
                     continue
                 value = None if member.initializer is None else self._evaluate(
-                    member.initializer, Environment(xclass.closure)
+                    member.initializer, self._field_initializer_environment(xclass, member)
                 )
+                if (
+                    member.type_name is not None
+                    and member.type_name.endswith("[]")
+                    and member.initializer is not None
+                ):
+                    value = self._coerce_typed_array(
+                        member.type_name,
+                        value,
+                        f"property '{xclass.name}.{member.name}'",
+                    )
                 instance.fields[member.name] = value
+
+    def _field_initializer_environment(
+        self, xclass: XClass, member: VariableDeclaration
+    ) -> Environment:
+        field_environment = Environment(xclass.closure)
+        field_environment.define("__x_current_class__", xclass)
+        member_line = getattr(member, "line", None)
+        if member_line is not None:
+            self.current_location = (
+                getattr(member, "source_name", None),
+                member_line,
+                getattr(member, "column", None),
+            )
+        return field_environment
 
     def _call(self, callee: Any, arguments: list[Any]) -> Any:
         if isinstance(callee, BuiltinFunction):
@@ -814,19 +1947,48 @@ class Interpreter:
                 constructor = self._select_overload(
                     callee.parent_class.name, constructors, arguments
                 )
-                XFunction(
+                constructor_function = XFunction(
                     constructor,
                     callee.parent_class.closure,
                     self,
                     callee.instance,
                     callee.parent_class,
-                ).call(arguments)
+                )
+                constructor_function = self._apply_function_decorators(
+                    constructor.decorators,
+                    constructor_function,
+                    callee.parent_class.closure,
+                )
+                constructor_function.call(arguments)
             elif arguments:
                 raise RuntimeErrorX(
                     f"Parent class '{callee.parent_class.name}' has no matching constructor"
                 )
             return None
         raise RuntimeErrorX("Value is not callable")
+
+    def _thread_join(self, handle: XThreadHandle, arguments: list[Any]) -> Any:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("ThreadHandle.join accepts at most one timeout")
+        timeout = None
+        if arguments:
+            timeout_value = arguments[0]
+            if not isinstance(timeout_value, (int, float)) or isinstance(timeout_value, bool):
+                raise RuntimeErrorX("ThreadHandle.join timeout must be a number of seconds")
+            if timeout_value < 0:
+                raise RuntimeErrorX("ThreadHandle.join timeout cannot be negative")
+            timeout = timeout_value
+        handle.thread.join(timeout)
+        if handle.thread.is_alive():
+            return None
+        if handle.error is not None:
+            raise RuntimeErrorX(f"Thread failed: {handle.error}") from handle.error
+        return handle.result_value
+
+    def _thread_is_alive(self, handle: XThreadHandle, arguments: list[Any]) -> bool:
+        if arguments:
+            raise RuntimeErrorX("ThreadHandle.isAlive expects no arguments")
+        return handle.thread.is_alive()
 
     def _select_overload(
         self, name: str, functions: list[Any], arguments: list[Any]
@@ -838,7 +2000,9 @@ class Interpreter:
 
         matches = [
             function for function in functions
-            if len(declaration_for(function).parameters) == len(arguments)
+            if self._accepts_argument_count(
+                declaration_for(function).parameters, len(arguments)
+            )
         ]
         if not matches:
             available = sorted({
@@ -849,17 +2013,32 @@ class Interpreter:
                 f"No overload of '{name}' accepts {len(arguments)} argument(s); "
                 f"available argument counts: {expected}"
             )
-        scored_matches: list[tuple[int, XFunction]] = []
+        scored_matches: list[tuple[int, Any]] = []
         for function in matches:
             score = 0
             compatible = True
             declaration = declaration_for(function)
-            for parameter, argument in zip(declaration.parameters, arguments):
-                parameter_score = self._type_match_score(parameter.type_name, argument)
+            argument_index = 0
+            for parameter in declaration.parameters:
+                if parameter.is_rest:
+                    while argument_index < len(arguments):
+                        parameter_score = self._type_match_score(
+                            parameter.type_name, arguments[argument_index]
+                        )
+                        if parameter_score is None:
+                            compatible = False
+                            break
+                        score += parameter_score
+                        argument_index += 1
+                    break
+                parameter_score = self._type_match_score(
+                    parameter.type_name, arguments[argument_index]
+                )
                 if parameter_score is None:
                     compatible = False
                     break
                 score += parameter_score
+                argument_index += 1
             if compatible:
                 scored_matches.append((score, function))
         if not scored_matches:
@@ -874,6 +2053,13 @@ class Interpreter:
             )
         return best_matches[0]
 
+    def _accepts_argument_count(self, parameters: list[Any], argument_count: int) -> bool:
+        has_rest_parameter = bool(parameters and parameters[-1].is_rest)
+        required_count = len(parameters) - (1 if has_rest_parameter else 0)
+        if has_rest_parameter:
+            return argument_count >= required_count
+        return argument_count == required_count
+
     def _type_match_score(self, type_name: str | None, value: Any) -> int | None:
         if type_name is None or type_name == "var":
             return 0
@@ -884,8 +2070,14 @@ class Interpreter:
         if value is None:
             return 1 if type_name in ("null", "Object", "object") else None
         if type_name.endswith("[]"):
-            return 3 if isinstance(value, list) else None
-        if type_name in ("integer", "byte"):
+            if not isinstance(value, list):
+                return None
+            element_type = type_name[:-2]
+            for element in value:
+                if self._type_match_score(element_type, element) is None:
+                    return None
+            return 3
+        if type_name in ("integer", "int", "byte"):
             return 3 if isinstance(value, int) and not isinstance(value, bool) else None
         if type_name in ("float", "double"):
             if isinstance(value, float):
@@ -904,6 +2096,65 @@ class Interpreter:
         if isinstance(value, XEnumMember) and value.enum_name == type_name.split(".")[-1]:
             return 3
         return 0
+
+    def _coerce_typed_array(
+        self, type_name: str, value: Any, context: str
+    ) -> Any:
+        if not type_name.endswith("[]"):
+            return value
+        if not isinstance(value, list):
+            raise RuntimeErrorX(
+                f"Expected an array for {context} of type '{type_name}'"
+            )
+
+        element_type = type_name[:-2]
+        if isinstance(value, XArray) and value.element_type == element_type:
+            return value
+        checked_values: list[Any] = []
+        for index, element in enumerate(value):
+            item_context = f"{context} at index {index}"
+            if element_type.endswith("[]"):
+                checked_value = self._coerce_typed_array(
+                    element_type, element, item_context
+                )
+            else:
+                if self._type_match_score(element_type, element) is None:
+                    actual_type = self._value_type_name(element)
+                    raise RuntimeErrorX(
+                        f"Expected '{element_type}' for {item_context}, "
+                        f"got '{actual_type}'"
+                    )
+                checked_value = element
+            checked_values.append(checked_value)
+
+        return XArray(checked_values, element_type, self._validate_array_element)
+
+    def _validate_array_element(self, type_name: str, value: Any) -> Any:
+        if type_name.endswith("[]"):
+            return self._coerce_typed_array(type_name, value, "array item")
+        if self._type_match_score(type_name, value) is None:
+            actual_type = self._value_type_name(value)
+            raise RuntimeErrorX(
+                f"Expected '{type_name}' for array item, got '{actual_type}'"
+            )
+        return value
+
+    def _value_type_name(self, value: Any) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, XInstance):
+            return value.xclass.name
+        return "object"
 
     def _list_add(self, values: list[Any], arguments: list[Any]) -> None:
         if len(arguments) != 1:

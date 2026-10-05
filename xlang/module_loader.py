@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .config import XConfig
 from .ast_nodes import (
     ClassDeclaration,
     EnumDeclaration,
@@ -19,13 +20,20 @@ from .runtime import RuntimeErrorX
 
 
 class ModuleLoader:
-    STANDARD_LIBRARY_MODULES = {"System.io.FileSystem"}
+    STANDARD_LIBRARY_MODULES = {
+        "System.concurrent.Async",
+        "System.concurrent.Thread",
+        "System.io.FileSystem",
+        "System.Environment",
+    }
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, config: XConfig | None = None) -> None:
         self.project_root = project_root.resolve()
+        self.config = config or XConfig()
         self.loaded_files: set[Path] = set()
         self.loading_files: set[Path] = set()
         self.direct_declarations: dict[Path, list[Any]] = {}
+        self.sources: dict[Path, str] = {}
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
@@ -45,7 +53,11 @@ class ModuleLoader:
         except (OSError, UnicodeError) as error:
             raise RuntimeErrorX(f"Cannot read source file '{source_path}': {error}") from error
 
-        program = Parser(Lexer(source).tokenize()).parse()
+        self.sources[resolved_path] = source
+        lexer = Lexer(source, str(resolved_path))
+        tokens = lexer.tokenize()
+        parser = Parser(tokens, self.config.features, str(resolved_path))
+        program = parser.parse()
         direct_declarations = [
             declaration
             for declaration in program.declarations
@@ -60,6 +72,7 @@ class ModuleLoader:
                 continue
             for module_path, alias in declaration.targets:
                 if module_path in self.STANDARD_LIBRARY_MODULES:
+                    self._require_standard_library_feature(module_path)
                     import_name = module_path.split(".")[-1]
                     combined_declarations.append(
                         ImportAlias(module_path, alias or import_name)
@@ -80,6 +93,18 @@ class ModuleLoader:
         self.loading_files.remove(resolved_path)
         self.loaded_files.add(resolved_path)
         return combined_declarations
+
+    def _require_standard_library_feature(self, module_path: str) -> None:
+        feature_for_module = {
+            "System.concurrent.Async": "async",
+            "System.concurrent.Thread": "threads",
+            "System.io.FileSystem": "filesystem",
+        }
+        feature_name = feature_for_module.get(module_path)
+        if feature_name is not None and not self.config.enabled(feature_name):
+            raise RuntimeErrorX(
+                f"Cannot import '{module_path}': feature '{feature_name}' is disabled"
+            )
 
     def _path_for_module(self, module_path: str) -> Path:
         path_parts = module_path.split(".")
