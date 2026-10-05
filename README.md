@@ -211,6 +211,12 @@ are absolute. Text operations use UTF-8.
 | `deleteFile` | `void deleteFile(string path)` | Deletes one file; it does not recursively delete directories. |
 | `deleteDirectory` | `void deleteDirectory(string path)` | Deletes an empty directory only. |
 
+Each operation also has an asynchronous counterpart with the `Async` suffix,
+such as `readTextAsync`, `writeTextAsync`, and `listDirectoryAsync`. These return
+awaitable results and perform blocking filesystem work on a worker thread. Use
+`await` on these operations inside an `async` function; the original methods
+remain synchronous.
+
 Example:
 
 ```x
@@ -224,6 +230,19 @@ function main() {
     FileSystem.writeText(filePath, "First line.\n");
     FileSystem.appendText(filePath, "Second line.\n");
     print(FileSystem.readText(filePath));
+}
+```
+
+Asynchronous file operations can be awaited in an async function:
+
+```x
+import System.io.FileSystem
+
+async function main() {
+    await FileSystem.writeTextAsync("notes.txt", "First line.\n");
+    let string contents = await FileSystem.readTextAsync("notes.txt");
+    await sleep(100);
+    print(contents);
 }
 ```
 
@@ -260,12 +279,16 @@ async function main() {
 
 An async function call returns an awaitable result. `Async.all` starts the
 provided awaitable operations concurrently and returns their results in input
-order. Its API is:
+order. `await` is valid only inside an `async` function and requires an
+asynchronous operation; awaiting an ordinary value is an error. The built-in
+`sleep(milliseconds)` returns an asynchronous operation that waits for the
+specified non-negative number of milliseconds. Its API is:
 
 | Method | Signature | Behavior |
 | --- | --- | --- |
 | `delay` | `delay(milliseconds, result?)` | Accepts a non-negative integer/float duration; resolves to the optional result, or `null`. |
 | `all` | `all(operations)` | Accepts one array of values/awaitables; waits for every awaitable and returns results in input order. |
+| `sleep` | `sleep(milliseconds)` | Waits asynchronously for the specified non-negative integer/float duration. |
 
 An `async main` is awaited by the interpreter. Async function bodies execute on
 Python worker threads because the current language interpreter evaluates
@@ -450,6 +473,7 @@ For example:
 x run examples/control_flow/loops.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
+x run examples/filesystem_async_demo.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x
 x run examples/pattern_matching/match.x

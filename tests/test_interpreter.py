@@ -1,8 +1,10 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 
 from xlang.module_loader import ModuleLoader
+from xlang.parser import ParseError
 from xlang.runtime import Interpreter, RuntimeErrorX
 
 
@@ -272,6 +274,74 @@ class InterpreterTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeErrorX, "Cannot read text file"):
                 Interpreter([missing_path]).interpret(program)
+
+    def test_async_filesystem_operations_and_millisecond_sleep(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            source_file = project_root / "main.x"
+            file_path = project_root / "async.txt"
+            source_file.write_text(
+                f"""
+                import System.io.FileSystem
+                async function main() {{
+                    await FileSystem.writeTextAsync("{file_path}", "first");
+                    await FileSystem.appendTextAsync("{file_path}", " second");
+                    let string contents = await FileSystem.readTextAsync("{file_path}");
+                    await sleep(1);
+                    print(contents);
+                    print(await FileSystem.existsAsync("{file_path}"));
+                    await FileSystem.deleteFileAsync("{file_path}");
+                }}
+                """,
+                encoding="utf-8",
+            )
+            program = ModuleLoader(project_root).load_program(source_file)
+            output = []
+            result = Interpreter(output=output.append).interpret(program)
+
+        self.assertIsNone(result)
+        self.assertEqual(output, ["first second", "true"])
+        self.assertFalse(file_path.exists())
+
+    def test_await_is_restricted_to_async_functions(self):
+        with self.assertRaisesRegex(ParseError, "only valid inside an async function"):
+            self.run_x(
+                """
+                function main() {
+                    await sleep(1);
+                }
+                """
+            )
+
+        with self.assertRaisesRegex(RuntimeErrorX, "await requires an asynchronous operation"):
+            self.run_x(
+                """
+                async function main() {
+                    await 42;
+                }
+                """
+            )
+
+    def test_sleep_requires_a_non_negative_millisecond_duration(self):
+        start_time = monotonic()
+        self.run_x(
+            """
+            async function main() {
+                await sleep(30);
+            }
+            """
+        )
+        elapsed_seconds = monotonic() - start_time
+        self.assertGreaterEqual(elapsed_seconds, 0.025)
+
+        with self.assertRaisesRegex(RuntimeErrorX, "duration cannot be negative"):
+            self.run_x(
+                """
+                async function main() {
+                    await sleep(-1);
+                }
+                """
+            )
 
     def test_rest_parameters_and_array_call_object_spread(self):
         result, output = self.run_x(

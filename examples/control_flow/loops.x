@@ -23,4 +23,25 @@ function main() {
         print(key + "=" + labels[key])
     }
     print("total=" + total)
+
+
+ 
+
+        let x = 0
+    for (let i in range (1,10)){
+
+        print("Hello "+x, "Hi");
+
+        x++;
+    }
+
+       enum X {
+        YES,
+        NO
+    }
+
+    enum Y{
+        YES,
+         NO
+    }
 }

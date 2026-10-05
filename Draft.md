@@ -2326,6 +2326,13 @@ void deleteFile(string path)
 void deleteDirectory(string path)
 ```
 
+Every filesystem operation also has an awaitable version with an `Async`
+suffix, such as `readTextAsync` and `writeTextAsync`. Async methods perform
+blocking filesystem work on a worker thread; sync methods remain synchronous.
+`await` is permitted only inside an `async` function and rejects non-async
+values. The built-in `sleep(milliseconds)` returns an awaitable that resolves
+after a non-negative integer or floating-point duration in milliseconds.
+
 Text is UTF-8. Relative paths are resolved from the process working directory.
 `writeText` replaces an existing file, while `appendText` creates the file if
 it does not exist. `createDirectory` also creates missing parent directories.
@@ -3374,6 +3381,9 @@ no result is provided. `Async.all(awaitables)` accepts one array, waits for
 every awaitable concurrently, and returns values in the original input order.
 Non-awaitable values in that array pass through unchanged. `awaitable` is
 descriptive runtime terminology here, not a statically checked X type.
+The built-in `sleep(milliseconds)` is the direct sleep operation and resolves
+after that many milliseconds. `await` may only appear inside an async function
+and the awaited value must be asynchronous.
 
 ```x
 import System.concurrent.Async

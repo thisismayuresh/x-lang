@@ -19,7 +19,7 @@ function main() {
         print(entry);
     }
 
-    FileSystem.deleteFile(filePath);
-    FileSystem.deleteDirectory(directory);
+   // FileSystem.deleteFile(filePath);
+   // FileSystem.deleteDirectory(directory);
     print("File exists after deletion: " + FileSystem.exists(filePath));
 }

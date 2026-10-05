@@ -186,7 +186,10 @@ class XFunction:
         return self._call_sync(arguments)
 
     async def _call_async(self, arguments: list[Any]) -> Any:
-        return await asyncio.to_thread(self._call_sync, arguments)
+        result = await asyncio.to_thread(self._call_sync, arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _call_sync(self, arguments: list[Any]) -> Any:
         if self.traced:
@@ -427,6 +430,8 @@ class Interpreter:
         self.globals.define("args", arguments)
         self.globals.define("print", BuiltinFunction("print", self._builtin_print))
         self.globals.define("range", BuiltinFunction("range", self._builtin_range))
+        if self.config.enabled("async"):
+            self.globals.define("sleep", BuiltinFunction("sleep", self._builtin_sleep))
         self.globals.define("Exception", BuiltinFunction("Exception", self._builtin_exception))
         if self.config.enabled("decorators"):
             self.globals.define("trace", BuiltinFunction("trace", self._builtin_trace))
@@ -549,6 +554,17 @@ class Interpreter:
             "all": BuiltinFunction("Async.all", self._async_all),
         }
 
+    def _builtin_sleep(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX(f"sleep expects one argument, got {len(arguments)}")
+        milliseconds = arguments[0]
+        self._validate_milliseconds("sleep", milliseconds)
+
+        async def wait() -> None:
+            await asyncio.sleep(milliseconds / 1000)
+
+        return wait()
+
     def _thread_start(self, arguments: list[Any]) -> XThreadHandle:
         if len(arguments) not in (1, 2):
             raise RuntimeErrorX("Thread.start expects a function and optional argument array")
@@ -578,10 +594,7 @@ class Interpreter:
         if len(arguments) not in (1, 2):
             raise RuntimeErrorX("Async.delay expects milliseconds and optional result")
         milliseconds = arguments[0]
-        if not isinstance(milliseconds, (int, float)) or isinstance(milliseconds, bool):
-            raise RuntimeErrorX("Async.delay duration must be a number of milliseconds")
-        if milliseconds < 0:
-            raise RuntimeErrorX("Async.delay duration cannot be negative")
+        self._validate_milliseconds("Async.delay", milliseconds)
         result = None if len(arguments) == 1 else arguments[1]
 
         async def delay() -> Any:
@@ -589,6 +602,14 @@ class Interpreter:
             return result
 
         return delay()
+
+    def _validate_milliseconds(self, operation: str, milliseconds: Any) -> None:
+        if not isinstance(milliseconds, (int, float)) or isinstance(milliseconds, bool):
+            raise RuntimeErrorX(
+                f"{operation} duration must be a number of milliseconds"
+            )
+        if milliseconds < 0:
+            raise RuntimeErrorX(f"{operation} duration cannot be negative")
 
     def _async_all(self, arguments: list[Any]) -> Any:
         if len(arguments) != 1 or not isinstance(arguments[0], list):
@@ -609,7 +630,7 @@ class Interpreter:
         return wait_for_all()
 
     def _filesystem_members(self) -> dict[str, BuiltinFunction]:
-        return {
+        members = {
             "exists": BuiltinFunction("FileSystem.exists", self._filesystem_exists),
             "isFile": BuiltinFunction("FileSystem.isFile", self._filesystem_is_file),
             "isDirectory": BuiltinFunction(
@@ -631,6 +652,41 @@ class Interpreter:
                 "FileSystem.deleteDirectory", self._filesystem_delete_directory
             ),
         }
+        asynchronous_operations = {
+            "existsAsync": ("exists", self._filesystem_exists),
+            "isFileAsync": ("isFile", self._filesystem_is_file),
+            "isDirectoryAsync": ("isDirectory", self._filesystem_is_directory),
+            "readTextAsync": ("readText", self._filesystem_read_text),
+            "writeTextAsync": ("writeText", self._filesystem_write_text),
+            "appendTextAsync": ("appendText", self._filesystem_append_text),
+            "createDirectoryAsync": (
+                "createDirectory",
+                self._filesystem_create_directory,
+            ),
+            "listDirectoryAsync": ("listDirectory", self._filesystem_list_directory),
+            "deleteFileAsync": ("deleteFile", self._filesystem_delete_file),
+            "deleteDirectoryAsync": (
+                "deleteDirectory",
+                self._filesystem_delete_directory,
+            ),
+        }
+        for asynchronous_name, (operation_name, operation) in (
+            asynchronous_operations.items()
+        ):
+            members[asynchronous_name] = BuiltinFunction(
+                f"FileSystem.{asynchronous_name}",
+                lambda arguments, sync_operation=operation: self._filesystem_async_call(
+                    sync_operation, arguments
+                ),
+            )
+        return members
+
+    async def _filesystem_async_call(
+        self,
+        operation: Callable[[list[Any]], Any],
+        arguments: list[Any],
+    ) -> Any:
+        return await asyncio.to_thread(operation, arguments)
 
     def _filesystem_path(
         self, operation: str, arguments: list[Any]
@@ -1193,7 +1249,10 @@ class Interpreter:
         if isinstance(expression, AwaitExpression):
             value = self._evaluate(expression.value, environment)
             if not inspect.isawaitable(value):
-                return value
+                raise RuntimeErrorX(
+                    "await requires an asynchronous operation; "
+                    "use it with an async function or async API"
+                )
             try:
                 asyncio.get_running_loop()
             except RuntimeError:

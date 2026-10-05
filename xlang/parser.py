@@ -82,6 +82,7 @@ class Parser:
         self.position = 0
         self.features = features or {}
         self.source_name = source_name
+        self.in_async_function = False
 
     def parse(self) -> Program:
         declarations: list[Any] = []
@@ -322,7 +323,7 @@ class Parser:
         if self._check("IDENTIFIER") and self._peek().value == class_name and self._peek(1).kind == "(":
             self._advance()
             parameters = self._parameters()
-            body = self._block().statements
+            body = self._function_body(is_async=False)
             if is_async:
                 raise ParseError("Constructors cannot be async", self._previous())
             declaration = FunctionDeclaration(
@@ -339,7 +340,7 @@ class Parser:
             if declaration_only and self._match(";"):
                 body = []
             else:
-                body = self._block().statements
+                body = self._function_body(is_async)
             return FunctionDeclaration(
                 name,
                 parameters,
@@ -416,7 +417,7 @@ class Parser:
                 return_type = self._parse_type()
         name = self._consume("IDENTIFIER", "Expected function name").value
         parameters = self._parameters()
-        body = self._block().statements
+        body = self._function_body(is_async)
         return FunctionDeclaration(
             name,
             parameters,
@@ -427,6 +428,14 @@ class Parser:
             is_async,
             decorators or [],
         )
+
+    def _function_body(self, is_async: bool) -> list[Any]:
+        previous_async_context = self.in_async_function
+        self.in_async_function = is_async
+        try:
+            return self._block().statements
+        finally:
+            self.in_async_function = previous_async_context
 
     def _parameters(self) -> list[Parameter]:
         self._consume("(", "Expected '(' before parameters")
@@ -1028,6 +1037,12 @@ class Parser:
             return Spread(self._expression())
         if self._match("await"):
             self._require_feature("async", self._previous())
+            if not self.in_async_function:
+                raise ParseError(
+                    "'await' is only valid inside an async function",
+                    self._previous(),
+                    self.source_name,
+                )
             return AwaitExpression(self._unary())
         raise ParseError("Expected an expression", self._peek())
 
