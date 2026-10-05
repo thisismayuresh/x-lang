@@ -10,7 +10,7 @@ from .config import (
     discover_config,
     load_config,
 )
-from .diagnostics import render_diagnostic
+from .diagnostics import render_diagnostic, render_warning
 from .lexer import LexError
 from .module_loader import ModuleLoader
 from .parser import ParseError
@@ -106,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     loader = ModuleLoader(project_root, config)
     try:
         program = loader.load_program(source_path)
+        _report_module_warnings(loader, config.color)
         if command in ("check", "build"):
             print(f"{source_path}: syntax is valid")
             if command == "build":
@@ -273,6 +274,21 @@ def _report_source_error(
     )
     print(diagnostic, file=sys.stderr)
     return 1
+
+
+def _report_module_warnings(loader: ModuleLoader, color_mode: str) -> None:
+    for warning in loader.warnings:
+        warning_path = Path(warning.source_name).resolve()
+        source = loader.sources.get(warning_path)
+        diagnostic = render_warning(
+            warning.message,
+            source,
+            warning.source_name,
+            warning.line,
+            warning.column,
+            color_mode,
+        )
+        print(diagnostic, file=sys.stderr)
 
 
 if __name__ == "__main__":

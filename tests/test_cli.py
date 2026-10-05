@@ -135,6 +135,200 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("\x1b[31m", errors)
         self.assertIn("-->", errors)
 
+    def test_importing_module_that_calls_main_warns_about_duplicate_call(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            module_file = project_root / "main.x"
+            module_file.write_text(
+                """
+                export function main() {
+                    print("called");
+                }
+                main()
+                """,
+                encoding="utf-8",
+            )
+            entry_file = project_root / "runner.x"
+            entry_file.write_text(
+                """
+                import main
+                main()
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--color",
+                    "never",
+                    str(entry_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.splitlines(), ["called", "called"])
+        self.assertIn("warning:", errors)
+        self.assertIn("already calls main() during import", errors)
+        self.assertIn(str(entry_file), errors)
+
+    def test_each_explicit_main_call_is_warned_when_imported_module_runs_main(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            module_file = project_root / "main.x"
+            module_file.write_text(
+                'export function main() { print("called"); }\nmain()\n',
+                encoding="utf-8",
+            )
+            entry_file = project_root / "runner.x"
+            entry_file.write_text(
+                "import main\nmain()\nmain()\n",
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--color",
+                    "never",
+                    str(entry_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.splitlines(), ["called", "called", "called"])
+        self.assertEqual(errors.count("warning:"), 2)
+        self.assertIn("runner.x:2:1", errors)
+        self.assertIn("runner.x:3:1", errors)
+
+    def test_named_and_wildcard_imports_select_exports_from_one_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            module_file = project_root / "greeting.x"
+            module_file.write_text(
+                """
+                export function sayGreet() {
+                    return "greet";
+                }
+                export function sayHello() {
+                    print("hello");
+                }
+                function privateHelper() {
+                    return "private";
+                }
+                """,
+                encoding="utf-8",
+            )
+            entry_file = project_root / "main.x"
+            entry_file.write_text(
+                """
+                import greeting.sayGreet
+                import greeting.sayHello
+                import greeting.*
+                import greeting.* as Greet
+
+                function main() {
+                    print(sayGreet());
+                    sayHello();
+                    print(Greet.sayGreet());
+                    Greet.sayHello();
+                }
+                main()
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--color",
+                    "never",
+                    str(entry_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.splitlines(), ["greet", "hello", "greet", "hello"])
+        self.assertEqual(errors, "")
+
+    def test_unaliased_wildcard_import_exposes_all_exports(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "greeting.x").write_text(
+                """
+                export function sayGreet() {
+                    return "greet";
+                }
+                export function sayHello() {
+                    print("hello");
+                }
+                """,
+                encoding="utf-8",
+            )
+            entry_file = project_root / "main.x"
+            entry_file.write_text(
+                """
+                import greeting.*
+                function main() {
+                    print(sayGreet());
+                    sayHello();
+                }
+                main()
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--color",
+                    "never",
+                    str(entry_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.splitlines(), ["greet", "hello"])
+        self.assertEqual(errors, "")
+
+    def test_main_followed_by_line_comment_warns_that_it_is_not_a_call(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            module_file = project_root / "main.x"
+            module_file.write_text(
+                """
+                export function main() {
+                    print("called");
+                }
+                main//()
+                """,
+                encoding="utf-8",
+            )
+            entry_file = project_root / "runner.x"
+            entry_file.write_text(
+                "import main\nmain()\n",
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--color",
+                    "never",
+                    str(entry_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.splitlines(), ["called"])
+        self.assertIn("references main without calling it", errors)
+        self.assertIn("write 'main()' to invoke it", errors)
+
     def test_config_rejects_unknown_keys_and_invalid_feature_names(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             config_path = Path(temporary_directory) / "x.toml"

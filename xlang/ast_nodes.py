@@ -12,11 +12,18 @@ class Program:
 @dataclass
 class ImportDeclaration:
     targets: list[tuple[str, str | None]]
+    wildcard: bool = False
 
 
 @dataclass
 class ImportAlias:
     source_name: str
+    alias_name: str
+
+
+@dataclass
+class ImportNamespaceAlias:
+    exported_names: list[str]
     alias_name: str
 
 

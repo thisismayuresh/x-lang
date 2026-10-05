@@ -26,6 +26,7 @@ from .ast_nodes import (
     FunctionDeclaration,
     ImportDeclaration,
     ImportAlias,
+    ImportNamespaceAlias,
     Identifier,
     IfStatement,
     Index,
@@ -377,10 +378,15 @@ class Interpreter:
                     EnumDeclaration,
                     NamespaceDeclaration,
                     ImportAlias,
+                    ImportNamespaceAlias,
                     ImportDeclaration,
                     TypeDeclaration,
                     VariableDeclaration,
                 ),
+            )
+            and not (
+                isinstance(declaration, ExpressionStatement)
+                and isinstance(declaration.expression, Identifier)
             )
             for declaration in declarations
         )
@@ -398,6 +404,16 @@ class Interpreter:
             if isinstance(declaration, ImportAlias):
                 imported_value = self._resolve_import(declaration.source_name)
                 self.globals.define(declaration.alias_name, imported_value)
+            elif isinstance(declaration, ImportNamespaceAlias):
+                exported_values = {}
+                for name in declaration.exported_names:
+                    value = self.globals.get(name)
+                    if isinstance(value, list) and all(
+                        isinstance(function, XFunction) for function in value
+                    ):
+                        value = OverloadedFunction(name, value)
+                    exported_values[name] = value
+                self.globals.define(declaration.alias_name, exported_values)
             elif isinstance(declaration, VariableDeclaration):
                 self._execute(declaration, self.globals)
             elif isinstance(declaration, TypeDeclaration):

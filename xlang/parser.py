@@ -185,6 +185,7 @@ class Parser:
 
     def _import_declaration(self) -> ImportDeclaration:
         parts = [self._consume("IDENTIFIER", "Expected import path").value]
+        wildcard = False
         while self._match("."):
             if self._match("{"):
                 targets: list[tuple[str, str | None]] = []
@@ -205,11 +206,8 @@ class Parser:
                 self._match(";")
                 return ImportDeclaration(targets)
             if self._match("*"):
-                self._match(";")
-                raise ParseError(
-                    "Wildcard imports are not supported by this interpreter yet",
-                    self._previous(),
-                )
+                wildcard = True
+                break
             parts.append(
                 self._consume("IDENTIFIER", "Expected name after '.'").value
             )
@@ -217,7 +215,10 @@ class Parser:
         if self._match("as"):
             alias = self._consume("IDENTIFIER", "Expected import alias").value
         self._match(";")
-        return ImportDeclaration([(".".join(parts), alias)])
+        if wildcard and alias is None and self._peek().kind not in (";", "EOF"):
+            if not self._line_terminator_before_current():
+                raise ParseError("Unexpected token after wildcard import", self._peek())
+        return ImportDeclaration([(".".join(parts), alias)], wildcard)
 
     def _modifiers(self) -> set[str]:
         modifiers: set[str] = set()

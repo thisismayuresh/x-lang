@@ -148,8 +148,8 @@ syntax and overload-resolution hints at runtime.
 
 Each named import first resolves to a source file beside the importing file;
 if it is not found there, it resolves under the current project directory.
-Dotted path parts map to folders, and the imported declaration matching the
-module filename must be exported.
+Dotted path parts map to folders. For example, `import greeting.sayHello`
+loads `greeting.x` and selects its exported `sayHello` declaration.
 
 ```text
 project/
@@ -183,36 +183,60 @@ Grouped imports are also supported:
 import tools.{Greeting, Printer as ConsolePrinter}
 ```
 
-An exported function can be imported and explicitly called at the top level
-from a separate entry file:
+Use `*` to import all exports from a file. Add an alias to access them through
+a namespace-like value:
+
+```x
+import greeting.* as Greet
+
+Greet.sayGreet()
+```
+
+An imported module runs its top-level statements once. If the module calls its
+exported `main()` itself, the importing file only needs the import:
 
 ```text
 project/
 └── control_flow/
     ├── main.x
-    └── runner.x
+    └── main_file.x
 ```
 
 ```x
 // control_flow/main.x
 export function main() {
-    print("Called from the importing file");
+    print("Called by the module");
 }
+main()
 ```
 
 ```x
-// control_flow/runner.x
+// control_flow/main_file.x
+import main
+```
+
+Alternatively, when `main.x` only exports the function and does not call it,
+the entry file can import and invoke it:
+
+```x
 import main
 main()
 ```
 
-Run it with `x run control_flow/runner.x`. The import resolves to the sibling
-`main.x`; because the entry file explicitly calls `main()`, the interpreter
-does not invoke that function a second time automatically.
+Run the first example with `x run examples/control_flow/main_file.x`. The
+import resolves to the sibling `main.x`, executes its top-level call, and
+does not implicitly call `main` a second time. Use the second form to control
+when the exported function is called.
+
+X warns at each top-level `main()` call in an importer when the imported module
+already calls `main()` during import; the warnings do not suppress execution.
+It also flags `main//()`. Since `//` starts a line comment, that expression is
+parsed as a bare `main` reference followed by a comment and does not invoke the
+function. Write `main()` to call it or `// main()` to comment out the call.
 
 The import loader currently combines project declarations into a shared runtime
-namespace. Wildcard imports, isolated module namespaces, and full package/name
-resolution are not implemented.
+namespace. Aliased wildcard imports provide a namespace-like object containing
+the file's exports; they do not create an isolated module runtime.
 
 ## File system standard library
 
@@ -489,7 +513,7 @@ Runnable feature examples are organized by topic:
 examples/
 ├── configuration/configured_args.x
 ├── control_flow/main.x
-├── control_flow/runner.x
+├── control_flow/main_file.x
 ├── decorators/trace.x
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
@@ -500,7 +524,7 @@ examples/
 For example:
 
 ```sh
-x run examples/control_flow/runner.x
+x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
 x run examples/filesystem_async_demo.x

@@ -1465,9 +1465,10 @@ Declarations without `export` remain module-private.
 
 # 55\. Import
 
-X uses qualified imports. A module import first checks beside the importing
-file and then checks from the project root. Dots in a path map to directories.
-The imported module filename must match an exported declaration name.
+X imports declarations from files. A path first checks beside the importing
+file and then from the project root. Dotted path components before the final
+component map to folders. For `import greeting.sayGreet`, X loads `greeting.x`
+and selects its exported `sayGreet` declaration.
 
 ```
 import users.User
@@ -1485,15 +1486,39 @@ import users.User
 let User user = User("Alice");
 ```
 
-The final component is imported into the current namespace.
+The selected declaration is imported into the current namespace.
 
-An exported `main` function can be explicitly invoked from another file. Keep
-the importing entry file named differently from the imported `main.x` module:
+Multiple declarations in a file can be selected independently:
+
+```
+import greeting.sayGreet
+import greeting.sayHello
+```
+
+Use `*` to import every exported declaration from a file. Add `as` to bind the
+exports under one namespace-like value:
+
+```
+import greeting.*
+import greeting.* as Greet
+
+Greet.sayGreet()
+Greet.sayHello()
+```
+
+The aliased wildcard namespace only exposes declarations marked `export`.
+Project imports currently share the interpreter's global environment;
+namespace aliases do not create isolated module scopes.
+
+An imported module executes its top-level statements once, in source order. If
+the module calls its exported `main()` at the top level, import alone executes
+that call. Keep the importing entry file named differently from the imported
+`main.x` module:
 
 ```
 control_flow/
 ├── main.x
-└── runner.x
+└── main_file.x
 ```
 
 ```
@@ -1501,15 +1526,26 @@ control_flow/
 export function main() {
     print("Hello");
 }
-```
-
-```
-// runner.x
-import main
 main()
 ```
 
-Run `runner.x`; its top-level call runs the imported function once.
+```
+// main_file.x
+import main
+```
+
+Run `main_file.x`; importing `main.x` executes its top-level `main()` call
+once. If `main.x` only exports the function and does not call it, the importing
+file can instead contain both `import main` and `main()` to invoke it
+explicitly. The interpreter does not implicitly invoke an exported `main`
+again when top-level executable code has already run.
+
+If an imported module calls `main()` at top level, each top-level `main()` call
+in the importer runs it again. The CLI warns at every such call site; warnings
+are informational and do not suppress execution. `//` begins a line comment:
+`main//()` is parsed as a bare `main` reference followed by a comment, not as
+a call or syntax error. The CLI warns about this no-op form and suggests
+`main()` or `// main()`.
 
 ---
 
@@ -3475,7 +3511,7 @@ examples/
 ├── configuration/
 │   └── configured_args.x
 ├── control_flow/main.x
-├── control_flow/runner.x
+├── control_flow/main_file.x
 ├── decorators/trace.x
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
@@ -3497,7 +3533,7 @@ Run from the repository root:
 
 ```sh
 x run --profile feature-tour examples/configuration/configured_args.x
-x run examples/control_flow/runner.x
+x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
 x run examples/namespaces/nested_classes.x
@@ -3522,8 +3558,8 @@ Python interpreter.
 
 The runtime features in this addendum do not imply implementation of every
 feature from the proposal. In particular, there is no static type checker,
-native backend, isolated module namespace, wildcard import implementation,
-full generic substitution, enforced interfaces/abstract methods, thread
+native backend, isolated module namespace, full generic substitution,
+enforced interfaces/abstract methods, thread
 synchronization API, task cancellation, Promise rejection model, or
 binary-file API. Refer to `README.md` for the current tested feature inventory
 and API signatures.

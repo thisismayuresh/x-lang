@@ -247,6 +247,35 @@ class InterpreterTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(output, ["exported main called"])
 
+    def test_import_executes_exported_module_top_level_call_once(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            example_directory = project_root / "control_flow"
+            example_directory.mkdir()
+            module_file = example_directory / "main.x"
+            module_file.write_text(
+                """
+                export function main() {
+                    print("main called by its module");
+                }
+                main()
+                """,
+                encoding="utf-8",
+            )
+            entry_file = example_directory / "runner.x"
+            entry_file.write_text(
+                """
+                import main
+                """,
+                encoding="utf-8",
+            )
+            program = ModuleLoader(project_root).load_program(entry_file)
+            output = []
+            result = Interpreter(output=output.append).interpret(program)
+
+        self.assertIsNone(result)
+        self.assertEqual(output, ["main called by its module"])
+
     def test_filesystem_standard_library_import(self):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)

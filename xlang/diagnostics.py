@@ -57,6 +57,48 @@ def render_diagnostic(
     return "\n".join(lines)
 
 
+def render_warning(
+    message: str,
+    source: str | None,
+    source_name: str,
+    line: int | None,
+    column: int | None,
+    color_mode: str = "auto",
+    stream: TextIO | None = None,
+) -> str:
+    output_stream = stream or sys.stderr
+    use_color = _should_use_color(color_mode, output_stream)
+    warning_source = _color("warning", YELLOW + BOLD, use_color)
+    location_marker = _color("-->", BLUE + BOLD, use_color)
+
+    if line is None or line < 1:
+        return f"{warning_source}: {message}\n{location_marker} {source_name}"
+
+    location = f"{source_name}:{line}"
+    if column is not None:
+        location += f":{column}"
+    lines = [
+        f"{warning_source}: {message}",
+        f" {location_marker} {location}",
+    ]
+    if source is None:
+        return "\n".join(lines)
+
+    source_lines = source.splitlines()
+    if line > len(source_lines):
+        return "\n".join(lines)
+    line_number_width = len(str(line))
+    gutter = " " * line_number_width
+    source_marker = _color("|", BLUE + BOLD, use_color)
+    line_marker = _color(str(line), CYAN + BOLD, use_color)
+    lines.append(f"{gutter} {source_marker}")
+    lines.append(f"{line_marker} {source_marker} {source_lines[line - 1]}")
+    if column is not None and column > 0:
+        marker = " " * (column - 1) + _color("^", YELLOW + BOLD, use_color)
+        lines.append(f"{gutter} {source_marker} {marker} {_color(message, YELLOW, use_color)}")
+    return "\n".join(lines)
+
+
 def _should_use_color(color_mode: str, stream: TextIO) -> bool:
     if color_mode == "always":
         return True

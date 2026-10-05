@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import XConfig
 from .ast_nodes import (
+    Call,
     ClassDeclaration,
     EnumDeclaration,
+    ExpressionStatement,
     FunctionDeclaration,
+    Identifier,
     ImportAlias,
     ImportDeclaration,
+    ImportNamespaceAlias,
     Program,
     TypeDeclaration,
     VariableDeclaration,
@@ -17,6 +22,14 @@ from .ast_nodes import (
 from .lexer import Lexer
 from .parser import Parser
 from .runtime import RuntimeErrorX
+
+
+@dataclass
+class ModuleWarning:
+    message: str
+    source_name: str
+    line: int | None
+    column: int | None
 
 
 class ModuleLoader:
@@ -34,6 +47,7 @@ class ModuleLoader:
         self.loading_files: set[Path] = set()
         self.direct_declarations: dict[Path, list[Any]] = {}
         self.sources: dict[Path, str] = {}
+        self.warnings: list[ModuleWarning] = []
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
@@ -64,6 +78,9 @@ class ModuleLoader:
             if not isinstance(declaration, ImportDeclaration) and declaration is not None
         ]
         self.direct_declarations[resolved_path] = direct_declarations
+        self._warn_about_bare_main_reference(
+            direct_declarations, str(resolved_path)
+        )
         self.loading_files.add(resolved_path)
 
         combined_declarations: list[Any] = []
@@ -71,6 +88,58 @@ class ModuleLoader:
             if not isinstance(declaration, ImportDeclaration):
                 continue
             for module_path, alias in declaration.targets:
+                if declaration.wildcard:
+                    imported_path = self._path_for_module(
+                        module_path, resolved_path
+                    )
+                    imported_declarations = self._load_file(imported_path)
+                    imported_resolved_path = imported_path.resolve()
+                    exported_names = self._exported_names(imported_resolved_path)
+                    if not exported_names:
+                        raise RuntimeErrorX(
+                            f"Module '{module_path}' does not export any declarations"
+                        )
+                    self._warn_duplicate_main(
+                        imported_resolved_path,
+                        resolved_path,
+                        direct_declarations,
+                    )
+                    combined_declarations.extend(imported_declarations)
+                    if alias is not None:
+                        combined_declarations.append(
+                            ImportNamespaceAlias(exported_names, alias)
+                        )
+                    continue
+
+                module_parts = module_path.split(".")
+                if len(module_parts) > 1:
+                    source_module = ".".join(module_parts[:-1])
+                    source_path = self._path_for_module(
+                        source_module, resolved_path
+                    )
+                    if source_path.is_file():
+                        imported_declarations = self._load_file(source_path)
+                        imported_resolved_path = source_path.resolve()
+                        import_name = module_parts[-1]
+                        if not self._is_exported(
+                            imported_resolved_path, import_name
+                        ):
+                            raise RuntimeErrorX(
+                                f"'{import_name}' is not exported by module "
+                                f"'{source_module}'"
+                            )
+                        self._warn_duplicate_main(
+                            imported_resolved_path,
+                            resolved_path,
+                            direct_declarations,
+                        )
+                        combined_declarations.extend(imported_declarations)
+                        if alias is not None:
+                            combined_declarations.append(
+                                ImportAlias(import_name, alias)
+                            )
+                        continue
+
                 if module_path in self.STANDARD_LIBRARY_MODULES:
                     self._require_standard_library_feature(module_path)
                     import_name = module_path.split(".")[-1]
@@ -85,6 +154,11 @@ class ModuleLoader:
                     raise RuntimeErrorX(
                         f"'{import_name}' is not exported by module '{module_path}'"
                     )
+                self._warn_duplicate_main(
+                    imported_path.resolve(),
+                    resolved_path,
+                    direct_declarations,
+                )
                 combined_declarations.extend(imported_declarations)
                 if alias is not None:
                     combined_declarations.append(ImportAlias(import_name, alias))
@@ -113,6 +187,36 @@ class ModuleLoader:
             return relative_path
         return self.project_root.joinpath(*path_parts).with_suffix(".x")
 
+    def _exported_names(self, module_path: Path) -> list[str]:
+        return [
+            name
+            for declaration in self.direct_declarations.get(module_path, [])
+            if "export" in getattr(declaration, "modifiers", set())
+            and (name := self._declaration_name(declaration)) is not None
+        ]
+
+    def _warn_duplicate_main(
+        self,
+        imported_resolved_path: Path,
+        importer_path: Path,
+        importer_declarations: list[Any],
+    ) -> None:
+        if not self._has_top_level_call(
+            self.direct_declarations[imported_resolved_path], "main"
+        ):
+            return
+        for call_site in self._top_level_calls(importer_declarations, "main"):
+            self.warnings.append(
+                ModuleWarning(
+                    "The imported module already calls main() during "
+                    "import. This call runs it again; remove this call "
+                    "to avoid duplicate execution.",
+                    str(importer_path),
+                    getattr(call_site, "line", None),
+                    getattr(call_site, "column", None),
+                )
+            )
+
     def _is_exported(self, module_path: Path, name: str) -> bool:
         declarations = self.direct_declarations.get(module_path, [])
         for declaration in declarations:
@@ -121,6 +225,49 @@ class ModuleLoader:
             if "export" in getattr(declaration, "modifiers", set()):
                 return True
         return False
+
+    def _has_top_level_call(
+        self, declarations: list[Any], function_name: str
+    ) -> bool:
+        return bool(self._top_level_calls(declarations, function_name))
+
+    def _top_level_calls(
+        self, declarations: list[Any], function_name: str
+    ) -> list[ExpressionStatement]:
+        call_statements: list[ExpressionStatement] = []
+        for declaration in declarations:
+            if not isinstance(declaration, ExpressionStatement):
+                continue
+            expression = declaration.expression
+            if not isinstance(expression, Call):
+                continue
+            if (
+                isinstance(expression.callee, Identifier)
+                and expression.callee.name == function_name
+            ):
+                call_statements.append(declaration)
+        return call_statements
+
+    def _warn_about_bare_main_reference(
+        self, declarations: list[Any], source_name: str
+    ) -> None:
+        for declaration in declarations:
+            if not isinstance(declaration, ExpressionStatement):
+                continue
+            if not isinstance(declaration.expression, Identifier):
+                continue
+            if declaration.expression.name != "main":
+                continue
+            self.warnings.append(
+                ModuleWarning(
+                    "This references main without calling it. Since '//' starts "
+                    "a line comment, write 'main()' to invoke it or '// main()' "
+                    "to comment out the call.",
+                    source_name,
+                    getattr(declaration, "line", None),
+                    getattr(declaration, "column", None),
+                )
+            )
 
     def _declaration_name(self, declaration: Any) -> str | None:
         if isinstance(
