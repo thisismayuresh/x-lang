@@ -78,7 +78,7 @@ class ModuleLoader:
                         ImportAlias(module_path, alias or import_name)
                     )
                     continue
-                imported_path = self._path_for_module(module_path)
+                imported_path = self._path_for_module(module_path, resolved_path)
                 imported_declarations = self._load_file(imported_path)
                 import_name = module_path.split(".")[-1]
                 if not self._is_exported(imported_path.resolve(), import_name):
@@ -106,8 +106,11 @@ class ModuleLoader:
                 f"Cannot import '{module_path}': feature '{feature_name}' is disabled"
             )
 
-    def _path_for_module(self, module_path: str) -> Path:
+    def _path_for_module(self, module_path: str, importer_path: Path) -> Path:
         path_parts = module_path.split(".")
+        relative_path = importer_path.parent.joinpath(*path_parts).with_suffix(".x")
+        if relative_path.is_file():
+            return relative_path
         return self.project_root.joinpath(*path_parts).with_suffix(".x")
 
     def _is_exported(self, module_path: Path, name: str) -> bool:

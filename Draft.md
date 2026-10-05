@@ -1384,9 +1384,13 @@ enum
 type
 function
 const
+top-level executable statements
 ```
 
 Declarations are private to the module unless exported.
+Top-level statements execute in source order when the entry module is run.
+When the entry module contains executable statements, the interpreter does not
+also invoke a function named `main` implicitly.
 
 ---
 
@@ -1461,7 +1465,9 @@ Declarations without `export` remain module-private.
 
 # 55\. Import
 
-X uses qualified imports.
+X uses qualified imports. A module import first checks beside the importing
+file and then checks from the project root. Dots in a path map to directories.
+The imported module filename must match an exported declaration name.
 
 ```
 import users.User
@@ -1480,6 +1486,30 @@ let User user = User("Alice");
 ```
 
 The final component is imported into the current namespace.
+
+An exported `main` function can be explicitly invoked from another file. Keep
+the importing entry file named differently from the imported `main.x` module:
+
+```
+control_flow/
+├── main.x
+└── runner.x
+```
+
+```
+// main.x
+export function main() {
+    print("Hello");
+}
+```
+
+```
+// runner.x
+import main
+main()
+```
+
+Run `runner.x`; its top-level call runs the imported function once.
 
 ---
 
@@ -3444,7 +3474,8 @@ The repository's executable examples are:
 examples/
 ├── configuration/
 │   └── configured_args.x
-├── control_flow/loops.x
+├── control_flow/main.x
+├── control_flow/runner.x
 ├── decorators/trace.x
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
@@ -3466,7 +3497,7 @@ Run from the repository root:
 
 ```sh
 x run --profile feature-tour examples/configuration/configured_args.x
-x run examples/control_flow/loops.x
+x run examples/control_flow/runner.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
 x run examples/namespaces/nested_classes.x
@@ -3566,6 +3597,12 @@ least one arm; runtime selection is first-match-wins. The interpreter does not
 perform exhaustiveness or unreachable-arm analysis, and enum variants do not
 carry payloads.
 
+Enums may be declared at module scope, in class bodies, inside functions, and
+inside nested blocks. Their names follow lexical scope: a nested declaration
+can shadow an outer enum, and enum values from distinct declarations remain
+distinct even if the enum names and member names are identical. Enum patterns
+resolve their enum name from the active lexical scope.
+
 ### A.9.4 Exceptions and equality
 
 `try` may have multiple ordered `catch` clauses, each optionally typed, and an
@@ -3602,6 +3639,25 @@ access-control boundaries.
 Declaration registration builds top-level and nested `Environment` scopes.
 Function and class decorators execute during registration; class registration
 recursively registers nested classes and captures the class environment.
+Enum declarations are also valid statements, so they are defined in the
+environment of the block where they appear; enum patterns use that same
+environment for name resolution.
+
+Project imports resolve beside the importing source before falling back to
+the configured project root. Entry modules may contain executable top-level
+statements; the interpreter executes them and skips implicit `main` dispatch
+so an explicitly imported `main()` call is not repeated.
+
+#### Language change principle
+
+When an example exposes unexpected behavior or an error, first define the
+intended language rule and its scope, then fix the grammar and semantic path
+that enforce that rule. Do not special-case the example or patch only one
+runtime symptom. Add regression tests for the underlying rule, including
+related scope and interaction cases, and update this specification and runnable
+examples. This keeps one language feature consistent across parsing, runtime
+behavior, and diagnostics.
+
 Statement execution dispatches loops and try/catch/finally nodes through the
 same evaluator. Destructuring uses pattern AST nodes shared with `match`, but
 has a separate binding phase because declarations create names while

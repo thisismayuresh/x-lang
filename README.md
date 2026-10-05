@@ -117,7 +117,8 @@ The interpreter currently supports:
 - Function, class, constructor, and method decorators. The built-in `@trace`
   decorator logs calls/construction; custom decorators can transform a
   function or class by returning the target they receive.
-- Enums with implicit ordinal values.
+- Enums with implicit ordinal values, valid at module, class, function, and
+  nested block scope.
 - Arithmetic, comparison, equality, logical, assignment, and increment/
   decrement operators.
 - `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
@@ -145,9 +146,10 @@ syntax and overload-resolution hints at runtime.
 
 ## Project module imports
 
-Each named import resolves to a source file under the current project
-directory. Dots in the import path map to folders, and the imported declaration
-must be exported.
+Each named import first resolves to a source file beside the importing file;
+if it is not found there, it resolves under the current project directory.
+Dotted path parts map to folders, and the imported declaration matching the
+module filename must be exported.
 
 ```text
 project/
@@ -180,6 +182,33 @@ Grouped imports are also supported:
 ```x
 import tools.{Greeting, Printer as ConsolePrinter}
 ```
+
+An exported function can be imported and explicitly called at the top level
+from a separate entry file:
+
+```text
+project/
+└── control_flow/
+    ├── main.x
+    └── runner.x
+```
+
+```x
+// control_flow/main.x
+export function main() {
+    print("Called from the importing file");
+}
+```
+
+```x
+// control_flow/runner.x
+import main
+main()
+```
+
+Run it with `x run control_flow/runner.x`. The import resolves to the sibling
+`main.x`; because the entry file explicitly calls `main()`, the interpreter
+does not invoke that function a second time automatically.
 
 The import loader currently combines project declarations into a shared runtime
 namespace. Wildcard imports, isolated module namespaces, and full package/name
@@ -459,7 +488,8 @@ Runnable feature examples are organized by topic:
 ```text
 examples/
 ├── configuration/configured_args.x
-├── control_flow/loops.x
+├── control_flow/main.x
+├── control_flow/runner.x
 ├── decorators/trace.x
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
@@ -470,7 +500,7 @@ examples/
 For example:
 
 ```sh
-x run examples/control_flow/loops.x
+x run examples/control_flow/runner.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
 x run examples/filesystem_async_demo.x

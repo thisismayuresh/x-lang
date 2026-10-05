@@ -179,7 +179,9 @@ class Parser:
             raise ParseError("Expected a declaration after modifiers", self._peek())
         if exported:
             raise ParseError("'export' must precede a declaration", self._peek())
-        raise ParseError("Expected a declaration", self._peek())
+        if decorators:
+            raise ParseError("Decorators must precede a declaration", self._peek())
+        return self._statement()
 
     def _import_declaration(self) -> ImportDeclaration:
         parts = [self._consume("IDENTIFIER", "Expected import path").value]
@@ -582,6 +584,9 @@ class Parser:
     def _parse_statement(self) -> Any:
         if self._match("{"):
             return Block(self._block_contents())
+        if self._match("enum"):
+            self._require_feature("enums", self._previous())
+            return self._enum_declaration(set())
         if self._match("let", "const"):
             self.position -= 1
             return self._variable_declaration(require_semicolon=True)

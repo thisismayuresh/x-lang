@@ -218,6 +218,35 @@ class InterpreterTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(output, ["hello"])
 
+    def test_relative_module_import_and_top_level_function_call(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            example_directory = project_root / "control_flow"
+            example_directory.mkdir()
+            module_file = example_directory / "main.x"
+            module_file.write_text(
+                """
+                export function main() {
+                    print("exported main called");
+                }
+                """,
+                encoding="utf-8",
+            )
+            entry_file = example_directory / "runner.x"
+            entry_file.write_text(
+                """
+                import main
+                main()
+                """,
+                encoding="utf-8",
+            )
+            program = ModuleLoader(project_root).load_program(entry_file)
+            output = []
+            result = Interpreter(output=output.append).interpret(program)
+
+        self.assertIsNone(result)
+        self.assertEqual(output, ["exported main called"])
+
     def test_filesystem_standard_library_import(self):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
@@ -632,6 +661,35 @@ class InterpreterTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(output, ["true", "false", "false", "true", "false"])
+
+    def test_enums_can_be_declared_in_function_and_nested_block_scopes(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                enum Status {
+                    READY,
+                    DONE
+                }
+                let Status current = Status.DONE;
+                print(match current {
+                    Status.READY => "ready",
+                    Status.DONE => "done"
+                });
+
+                {
+                    enum Status {
+                        DONE
+                    }
+                    print(current == Status.DONE);
+                    print(match Status.DONE {
+                        Status.DONE => "inner done"
+                    });
+                }
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(output, ["done", "false", "inner done"])
 
     def test_function_and_class_decorators(self):
         result, output = self.run_x(

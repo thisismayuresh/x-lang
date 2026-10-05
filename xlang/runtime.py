@@ -331,6 +331,7 @@ class XEnumMember:
     enum_name: str
     name: str
     value: Any
+    enum_identity: object
 
 
 @dataclass
@@ -367,6 +368,22 @@ class Interpreter:
 
     def interpret(self, program: Program) -> Any:
         declarations = [declaration for declaration in program.declarations if declaration]
+        has_top_level_statements = any(
+            not isinstance(
+                declaration,
+                (
+                    FunctionDeclaration,
+                    ClassDeclaration,
+                    EnumDeclaration,
+                    NamespaceDeclaration,
+                    ImportAlias,
+                    ImportDeclaration,
+                    TypeDeclaration,
+                    VariableDeclaration,
+                ),
+            )
+            for declaration in declarations
+        )
         for declaration in declarations:
             if isinstance(declaration, FunctionDeclaration):
                 self._define_function(declaration, self.globals)
@@ -385,7 +402,22 @@ class Interpreter:
                 self._execute(declaration, self.globals)
             elif isinstance(declaration, TypeDeclaration):
                 continue
+            elif isinstance(
+                declaration,
+                (
+                    FunctionDeclaration,
+                    ClassDeclaration,
+                    EnumDeclaration,
+                    NamespaceDeclaration,
+                    ImportDeclaration,
+                ),
+            ):
+                continue
+            else:
+                self._execute(declaration, self.globals)
 
+        if has_top_level_statements:
+            return None
         main_value = self.globals.values.get("main")
         if main_value is not None:
             main_functions = main_value if isinstance(main_value, list) else [main_value]
@@ -961,9 +993,13 @@ class Interpreter:
     def _define_enum(self, declaration: EnumDeclaration, environment: Environment) -> None:
         self._set_declaration_location(declaration)
         enum_values = Environment()
+        enum_identity = object()
         for index, (name, expression) in enumerate(declaration.members):
             value = index if expression is None else self._evaluate(expression, environment)
-            enum_values.define(name, XEnumMember(declaration.name, name, value))
+            enum_values.define(
+                name,
+                XEnumMember(declaration.name, name, value, enum_identity),
+            )
         environment.define(declaration.name, enum_values)
 
     def _set_declaration_location(self, declaration: Any) -> None:
@@ -1009,6 +1045,8 @@ class Interpreter:
                     statement.constant,
                     array_type=array_type,
                 )
+        elif isinstance(statement, EnumDeclaration):
+            self._define_enum(statement, environment)
         elif isinstance(statement, ExpressionStatement):
             self._evaluate(statement.expression, environment)
         elif isinstance(statement, IfStatement):
@@ -1304,7 +1342,7 @@ class Interpreter:
     ) -> Any:
         value = self._evaluate(expression.value, environment)
         for arm in expression.arms:
-            bindings = self._match_pattern(arm.pattern, value)
+            bindings = self._match_pattern(arm.pattern, value, environment)
             if bindings is None:
                 continue
             arm_environment = Environment(environment)
@@ -1320,7 +1358,9 @@ class Interpreter:
             return self._evaluate(arm.body, arm_environment)
         raise RuntimeErrorX("No pattern matched the value")
 
-    def _match_pattern(self, pattern: Any, value: Any) -> dict[str, Any] | None:
+    def _match_pattern(
+        self, pattern: Any, value: Any, environment: Environment
+    ) -> dict[str, Any] | None:
         if isinstance(pattern, WildcardPattern):
             return {}
         if isinstance(pattern, BindingPattern):
@@ -1330,7 +1370,10 @@ class Interpreter:
                 return {}
             return None
         if isinstance(pattern, EnumPattern):
-            enum_value = self.globals.get(pattern.enum_name)
+            try:
+                enum_value = environment.get(pattern.enum_name)
+            except RuntimeErrorX:
+                return None
             if not isinstance(enum_value, Environment):
                 return None
             try:
@@ -1342,7 +1385,9 @@ class Interpreter:
             return None
         if isinstance(pattern, tuple) and pattern and pattern[0] == "or":
             for alternative in pattern[1]:
-                alternative_bindings = self._match_pattern(alternative, value)
+                alternative_bindings = self._match_pattern(
+                    alternative, value, environment
+                )
                 if alternative_bindings is not None:
                     return alternative_bindings
             return None
@@ -1355,7 +1400,9 @@ class Interpreter:
                 return None
             array_bindings: dict[str, Any] = {}
             for index, child_pattern in enumerate(pattern.items):
-                child_bindings = self._match_pattern(child_pattern, value[index])
+                child_bindings = self._match_pattern(
+                    child_pattern, value[index], environment
+                )
                 if child_bindings is None:
                     return None
                 array_bindings.update(child_bindings)
@@ -1370,7 +1417,9 @@ class Interpreter:
             for name, child_pattern in pattern.fields:
                 if name not in object_value:
                     return None
-                child_bindings = self._match_pattern(child_pattern, object_value[name])
+                child_bindings = self._match_pattern(
+                    child_pattern, object_value[name], environment
+                )
                 if child_bindings is None:
                     return None
                 object_bindings.update(child_bindings)
@@ -1534,7 +1583,7 @@ class Interpreter:
             return (
                 isinstance(left, XEnumMember)
                 and isinstance(right, XEnumMember)
-                and left.enum_name == right.enum_name
+                and left.enum_identity is right.enum_identity
                 and left.name == right.name
             )
         if self._is_number(left) and self._is_number(right):

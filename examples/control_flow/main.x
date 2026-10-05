@@ -1,4 +1,22 @@
-function main() {
+// Exported module function invoked by runner.x.
+export function main() {
+     enum X {
+        YES,
+        NO
+    }
+
+    enum Y{
+        YES,
+         NO
+    }
+
+    print("Statement", X.YES===Y.YES)
+
+    let X sameEnumMember = X.YES
+    let Y otherEnumMember = Y.YES
+    print("same enum member=" + (sameEnumMember == X.YES))
+    print("different enum=" + (sameEnumMember == otherEnumMember))
+
     let integer total = 0
     let integer index = 0
     while (index < 2) {
@@ -35,13 +53,5 @@ function main() {
         x++;
     }
 
-       enum X {
-        YES,
-        NO
-    }
 
-    enum Y{
-        YES,
-         NO
-    }
 }
