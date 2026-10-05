@@ -30,6 +30,8 @@ from .ast_nodes import (
     NewExpression,
     NamespaceDeclaration,
     ObjectLiteral,
+    OptionalChain,
+    OptionalChainSegment,
     Parameter,
     Program,
     ReturnStatement,
@@ -43,6 +45,8 @@ from .ast_nodes import (
     ThrowStatement,
     TryStatement,
     TypeDeclaration,
+    UndefinedPattern,
+    UndefinedLiteral,
     Unary,
     VariableDeclaration,
     WhileStatement,
@@ -78,22 +82,29 @@ class Parser:
         tokens: list[Token],
         features: Mapping[str, bool] | None = None,
         source_name: str | None = None,
+        recover_errors: bool = False,
     ) -> None:
         self.tokens = tokens
         self.position = 0
         self.features = features or {}
         self.source_name = source_name
         self.in_async_function = False
+        self.recover_errors = recover_errors
+        self.errors: list[ParseError] = []
 
     def parse(self) -> Program:
         declarations: list[Any] = []
-        try:
-            while not self._check("EOF"):
+        while not self._check("EOF"):
+            start_position = self.position
+            try:
                 declarations.append(self._declaration())
-        except ParseError as error:
-            if error.source_name is None:
-                error.source_name = self.source_name
-            raise
+            except ParseError as error:
+                if error.source_name is None:
+                    error.source_name = self.source_name
+                if not self.recover_errors:
+                    raise
+                self.errors.append(error)
+                self._synchronize(start_position, stop_at_block_end=False)
         return Program(declarations)
 
     def _declaration(self) -> Any:
@@ -609,6 +620,18 @@ class Parser:
     def _parse_statement(self) -> Any:
         if self._match("{"):
             return Block(self._block_contents())
+        is_async = False
+        if self._match("async"):
+            self._require_feature("async", self._previous())
+            is_async = True
+        if self._match("function"):
+            return self._function_declaration(set(), None, is_async)
+        if self._looks_like_return_type_function():
+            return_type = self._parse_type()
+            self._consume("function", "Expected 'function' after return type")
+            return self._function_declaration(set(), return_type, is_async)
+        if is_async:
+            raise ParseError("'async' must precede a function declaration", self._peek())
         if self._match("enum"):
             self._require_feature("enums", self._previous())
             return self._enum_declaration(set())
@@ -818,8 +841,10 @@ class Parser:
             return LiteralPattern(True)
         if self._match("false"):
             return LiteralPattern(False)
-        if self._match("null"):
+        if self._match("null", "Null"):
             return LiteralPattern(None)
+        if self._match("undefined", "Undefined"):
+            return UndefinedPattern()
         if self._match("["):
             items: list[Any] = []
             rest_name = None
@@ -874,9 +899,41 @@ class Parser:
     def _block_contents(self) -> list[Any]:
         statements: list[Any] = []
         while not self._check("}") and not self._check("EOF"):
-            statements.append(self._statement())
+            start_position = self.position
+            try:
+                statements.append(self._statement())
+            except ParseError as error:
+                if error.source_name is None:
+                    error.source_name = self.source_name
+                if not self.recover_errors:
+                    raise
+                self.errors.append(error)
+                self._synchronize(start_position, stop_at_block_end=True)
+        if self._check("EOF"):
+            raise ParseError(
+                "Unexpected end of file; expected '}' to close block",
+                self._peek(),
+                self.source_name,
+            )
         self._consume("}", "Expected '}' after block")
         return statements
+
+    def _synchronize(self, start_position: int, stop_at_block_end: bool) -> None:
+        if self.position <= start_position and not self._check("EOF"):
+            if not (stop_at_block_end and self._check("}")):
+                self._advance()
+        while not self._check("EOF"):
+            if stop_at_block_end and self._check("}"):
+                return
+            if self._check(";"):
+                self._advance()
+                return
+            if self.position > start_position:
+                previous = self.tokens[self.position - 1]
+                current = self._peek()
+                if current.line > previous.line:
+                    return
+            self._advance()
 
     def _as_block(self, statement: Any) -> Block:
         if isinstance(statement, Block):
@@ -960,6 +1017,9 @@ class Parser:
             operator = self._previous().kind
             return Unary(operator, self._unary())
         expression = self._primary()
+        chain_segments: list[OptionalChainSegment] = []
+        optional_chain_started = False
+        chain_object = expression
         while True:
             if self._check("<") and self._looks_like_generic_call():
                 self._advance()
@@ -968,28 +1028,77 @@ class Parser:
                     type_arguments.append(self._parse_type())
                 self._consume(">", "Expected '>' after generic call types")
                 self._consume("(", "Expected '(' after generic call types")
-                expression = Call(
-                    expression,
-                    self._arguments_after_open_paren(),
-                    type_arguments,
-                )
+                arguments = self._arguments_after_open_paren()
+                if optional_chain_started:
+                    chain_segments.append(
+                        OptionalChainSegment(
+                            "call", (arguments, type_arguments)
+                        )
+                    )
+                else:
+                    expression = Call(expression, arguments, type_arguments)
             elif self._match("("):
                 arguments = self._arguments_after_open_paren()
-                expression = Call(expression, arguments)
+                if optional_chain_started:
+                    chain_segments.append(
+                        OptionalChainSegment("call", (arguments, []))
+                    )
+                else:
+                    expression = Call(expression, arguments)
+            elif self._match("?."):
+                optional_chain_started = True
+                if not chain_segments:
+                    chain_object = expression
+                if self._match("("):
+                    chain_segments.append(
+                        OptionalChainSegment(
+                            "call",
+                            (self._arguments_after_open_paren(), []),
+                            optional=True,
+                        )
+                    )
+                else:
+                    name = self._consume(
+                        "IDENTIFIER", "Expected member name after '?.'"
+                    ).value
+                    chain_segments.append(
+                        OptionalChainSegment("member", name, optional=True)
+                    )
+            elif self._match("?["):
+                optional_chain_started = True
+                if not chain_segments:
+                    chain_object = expression
+                index = self._expression()
+                self._consume("]", "Expected ']' after optional index")
+                chain_segments.append(
+                    OptionalChainSegment("index", index, optional=True)
+                )
             elif self._match("."):
                 name = self._consume("IDENTIFIER", "Expected member name after '.'").value
-                expression = Member(expression, name)
+                if optional_chain_started:
+                    chain_segments.append(OptionalChainSegment("member", name))
+                else:
+                    expression = Member(expression, name)
             elif self._match("["):
                 index = self._expression()
                 self._consume("]", "Expected ']' after index")
-                expression = Index(expression, index)
+                if optional_chain_started:
+                    chain_segments.append(OptionalChainSegment("index", index))
+                else:
+                    expression = Index(expression, index)
             elif (
                 not self._line_terminator_before_current()
                 and self._match("++", "--")
             ):
+                if optional_chain_started:
+                    expression = OptionalChain(chain_object, chain_segments)
                 expression = Unary(self._previous().kind, expression, postfix=True)
+                optional_chain_started = False
+                chain_segments = []
             else:
                 break
+        if optional_chain_started:
+            expression = OptionalChain(chain_object, chain_segments)
         return expression
 
     def _primary(self) -> Any:
@@ -997,8 +1106,10 @@ class Parser:
             return Literal(False)
         if self._match("true"):
             return Literal(True)
-        if self._match("null"):
+        if self._match("null", "Null"):
             return Literal(None)
+        if self._match("undefined", "Undefined"):
+            return UndefinedLiteral()
         if self._match("NUMBER"):
             text = self._previous().value
             return Literal(float(text) if "." in text else int(text))
@@ -1076,7 +1187,13 @@ class Parser:
                     self.source_name,
                 )
             return AwaitExpression(self._unary())
-        raise ParseError("Expected an expression", self._peek())
+        token = self._peek()
+        token_description = repr(token.value) if token.value else repr(token.kind)
+        raise ParseError(
+            f"Unexpected token {token_description}; expected an expression",
+            token,
+            self.source_name,
+        )
 
     def _parse_template_literal(self, token: Token) -> TemplateLiteral:
         raw = token.value

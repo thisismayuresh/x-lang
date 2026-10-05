@@ -25,8 +25,6 @@ function main() {
     print(Greet.sayGreet());
     Greet.sayHello();
 
-
-
      let string name = "Maya";
     let integer count = 3;
 
@@ -39,6 +37,16 @@ multiple lines, and still interpolates {count}.`);
     print(`Use {{ and }} to show braces without interpolation.`);
     print("Arrays:", [1, 2, 3], "objects:", {active: true});
 
-}
+    let object[] profile = [{
+        "name": "Maya",
+        age: "21"
+}]
 
+   //print(`Hello {profile.name} {typeOf(4/2)}`);
+
+    print("Null/null:", typeOf(Null), typeOf(null));
+    print("Undefined/undefined:", typeOf(Undefined), typeOf(undefined));
+    print("Missing profile field:", typeOf(profile[0]?.x), profile[0]?.x);
+
+}
 main()

@@ -2001,6 +2001,30 @@ Increment/decrement:
 
 Operator precedence follows conventional C/Java/C#-style precedence.
 
+The ternary conditional operator is supported:
+
+```
+let string label = isReady ? "ready" : "waiting";
+```
+
+Null-safe chains use `?.member`, `?.(arguments)`, and `?[index]`. An optional
+segment whose receiver is `null` short-circuits the remainder of that chain to
+`null`; safe indexing also returns `null` for an out-of-range sequence index or
+missing dictionary key. Invalid index types still report errors.
+
+```
+let name = user?.profile?.getName?.();
+let first = users?[0];
+let maybeName = profiles?[0]?.name;
+```
+
+Optional member access on a dictionary returns `null` when the property is
+absent. Optional calls do not evaluate their arguments when the callee is
+`null`.
+
+The lexer recognizes `?[` as its own operator, distinct from a ternary `?`.
+Thus `condition ? [value] : fallback` remains a ternary expression.
+
 A complete precedence table will be included in a future formal grammar revision.
 
 ---
@@ -2026,6 +2050,23 @@ String concatenation uses `+`:
 ```
 let string message = "Hello " + name;
 ```
+
+The built-in `typeOf(value)` function returns a JavaScript-style type name.
+Integers and floats return `"number"`; strings, booleans, and functions return
+`"string"`, `"boolean"`, and `"function"`. Object literals, arrays, class
+instances, and `null` return `"object"`.
+
+Generic object annotations describe the key and value types:
+
+```
+let object<string, string> user = {
+    "name": "Maya",
+    "age": "21"
+};
+```
+
+In X, annotations precede the variable name. The TypeScript-style
+`let user: object<string, string>` form is not supported.
 
 Backtick template literals may contain newlines and interpolate expressions
 using braces without a `$` prefix:

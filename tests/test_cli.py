@@ -1,8 +1,10 @@
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from xlang.cli import main
 from xlang.config import ConfigError, discover_config, load_config
@@ -15,6 +17,50 @@ class CommandLineTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             return_code = main(arguments)
         return return_code, output.getvalue(), errors.getvalue()
+
+    def test_cli_reports_multiple_lexical_and_syntax_errors(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """function main() {
+    print(1 + );
+    print($ + );
+    let broken = ;
+}
+""",
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["check", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("Unexpected token ';'; expected an expression", errors)
+        self.assertIn("Unexpected character '$'", errors)
+        self.assertIn("Unexpected token ')'; expected an expression", errors)
+        self.assertIn("found 4 error(s)", errors)
+
+    def test_cli_reports_unclosed_block_at_end_of_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "function main() {\n    print(1);\n",
+                encoding="utf-8",
+            )
+
+            return_code, _, errors = self.run_cli(
+                ["check", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertIn(
+            "Unexpected end of file; expected '}' to close block",
+            errors,
+        )
+        self.assertIn(f"{source_file}:3:", errors)
+        self.assertIn("found 1 error(s)", errors)
 
     def test_toml_run_profile_provides_arguments_and_environment(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -68,6 +114,128 @@ class CommandLineTests(unittest.TestCase):
             ["4", "configured argument", "profile value", "cli argument", "profile"],
         )
         self.assertEqual(errors, "")
+
+    def test_env_file_is_exposed_through_system_environment(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / ".env").write_text(
+                """
+                # Local demo configuration
+                export X_ENV_DEMO_NAME=X Language
+                X_ENV_DEMO_MODE="development mode"
+                X_ENV_DEMO_PORT=4312 # local server port
+                X_ENV_DEMO_OVERRIDE=from-dotenv
+                """,
+                encoding="utf-8",
+            )
+            source_file = project_root / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print(System.Environment.X_ENV_DEMO_NAME)
+                    print(System.Environment.X_ENV_DEMO_MODE)
+                    print(System.Environment.X_ENV_DEMO_PORT)
+                    print(System.Environment.X_ENV_DEMO_OVERRIDE)
+                    print(System.Environment.has("X_ENV_DEMO_PORT"))
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ, {"X_ENV_DEMO_OVERRIDE": "from-process"}
+            ):
+                return_code, output, errors = self.run_cli(
+                    ["run", "--no-config", str(source_file)]
+                )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            output.splitlines(),
+            [
+                "X Language",
+                "development mode",
+                "4312",
+                "from-process",
+                "true",
+            ],
+        )
+        self.assertEqual(errors, "")
+
+    def test_invalid_env_file_reports_its_path_and_line(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / ".env").write_text(
+                "X_VALID=value\nnot-an-assignment\n",
+                encoding="utf-8",
+            )
+            source_file = project_root / "main.x"
+            source_file.write_text("function main() {}\n", encoding="utf-8")
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn(".env:2:1", errors)
+        self.assertIn("KEY=VALUE", errors)
+        self.assertEqual(output, "")
+
+    def test_configuration_example_runs_with_the_env_example(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / ".env").write_text(
+                (repository_root / ".env.example").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            config_path = project_root / "x.toml"
+            config_path.write_text(
+                (repository_root / "x.toml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            source_file = project_root / "configured_args.x"
+            source_file.write_text(
+                (
+                    repository_root
+                    / "examples"
+                    / "configuration"
+                    / "configured_args.x"
+                ).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--config", str(config_path), str(source_file)]
+            )
+            profile_code, profile_output, profile_errors = self.run_cli(
+                [
+                    "run",
+                    "--config",
+                    str(config_path),
+                    "--profile",
+                    "feature-tour",
+                    str(source_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            output.splitlines(),
+            [
+                "Argument count: 0",
+                "Configured project: x-language",
+                "Selected mode: local-development",
+                "Service name: X Language Demo",
+                "API base URL: http://localhost:8080",
+                "Has service name: true",
+            ],
+        )
+        self.assertEqual(errors, "")
+        self.assertEqual(profile_code, 0)
+        self.assertIn("Configured project: x-language", profile_output)
+        self.assertIn("Selected mode: feature-tour", profile_output)
+        self.assertEqual(profile_errors, "")
 
     def test_cli_feature_override_reenables_a_toml_disabled_feature(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

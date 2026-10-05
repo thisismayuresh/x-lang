@@ -130,6 +130,57 @@ def load_config(
     return config
 
 
+def load_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    try:
+        contents = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as error:
+        raise ConfigError(f"Cannot read environment file: {error}", path) from error
+
+    environment: dict[str, str] = {}
+    for line_number, raw_line in enumerate(contents.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+
+        key, separator, raw_value = line.partition("=")
+        key = key.strip()
+        if not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+            raise ConfigError(
+                "Expected an environment assignment in KEY=VALUE form",
+                path,
+                line_number,
+                1,
+            )
+
+        value = raw_value.strip()
+        if value.startswith(("'", '"')):
+            quote = value[0]
+            closing_quote = value.find(quote, 1)
+            trailing_text = (
+                "" if closing_quote < 0 else value[closing_quote + 1:].strip()
+            )
+            if closing_quote < 0 or (
+                trailing_text and not trailing_text.startswith("#")
+            ):
+                raise ConfigError(
+                    "Environment values must use matching quotes with no trailing text",
+                    path,
+                    line_number,
+                    len(key) + 2,
+                )
+            value = value[1:closing_quote]
+        else:
+            comment_start = re.search(r"\s+#", value)
+            if comment_start is not None:
+                value = value[:comment_start.start()].rstrip()
+        environment[key] = value
+    return environment
+
+
 def _apply_config_tables(
     config: XConfig, data: dict[str, Any], config_path: Path
 ) -> None:

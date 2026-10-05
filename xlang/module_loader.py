@@ -40,14 +40,21 @@ class ModuleLoader:
         "System.Environment",
     }
 
-    def __init__(self, project_root: Path, config: XConfig | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: XConfig | None = None,
+        recover_errors: bool = False,
+    ) -> None:
         self.project_root = project_root.resolve()
         self.config = config or XConfig()
+        self.recover_errors = recover_errors
         self.loaded_files: set[Path] = set()
         self.loading_files: set[Path] = set()
         self.direct_declarations: dict[Path, list[Any]] = {}
         self.sources: dict[Path, str] = {}
         self.warnings: list[ModuleWarning] = []
+        self.errors: list[BaseException] = []
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
@@ -68,10 +75,21 @@ class ModuleLoader:
             raise RuntimeErrorX(f"Cannot read source file '{source_path}': {error}") from error
 
         self.sources[resolved_path] = source
-        lexer = Lexer(source, str(resolved_path))
+        lexer = Lexer(
+            source,
+            str(resolved_path),
+            recover_errors=self.recover_errors,
+        )
         tokens = lexer.tokenize()
-        parser = Parser(tokens, self.config.features, str(resolved_path))
+        self.errors.extend(lexer.errors)
+        parser = Parser(
+            tokens,
+            self.config.features,
+            str(resolved_path),
+            recover_errors=self.recover_errors,
+        )
         program = parser.parse()
+        self.errors.extend(parser.errors)
         direct_declarations = [
             declaration
             for declaration in program.declarations

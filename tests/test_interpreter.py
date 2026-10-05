@@ -36,6 +36,297 @@ class InterpreterTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(output, ["Hello Ada"])
 
+    def test_type_of_reports_javascript_style_type_names(self):
+        result, output = self.run_x(
+            """
+            function greet() {}
+            class User {}
+            enum Status { READY }
+            function main() {
+                let object value = {
+                    "name": "Maya",
+                    age: 21
+                };
+                print(typeOf(value));
+                print(typeOf(value.name));
+                print(typeOf(value.age));
+                print(typeOf(1.5));
+                print(typeOf(true));
+                print(typeOf(null));
+                print(typeOf([1, 2]));
+                print(typeOf(greet));
+                print(typeOf(User));
+                print(typeOf(Status.READY));
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "object",
+                "string",
+                "number",
+                "number",
+                "boolean",
+                "object",
+                "object",
+                "function",
+                "function",
+                "object",
+            ],
+        )
+
+    def test_generic_object_type_validates_key_and_value_shapes(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                let object<string, string> user = {
+                    "name": "Maya",
+                    "age": "21",
+                    "gender": "Rather not to say"
+                };
+                print(typeOf(user));
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(output, ["object"])
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
+        ):
+            self.run_x(
+                """
+                function main() {
+                    let object<string, string> user = {
+                        "name": "Maya",
+                        "age": 21
+                    };
+                }
+                """
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
+        ):
+            self.run_x(
+                """
+                function main() {
+                    let object<string, string> user = {"age": "21"};
+                    user = {"age": 21};
+                }
+                """
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
+        ):
+            self.run_x(
+                """
+                function main() {
+                    let object<string, string> user = {"age": "21"};
+                    user.age = 21;
+                }
+                """
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "No overload of 'update' matches"
+        ):
+            self.run_x(
+                """
+                function update(object<string, string> user) {}
+                function main() {
+                    update({"age": 21});
+                }
+                """
+            )
+
+    def test_type_of_requires_exactly_one_argument(self):
+        with self.assertRaisesRegex(RuntimeErrorX, "typeOf expects one argument"):
+            self.run_x("function main() { typeOf(); }")
+
+        with self.assertRaisesRegex(RuntimeErrorX, "typeOf expects one argument"):
+            self.run_x("function main() { typeOf(1, 2); }")
+
+    def test_null_and_undefined_literals_are_object_typed_and_distinct_values(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                let empty = {};
+                let profile = [{name: "Maya"}];
+                print(typeOf(null), typeOf(Null));
+                print(typeOf(undefined), typeOf(Undefined));
+                print(null === Null, undefined === Undefined);
+                print(null == undefined);
+                print(null, undefined);
+                print(typeOf(empty?.missing), empty?.missing);
+                print(typeOf(profile[0]?.x), profile[0]?.x);
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "object object",
+                "object object",
+                "true true",
+                "true",
+                "null undefined",
+                "object undefined",
+                "object undefined",
+            ],
+        )
+
+    def test_object_can_be_an_inferred_variable_name_or_a_type(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                let object = {name: "Maya"};
+                let object profile = {name: "Grace"};
+                print(object.name);
+                print(profile.name);
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(output, ["Maya", "Grace"])
+
+    def test_nested_functions_are_declared_without_running_and_capture_locals(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                let integer count = 0;
+                print("before declaration");
+                string function greet(string name) {
+                    count++;
+                    return "Hello " + name;
+                }
+                print("after declaration");
+                print(count);
+                print(greet("Maya"));
+                print(count);
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["before declaration", "after declaration", "0", "Hello Maya", "1"],
+        )
+
+    def test_nested_function_can_be_declared_in_a_block_and_called_later(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                if (true) {
+                    function add(integer left, integer right) {
+                        return left + right;
+                    }
+                    print(add(2, 3));
+                }
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(output, ["5"])
+
+    def test_optional_chaining_handles_null_missing_and_out_of_range_values(self):
+        result, output = self.run_x(
+            """
+            function greet(string name) {
+                return "Hello " + name;
+            }
+            function main() {
+                let users = ["Alice", "Bob"];
+                let profile = [{x: "present"}];
+                let object[] typedProfiles = [{name: "Maya"}];
+                let user = {profile: {getName: greet}};
+                let account = {};
+                let missing = null;
+                let callback = null;
+                let integer argumentEvaluations = 0;
+
+                print(users?[0]);
+                print(typeOf(users?[5]));
+                print(profile?[0]?.x);
+                print(typeOf(typedProfiles[0]?.x));
+                print(typeOf(profile[0]?.missing));
+                print(typeOf(missing?.profile?.name));
+                print(typeOf(missing?[0]?.x));
+                print(typeOf(missing?.getName?.()));
+                print(typeOf(account?.missing));
+                print(typeOf(callback?.(argumentEvaluations++)));
+                print(typeOf(missing?[argumentEvaluations++]));
+                print(argumentEvaluations);
+                print(greet?.("Maya"));
+                print(user?.profile?.getName?.("Grace"));
+                print(({profile: {getName: greet}}).profile?.getName?.("Ada"));
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "Alice",
+                "object",
+                "present",
+                "object",
+                "object",
+                "object",
+                "object",
+                "object",
+                "object",
+                "object",
+                "object",
+                "0",
+                "Hello Maya",
+                "Hello Grace",
+                "Hello Ada",
+            ],
+        )
+
+    def test_optional_access_coexists_with_ternary_expressions(self):
+        result, output = self.run_x(
+            """
+            function main() {
+                let users = ["Alice", "Bob"];
+                let first = true ? users?[0] : "no user";
+                let second = false ? users?[0] : users?[5];
+                let values = true ? [1, 2] : [];
+                print(first);
+                print(typeOf(second));
+                print(typeOf(values));
+            }
+            """
+        )
+        self.assertIsNone(result)
+        self.assertEqual(output, ["Alice", "object", "object"])
+
+    def test_regular_access_still_errors_for_invalid_indexes(self):
+        with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index 5"):
+            self.run_x(
+                """
+                function main() {
+                    let users = ["Alice"];
+                    print(users[5]);
+                }
+                """
+            )
+
+        with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index"):
+            self.run_x(
+                """
+                function main() {
+                    let users = ["Alice"];
+                    print(users?["name"]);
+                }
+                """
+            )
+
     def test_multiline_templates_interpolate_expressions_and_run_calls(self):
         result, output = self.run_x(
             """

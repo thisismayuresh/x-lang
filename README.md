@@ -35,6 +35,9 @@ x help
   through the `string[] args` parameter to `main`.
 - Running `x file.x` is shorthand for `x run file.x`.
 - `check` lexes and parses the entry file and its imports.
+- `check`, `build`, and `run` report all recoverable lexical and syntax errors
+  found in the loaded source files before execution. A malformed construct can
+  limit recovery, so errors after it may not be discoverable in that pass.
 - `build` currently performs the same validation; it does not emit a native
   executable.
 - The process exit code is taken from an integer returned by `main`; a `void`
@@ -85,6 +88,24 @@ available without an import. `System.Environment.has("APP_MODE")` and
 are scoped to the interpreter and do not modify the parent process.
 Run profiles are selected with `--profile NAME`.
 
+The CLI also loads a project-root `.env` file when running a program. Copy the
+safe demo values in [.env.example](./.env.example) to `.env`, then run the
+configuration example:
+
+```sh
+cp .env.example .env
+x run examples/configuration/configured_args.x
+```
+
+Read values directly as `System.Environment.VARIABLE_NAME`; no import or
+`get()` call is needed. `.env` assignments support `KEY=VALUE`, optional
+`export`, blank lines, full-line comments, and single- or double-quoted values.
+The file is not loaded for `check` or `build`. Existing operating-system
+variables take precedence over matching `.env` values; TOML run environment
+settings and then the selected profile override both. `.env` is ignored by
+Git, so keep credentials and machine-specific values there, never in the
+tracked example.
+
 An explicit subcommand (`run`, `check`, or `build`) always wins. The
 `[cli].default-command` setting applies to the shorthand `x file.x` form.
 Unknown keys, feature names, types, and profile names fail with an actionable
@@ -106,7 +127,10 @@ The interpreter currently supports:
   defaults, rest properties, and object spread.
 - Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
-  overload resolution by argument count and runtime value types.
+  overload resolution by argument count and runtime value types. Generic
+  `object<K, V>` annotations validate dictionary key/value types at runtime.
+- Nested named functions in blocks; their declarations bind functions without
+  executing their bodies, and the functions can capture surrounding locals.
 - Typed rest parameters (`integer ...values`), array/call-argument spread, and
   object-literal spread.
 - Classes, nested classes, namespaces, fields, constructors, overloaded constructors, instance methods,
@@ -124,6 +148,8 @@ The interpreter currently supports:
   nested block scope.
 - Arithmetic, comparison, equality, logical, assignment, and increment/
   decrement operators.
+- Ternary conditional expressions and null-safe optional chaining for member
+  access (`?.`), calls (`?.()`), and indexing (`?[index]`).
 - `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
   of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
 - Rust-inspired `match` expressions with wildcard, binding, literal, enum,
@@ -138,7 +164,7 @@ The interpreter currently supports:
 - `async` functions, `await`, concurrent `Async.all`, and OS threads through
   `Thread.start` and `join`.
 - Program arguments through `args`, plus the `print`, `range`, and `Exception`
-  built-ins.
+  built-ins, and the `typeOf` runtime type helper.
 - Project-relative named imports, grouped imports, and import aliases.
 - The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
   modules described below.
@@ -146,6 +172,118 @@ The interpreter currently supports:
 The interpreter executes code dynamically. It does **not** yet provide the
 specification's promised static type checker; declared types are primarily
 syntax and overload-resolution hints at runtime.
+
+### Source diagnostics
+
+Lexical errors identify invalid characters (for example,
+`Unexpected character '$'`). Syntax errors identify tokens that cannot appear
+in the current grammar position (for example,
+`Unexpected token ')'; expected an expression`). The CLI prints each
+recoverable source diagnostic with its own file location and excerpt, then
+exits unsuccessfully without running the program. Runtime failures still stop
+execution at the point of failure.
+
+Run `x check examples/errors/syntax_error.x` to see an unexpected-token
+diagnostic. The invalid `;` after `=` is a valid character, but it is not a
+valid expression token; by contrast, a character such as `$` is reported by
+the lexer as an unexpected character.
+
+## Runtime types and typed objects
+
+`typeOf(value)` is a built-in and needs no import. It returns JavaScript-style
+runtime type names: `"string"`, `"number"` for both integers and floats,
+`"boolean"`, `"function"` for X functions and classes, and `"object"` for
+object literals, arrays, class instances, enums, `null`, and `undefined`.
+Both `null`/`Null` and `undefined`/`Undefined` are accepted literal spellings.
+Optional access that finds no value produces `undefined`, so
+`typeOf(profile[0]?.x)` returns `"object"` while printing that value displays
+`undefined`. `typeOf` requires exactly one argument.
+
+```x
+let object profile = {
+    "name": "Maya",
+    age: 21
+};
+
+print(typeOf(profile)); // object
+print(typeOf(profile.name)); // string
+print(typeOf(profile.age)); // number
+```
+
+X's existing type annotation syntax puts the type before the variable name.
+For example, `let object profile = ...` declares a variable named `profile`
+with the broad `object` type, while `let profile object = ...` means a
+variable named `object` annotated with type `profile`. Unknown non-generic
+annotations are not yet consistently validated because X does not have its
+static type checker yet; use the type-before-name order shown here.
+For a dictionary whose keys and values are both strings, write
+`let object<string, string> user = ...`; the key and value types are checked
+when the value is created or assigned, passed to a typed parameter, or
+mutated. This generic object type describes key/value types, not a fixed set
+of named properties. X does not currently support TypeScript's
+`let user: object<string, string>` annotation syntax or compile-time type
+checking.
+
+Run the complete sample with:
+
+```sh
+x run examples/type_of.x
+```
+
+## Optional chaining and ternary expressions
+
+Use `?.member`, `?.(arguments)`, and `?[index]` to stop a chain and return
+`null` when the value at that point is `null`. Optional member access also
+returns `null` for a missing dictionary property. Optional indexing returns
+`null` for an out-of-range sequence index or a missing dictionary key. For
+example, `users?[0]` is X's optional-index syntax; it does not require
+JavaScript's `users?.[0]` punctuation. A non-null value of the wrong kind and
+an invalid index type still report an error. Normal `users[0]` access remains
+strict and continues to report invalid indexes.
+
+```x
+let users = ["Alice", "Bob"];
+let profile = [{name: "Maya"}];
+let missing = null;
+let callback = null;
+
+print(users?[0]); // Alice
+print(typeOf(users?[5])); // object (the result is null)
+print(profile?[0]?.name); // Maya
+print(typeOf(missing?.profile?.name)); // object (the result is null)
+print(callback?.()); // null; callback is not called
+
+let first = true ? users?[0] : "no user";
+```
+
+Optional calls do not evaluate their arguments when the callee is `null`.
+Chaining can protect both member access and invocation:
+`user?.profile?.getName?.()`. Optional chaining is not a substitute for
+guarding an undefined variable name; the identifier itself must first be
+declared.
+The ternary operator is already supported as `condition ? whenTrue : whenFalse`.
+Whitespace-separated `? [` continues to be parsed as a ternary expression
+whose true value begins with an array literal; contiguous `?[` is the distinct
+optional-index operator.
+
+Run the complete example with `x run examples/optional_chaining.x`.
+
+Nested functions use the same declaration syntax and run only when called.
+They can close over local variables:
+
+```x
+function main() {
+    let integer multiplier = 3;
+
+    integer function multiply(integer value) {
+        return value * multiplier;
+    }
+
+    print(multiply(7)); // 21
+}
+```
+
+Run the example with `x run examples/nested_functions.x`.
 
 ## Project module imports
 

@@ -15,6 +15,11 @@ class TemplateLiteral:
 
 
 @dataclass
+class UndefinedLiteral:
+    pass
+
+
+@dataclass
 class ImportDeclaration:
     targets: list[tuple[str, str | None]]
     wildcard: bool = False
@@ -170,6 +175,11 @@ class LiteralPattern:
 
 
 @dataclass
+class UndefinedPattern:
+    pass
+
+
+@dataclass
 class EnumPattern:
     enum_name: str
     member_name: str
@@ -283,6 +293,19 @@ class Member:
 class Index:
     object: Any
     index: Any
+
+
+@dataclass
+class OptionalChainSegment:
+    kind: str
+    value: Any
+    optional: bool = False
+
+
+@dataclass
+class OptionalChain:
+    object: Any
+    segments: list[OptionalChainSegment]
 
 
 @dataclass

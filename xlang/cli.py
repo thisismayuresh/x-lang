@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -8,14 +9,15 @@ from . import __version__
 from .config import (
     ConfigError,
     discover_config,
+    load_env_file,
     load_config,
 )
 from .diagnostics import render_diagnostic, render_warning
+from .interpreter import Interpreter
 from .lexer import LexError
 from .module_loader import ModuleLoader
 from .parser import ParseError
 from .runtime import (
-    Interpreter,
     RuntimeErrorX,
     ThrownValue,
     XExceptionValue,
@@ -109,10 +111,17 @@ def main(argv: list[str] | None = None) -> int:
     program_arguments.extend(cli_program_arguments)
 
     project_root = config.path.parent if config.path is not None else current_directory
-    loader = ModuleLoader(project_root, config)
+    loader = ModuleLoader(project_root, config, recover_errors=True)
     try:
         program = loader.load_program(source_path)
         _report_module_warnings(loader, config.color)
+        if loader.errors:
+            return _report_source_errors(
+                loader.errors,
+                loader.sources,
+                source_path,
+                config.color,
+            )
         if command in ("check", "build"):
             print(f"{source_path}: syntax is valid")
             if command == "build":
@@ -121,7 +130,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 0
 
-        environment = {} if run_profile is None else run_profile.environment
+        env_file_directory = (
+            config.path.parent
+            if config.path is not None
+            else source_path.resolve().parent
+        )
+        dotenv_environment = load_env_file(env_file_directory / ".env")
+        environment = {
+            key: value
+            for key, value in dotenv_environment.items()
+            if key not in os.environ
+        }
+        if run_profile is not None:
+            environment.update(run_profile.environment)
         result = Interpreter(
             program_arguments,
             config=config,
@@ -136,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("x: main must return void or an integer exit code", file=sys.stderr)
         return 1
+    except ConfigError as error:
+        return _report_config_error(error, config.color)
     except (LexError, ParseError, RuntimeErrorX) as error:
         if (
             isinstance(error, RuntimeErrorX)
@@ -316,6 +339,44 @@ def _report_source_error(
         color_mode,
     )
     print(diagnostic, file=sys.stderr)
+    return 1
+
+
+def _report_source_errors(
+    errors: list[BaseException],
+    sources: dict[Path, str],
+    entry_path: Path,
+    color_mode: str,
+) -> int:
+    ordered_errors = sorted(
+        errors,
+        key=lambda error: (
+            str(
+                Path(getattr(error, "source_name", None) or entry_path).resolve()
+            ),
+            getattr(error, "line", 0) or 0,
+            getattr(error, "column", 0) or 0,
+        ),
+    )
+    for error in ordered_errors:
+        source_name = getattr(error, "source_name", None)
+        resolved_name = (
+            Path(source_name).resolve() if source_name else entry_path.resolve()
+        )
+        source_text = sources.get(resolved_name)
+        if source_text is None:
+            try:
+                source_text = resolved_name.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                source_text = None
+        diagnostic = render_diagnostic(
+            error,
+            source_text,
+            source_name or str(entry_path),
+            color_mode,
+        )
+        print(diagnostic, file=sys.stderr)
+    print(f"x: found {len(errors)} error(s)", file=sys.stderr)
     return 1
 
 

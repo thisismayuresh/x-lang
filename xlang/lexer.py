@@ -30,13 +30,14 @@ KEYWORDS = {
     "abstract", "as", "async", "await", "break", "catch", "class", "const", "continue",
     "do", "else", "enum", "extends", "false", "finally", "for", "function",
     "if", "implements", "import", "in", "interface", "internal", "let", "new",
-    "match", "namespace", "null", "of", "package", "private", "protected", "public", "return",
+    "match", "namespace", "null", "Null", "undefined", "Undefined", "of", "package",
+    "private", "protected", "public", "return",
     "static", "super", "this", "throw", "true", "try", "type", "void",
     "while", "export", "override", "virtual", "final",
 }
 
 MULTI_CHARACTER_TOKENS = (
-    "===", "!==",
+    "===", "!==", "?.", "?[",
     "...",
     "=>",
     "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=",
@@ -51,12 +52,15 @@ class Lexer:
         source_name: str | None = None,
         initial_line: int = 1,
         initial_column: int = 1,
+        recover_errors: bool = False,
     ) -> None:
         self.source = source
         self.source_name = source_name
         self.position = 0
         self.line = initial_line
         self.column = initial_column
+        self.recover_errors = recover_errors
+        self.errors: list[LexError] = []
 
     def tokenize(self) -> list[Token]:
         tokens: list[Token] = []
@@ -117,12 +121,16 @@ class Lexer:
                 self._advance()
                 tokens.append(Token(character, character, start_line, start_column))
                 continue
-            raise LexError(
+            error = LexError(
                 f"Unexpected character {character!r}",
                 self.line,
                 self.column,
                 self.source_name,
             )
+            if not self.recover_errors:
+                raise error
+            self.errors.append(error)
+            self._advance()
 
         tokens.append(Token("EOF", "", self.line, self.column))
         return tokens
