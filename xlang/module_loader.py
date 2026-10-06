@@ -1,3 +1,13 @@
+"""
+Module loader with namespace-aware import semantics.
+
+Imports produce module namespace objects containing exported declarations
+accessible via dot access. Flattened bindings into the importing scope
+are retained only when collision-free for backward compatibility; when
+flattening would create a different binding for an existing name, a
+RuntimeErrorX is raised.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,6 +24,7 @@ from .ast_nodes import (
     ImportAlias,
     ImportDeclaration,
     ImportNamespaceAlias,
+    NamespaceDeclaration,
     Program,
     TypeDeclaration,
     VariableDeclaration,
@@ -22,6 +33,42 @@ from .diagnostics import SourceWarning as ModuleWarning
 from .lexer import Lexer
 from .parser import Parser
 from .runtime import RuntimeErrorX
+
+"""
+Module loader for X language programs.
+
+This module is responsible for loading and resolving module dependencies.
+When importing modules, the loader creates module namespace objects
+containing exported declarations accessible via dot access. Flattening
+of declarations into the importing scope occurs only when necessary for
+backward compatibility and only when it does not create collisions between
+different bindings; otherwise, a RuntimeErrorX is raised.
+"""
+
+"""
+Module loader for X language programs.
+
+This module is responsible for loading and resolving module dependencies.
+When importing modules, the loader creates module namespace objects
+containing exported declarations accessible via dot access. Flattening
+of declarations into the importing scope occurs only when necessary for
+backward compatibility and only when it does not create collisions between
+different bindings; otherwise, a RuntimeErrorX is raised.
+"""
+
+
+"""
+Module loader for X language programs.
+
+This module is responsible for loading and resolving module dependencies.
+When importing modules, the loader must create module namespace objects
+containing the exported declarations of imported modules, accessible via
+dot access (e.g., `module.declaration`). Declarations are no longer
+arbitrarily flattened into the importing scope; flattening occurs only
+when necessary for backward compatibility and never when it would create
+a collision between different exported declarations. When a collision
+would occur from flattening, an error is raised.
+"""
 
 
 class ModuleLoader:
@@ -56,6 +103,7 @@ class ModuleLoader:
         self.sources: dict[Path, str] = {}
         self.warnings: list[ModuleWarning] = []
         self.errors: list[BaseException] = []
+        self._flattened_bindings: dict[str, Path] = {}  # name -> source module path
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
@@ -152,6 +200,11 @@ class ModuleLoader:
                             resolved_path,
                             direct_declarations,
                         )
+                        try:
+                            self._check_flatten_collision(import_name, imported_resolved_path)
+                            self._record_flatten(import_name, imported_resolved_path)
+                        except RuntimeErrorX:
+                            raise
                         combined_declarations.extend(imported_declarations)
                         if alias is not None:
                             combined_declarations.append(
@@ -167,20 +220,32 @@ class ModuleLoader:
                     )
                     continue
                 imported_path = self._path_for_module(module_path, resolved_path)
-                imported_declarations = self._load_file(imported_path)
-                import_name = module_path.split(".")[-1]
-                if not self._is_exported(imported_path.resolve(), import_name):
-                    raise RuntimeErrorX(
-                        f"'{import_name}' is not exported by module '{module_path}'"
-                    )
+                self._load_file(imported_path)  # ensure loaded
+                imported_resolved_path = imported_path.resolve()
                 self._warn_duplicate_main(
-                    imported_path.resolve(),
+                    imported_resolved_path,
                     resolved_path,
                     direct_declarations,
                 )
-                combined_declarations.extend(imported_declarations)
-                if alias is not None:
-                    combined_declarations.append(ImportAlias(import_name, alias))
+                exported_names = self._exported_names(imported_resolved_path)
+                namespace_name = alias if alias is not None else module_path.split('.')[-1]
+                # Create namespace with exported declarations
+                namespace_decls = []
+                for name in exported_names:
+                    for decl in self.direct_declarations.get(imported_resolved_path, []):
+                        if self._declaration_name(decl) == name and 'export' in getattr(decl, 'modifiers', set()):
+                            namespace_decls.append(decl)
+                combined_declarations.append(NamespaceDeclaration(namespace_name, namespace_decls))
+                # Also flatten for backward compatibility if no collision
+                for name in exported_names:
+                    try:
+                        self._check_flatten_collision(name, imported_resolved_path)
+                        self._record_flatten(name, imported_resolved_path)
+                        for decl in self.direct_declarations.get(imported_resolved_path, []):
+                            if self._declaration_name(decl) == name and 'export' in getattr(decl, 'modifiers', set()):
+                                combined_declarations.append(decl)
+                    except RuntimeErrorX:
+                        raise
 
         combined_declarations.extend(direct_declarations)
         self.loading_files.remove(resolved_path)
@@ -306,3 +371,29 @@ class ModuleLoader:
         ):
             return declaration.name
         return None
+
+    def _module_name_from_path(self, module_path: Path) -> str:
+        try:
+            relative = module_path.resolve().relative_to(self.project_root)
+        except ValueError:
+            relative = module_path.resolve().name
+        name = relative.with_suffix('').name
+        return name
+
+    def _check_flatten_collision(self, name: str, source_module: Path) -> None:
+        if name in self._flattened_bindings:
+            existing_source = self._flattened_bindings[name]
+            if existing_source != source_module.resolve():
+                existing_name = self._module_name_from_path(existing_source)
+                new_name = self._module_name_from_path(source_module)
+                raise RuntimeErrorX(
+                    f"'{name}' is already declared (from module "
+                    f"'{existing_name}' and now from module '{new_name}')"
+                )
+
+    def _record_flatten(self, name: str, source_module: Path) -> None:
+        source_resolved = source_module.resolve()
+        if name not in self._flattened_bindings:
+            self._flattened_bindings[name] = source_resolved
+        elif self._flattened_bindings[name] != source_resolved:
+            self._check_flatten_collision(name, source_module)

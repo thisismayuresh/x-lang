@@ -1,3 +1,15 @@
+"""
+X language interpreter with module namespace support.
+
+Module imports create Environment-backed namespace objects containing
+exported declarations accessible via dot access. Flattened top-level
+bindings are preserved only when they do not create collisions between
+different declarations; when flattening would introduce a conflicting
+binding for an existing name, a RuntimeErrorX is raised. This prevents
+silent cross-module name collisions while maintaining backward
+compatibility where safe.
+"""
+
 from __future__ import annotations
 
 import asyncio
