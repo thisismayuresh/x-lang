@@ -78,6 +78,14 @@ class Parser:
         "*": 7, "/": 7, "%": 7,
     }
 
+    STATEMENT_START_KEYWORDS = frozenset({
+        "abstract", "async", "await", "break", "class", "const", "continue",
+        "do", "enum", "export", "for", "function", "if", "import",
+        "interface", "let", "match", "namespace", "new", "package",
+        "private", "protected", "public", "return", "throw", "try",
+        "type", "while",
+    })
+
     def __init__(
         self,
         tokens: list[Token],
@@ -92,6 +100,9 @@ class Parser:
         self.in_async_function = False
         self.recover_errors = recover_errors
         self.errors: list[ParseError] = []
+        self._reported_errors: set[tuple[str, int, int, str | None]] = set()
+        self._pending_exports: list[tuple[str, str | None, Token]] = []
+        self._namespace_depth = 0
 
     def parse(self) -> Program:
         declarations: list[Any] = []
@@ -100,13 +111,26 @@ class Parser:
             try:
                 declarations.append(self._declaration())
             except ParseError as error:
-                if error.source_name is None:
-                    error.source_name = self.source_name
-                if not self.recover_errors:
-                    raise
-                self.errors.append(error)
+                self._record_error(error)
                 self._synchronize(start_position, stop_at_block_end=False)
+        if self._pending_exports:
+            self._apply_export_specifiers(declarations)
         return Program(declarations)
+
+    def _record_error(self, error: ParseError) -> None:
+        """Store one diagnostic, or raise it when not recovering.
+
+        Diagnostics are deduplicated by message and location so a single
+        mistake cannot produce the same reported error twice.
+        """
+        if error.source_name is None:
+            error.source_name = self.source_name
+        if not self.recover_errors:
+            raise error
+        key = (error.message, error.line, error.column, error.source_name)
+        if key not in self._reported_errors:
+            self._reported_errors.add(key)
+            self.errors.append(error)
 
     def _declaration(self) -> Any:
         start = self._peek()
@@ -132,12 +156,23 @@ class Parser:
             namespace_name = self._qualified_name()
             self._consume("{", "Expected '{' after namespace name")
             declarations: list[Any] = []
-            while not self._check("}") and not self._check("EOF"):
-                declarations.append(self._declaration())
+            self._namespace_depth += 1
+            try:
+                while not self._check("}") and not self._check("EOF"):
+                    start_position = self.position
+                    try:
+                        declarations.append(self._declaration())
+                    except ParseError as error:
+                        self._record_error(error)
+                        self._synchronize(start_position, stop_at_block_end=True)
+            finally:
+                self._namespace_depth -= 1
             self._consume("}", "Expected '}' after namespace declarations")
             return NamespaceDeclaration(namespace_name, declarations)
 
         exported = self._match("export")
+        if exported and self._check("{"):
+            return self._export_specifier_declaration()
         modifiers = self._modifiers()
         if "static" in modifiers:
             raise ParseError(
@@ -241,6 +276,65 @@ class Parser:
                 raise ParseError("Unexpected token after wildcard import", self._peek())
         return ImportDeclaration([(".".join(parts), alias)], wildcard)
 
+    def _export_specifier_declaration(self) -> None:
+        """Parse JS/TS style ``export { name, other as alias };``.
+
+        The specifier itself produces no declaration; the collected names
+        are resolved against the parsed top-level declarations at the end
+        of :meth:`parse`, which marks them with the ``export`` modifier
+        that :meth:`ModuleLoader._is_exported` already understands.
+        """
+        if self._namespace_depth > 0:
+            raise ParseError(
+                "'export { ... }' is only valid at the top level",
+                self._peek(),
+                self.source_name,
+            )
+        self._consume("{", "Expected '{' after 'export'")
+        while not self._check("}") and not self._check("EOF"):
+            name_token = self._consume("IDENTIFIER", "Expected an exported name")
+            alias = None
+            if self._match("as"):
+                alias = self._consume("IDENTIFIER", "Expected an export alias").value
+            self._pending_exports.append((name_token.value, alias, name_token))
+            if not self._match(","):
+                break
+        self._consume("}", "Expected '}' after export list")
+        self._consume(";", "Expected ';' after export list")
+        return None
+
+    def _apply_export_specifiers(self, declarations: list[Any]) -> None:
+        """Mark ``export { ... }`` names as exported and report unknown ones."""
+        exportable = (
+            ClassDeclaration,
+            EnumDeclaration,
+            FunctionDeclaration,
+            TypeDeclaration,
+            VariableDeclaration,
+        )
+        declarations_by_name: dict[str, Any] = {}
+        for declaration in declarations:
+            if isinstance(declaration, exportable):
+                declarations_by_name.setdefault(declaration.name, declaration)
+        for name, alias, token in self._pending_exports:
+            declaration = declarations_by_name.get(name)
+            if declaration is None:
+                self._record_error(
+                    ParseError(
+                        f"Cannot export '{name}': no declaration named '{name}'",
+                        token,
+                        self.source_name,
+                    )
+                )
+                continue
+            declaration.modifiers.add("export")
+            if alias is not None:
+                aliases = getattr(declaration, "export_aliases", None)
+                if aliases is None:
+                    aliases = set()
+                    declaration.export_aliases = aliases
+                aliases.add(alias)
+
     def _modifiers(self) -> set[str]:
         modifiers: set[str] = set()
         modifier_names = {
@@ -301,7 +395,12 @@ class Parser:
         self._consume("{", "Expected '{' before type body")
         members: list[Any] = []
         while not self._check("}") and not self._check("EOF"):
-            members.append(self._class_member(name, is_interface))
+            start_position = self.position
+            try:
+                members.append(self._class_member(name, is_interface))
+            except ParseError as error:
+                self._record_error(error)
+                self._synchronize(start_position, stop_at_block_end=True)
         self._consume("}", "Expected '}' after type body")
         return ClassDeclaration(
             name,
@@ -427,11 +526,20 @@ class Parser:
         self._consume("{", "Expected '{' before enum members")
         members: list[tuple[str, Any | None]] = []
         while not self._check("}") and not self._check("EOF"):
-            member_name = self._consume("IDENTIFIER", "Expected enum member name").value
-            value = self._expression() if self._match("=") else None
-            members.append((member_name, value))
-            if not self._match(",") and not self._check("}"):
-                raise ParseError("Expected ',' or '}' after enum member", self._peek())
+            start_position = self.position
+            try:
+                member_name = self._consume(
+                    "IDENTIFIER", "Expected enum member name"
+                ).value
+                value = self._expression() if self._match("=") else None
+                members.append((member_name, value))
+                if not self._match(",") and not self._check("}"):
+                    raise ParseError(
+                        "Expected ',' or '}' after enum member", self._peek()
+                    )
+            except ParseError as error:
+                self._record_error(error)
+                self._synchronize(start_position, stop_at_block_end=True)
         self._consume("}", "Expected '}' after enum members")
         return EnumDeclaration(name, members, modifiers)
 
@@ -442,10 +550,19 @@ class Parser:
             self._require_feature("records", self._previous())
             fields: list[str] = []
             while not self._check("}") and not self._check("EOF"):
-                field_type = self._parse_type()
-                field_name = self._consume("IDENTIFIER", "Expected field name").value
-                fields.append(f"{field_type} {field_name}")
-                self._consume_statement_terminator("Expected ';' after type field")
+                start_position = self.position
+                try:
+                    field_type = self._parse_type()
+                    field_name = self._consume(
+                        "IDENTIFIER", "Expected field name"
+                    ).value
+                    fields.append(f"{field_type} {field_name}")
+                    self._consume_statement_terminator(
+                        "Expected ';' after type field"
+                    )
+                except ParseError as error:
+                    self._record_error(error)
+                    self._synchronize(start_position, stop_at_block_end=True)
             self._consume("}", "Expected '}' after type fields")
             type_name = "record{" + ";".join(fields) + "}"
         else:
@@ -811,9 +928,46 @@ class Parser:
             return TryStatement(body, catches, finally_body)
         if self._match(";"):
             return ExpressionStatement(Literal(None))
+        missing_keyword = self._declaration_without_keyword_error()
+        if missing_keyword is not None:
+            raise missing_keyword
         expression = self._expression()
         self._consume_statement_terminator("Expected ';' after expression")
         return ExpressionStatement(expression)
+
+    def _declaration_without_keyword_error(self) -> ParseError | None:
+        """Diagnose ``Type name = ...`` statements that forgot ``let``/``const``.
+
+        A statement that starts with ``IDENTIFIER IDENTIFIER`` or
+        ``IDENTIFIER [] IDENTIFIER`` cannot be an expression, so it is a
+        botched declaration rather than a broken expression statement.
+        """
+        if not self._check("IDENTIFIER"):
+            return None
+        type_token = self._peek()
+        offset = 1
+        if self._peek(1).kind == "IDENTIFIER":
+            type_text = type_token.value
+        elif (
+            self._peek(1).kind == "["
+            and self._peek(2).kind == "]"
+            and self._peek(3).kind == "IDENTIFIER"
+        ):
+            type_text = type_token.value + "[]"
+            offset = 3
+        else:
+            return None
+        name_token = self._peek(offset)
+        if self._peek(offset + 1).kind == "=":
+            suggestion = f"let {type_text} {name_token.value} = ..."
+        else:
+            suggestion = f"let {type_text} {name_token.value};"
+        return ParseError(
+            "Declarations must start with 'let' or 'const'; "
+            f"write '{suggestion}'",
+            name_token,
+            self.source_name,
+        )
 
     def _parse_for_tail(self, initializer: Any | None) -> Any:
         if self._match(";"):
@@ -864,19 +1018,26 @@ class Parser:
         value = self._expression()
         self._consume("{", "Expected '{' before match arms")
         arms: list[MatchArm] = []
+        recovered_arm = False
         while not self._check("}") and not self._check("EOF"):
-            pattern = self._pattern()
-            guard = self._expression() if self._match("if") else None
-            self._consume("=>", "Expected '=>' after pattern")
-            if self._check("{"):
-                body: Any = self._block()
-            else:
-                body = self._expression()
-            arms.append(MatchArm(pattern, guard, body))
-            if not self._match(",") and not self._check("}"):
-                raise ParseError("Expected ',' between match arms", self._peek())
+            start_position = self.position
+            try:
+                pattern = self._pattern()
+                guard = self._expression() if self._match("if") else None
+                self._consume("=>", "Expected '=>' after pattern")
+                if self._check("{"):
+                    body: Any = self._block()
+                else:
+                    body = self._expression()
+                arms.append(MatchArm(pattern, guard, body))
+                if not self._match(",") and not self._check("}"):
+                    raise ParseError("Expected ',' between match arms", self._peek())
+            except ParseError as error:
+                self._record_error(error)
+                recovered_arm = True
+                self._synchronize(start_position, stop_at_block_end=True)
         self._consume("}", "Expected '}' after match arms")
-        if not arms:
+        if not arms and not recovered_arm:
             raise ParseError("A match expression needs at least one arm", self._peek())
         return MatchExpression(value, arms)
 
@@ -960,11 +1121,7 @@ class Parser:
             try:
                 statements.append(self._statement())
             except ParseError as error:
-                if error.source_name is None:
-                    error.source_name = self.source_name
-                if not self.recover_errors:
-                    raise
-                self.errors.append(error)
+                self._record_error(error)
                 self._synchronize(start_position, stop_at_block_end=True)
         if self._check("EOF"):
             raise ParseError(
@@ -976,21 +1133,57 @@ class Parser:
         return statements
 
     def _synchronize(self, start_position: int, stop_at_block_end: bool) -> None:
-        if self.position <= start_position and not self._check("EOF"):
-            if not (stop_at_block_end and self._check("}")):
-                self._advance()
-        while not self._check("EOF"):
-            if stop_at_block_end and self._check("}"):
+        """Resume parsing after a syntax error at the next statement boundary.
+
+        When the scan starts at the very token the caller began the failed
+        item with, that token is consumed so recovery makes forward progress
+        (this bounds every recovery loop by the token count).  Bracket depth
+        keeps the scan inside the broken construct instead of re-syncing in
+        the middle of an enclosing one, and the scan stops before keywords
+        that begin a statement so an independent broken statement on the
+        same line keeps its own diagnostic instead of being swallowed by
+        the next ``;``.
+        """
+        if self._check("EOF"):
+            return
+        if stop_at_block_end and self._check("}"):
+            return
+        depth = self._bracket_depth(start_position, self.position)
+        if self.position <= start_position:
+            token = self._advance()
+            if token.kind in ("(", "[", "{"):
+                depth += 1
+            elif token.kind in (")", "]", "}"):
+                depth = max(depth - 1, 0)
+        for _ in range(len(self.tokens)):
+            if self._check("EOF"):
                 return
-            if self._check(";"):
-                self._advance()
-                return
-            if self.position > start_position:
-                previous = self.tokens[self.position - 1]
-                current = self._peek()
-                if current.line > previous.line:
+            kind = self._peek().kind
+            if depth == 0:
+                if stop_at_block_end and kind == "}":
                     return
+                if kind == ";":
+                    self._advance()
+                    return
+                if kind == "{" or kind in self.STATEMENT_START_KEYWORDS:
+                    return
+                if self._peek().line > self.tokens[self.position - 1].line:
+                    return
+            if kind in ("(", "[", "{"):
+                depth += 1
+            elif kind in (")", "]", "}"):
+                depth = max(depth - 1, 0)
             self._advance()
+
+    def _bracket_depth(self, start: int, end: int) -> int:
+        depth = 0
+        for index in range(start, min(end, len(self.tokens))):
+            kind = self.tokens[index].kind
+            if kind in ("(", "[", "{"):
+                depth += 1
+            elif kind in (")", "]", "}"):
+                depth = max(depth - 1, 0)
+        return depth
 
     def _as_block(self, statement: Any) -> Block:
         if isinstance(statement, Block):
@@ -1485,13 +1678,22 @@ class Parser:
         self._consume("{", "Expected '{' after 'record'")
         fields: list[str] = []
         while not self._check("}") and not self._check("EOF"):
-            field_type = self._parse_type()
-            field_name = self._consume("IDENTIFIER", "Expected record field name").value
-            fields.append(f"{field_type} {field_name}")
-            if not self._match(";") and not self._check("}"):
-                raise ParseError(
-                    "Expected ';' after record field", self._peek(), self.source_name
-                )
+            start_position = self.position
+            try:
+                field_type = self._parse_type()
+                field_name = self._consume(
+                    "IDENTIFIER", "Expected record field name"
+                ).value
+                fields.append(f"{field_type} {field_name}")
+                if not self._match(";") and not self._check("}"):
+                    raise ParseError(
+                        "Expected ';' after record field",
+                        self._peek(),
+                        self.source_name,
+                    )
+            except ParseError as error:
+                self._record_error(error)
+                self._synchronize(start_position, stop_at_block_end=True)
         self._consume("}", "Expected '}' after record type")
         return "record{" + ";".join(fields) + "}"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 from ..ast_nodes import (
@@ -50,6 +51,7 @@ from .errors import TypeCheckError
 from .types import (
     ANY,
     BOOLEAN,
+    BUILTIN_TYPE_NAMES,
     FLOAT,
     FUNCTION,
     INTEGER,
@@ -63,6 +65,7 @@ from .types import (
     XType,
     is_compatible,
     parse_type,
+    split_union,
     substitute,
 )
 
@@ -89,6 +92,8 @@ ARRAY_METHOD_NAMES = frozenset(
         "isEmpty",
         "clear",
         "add",
+        "push",
+        "pop",
     }
 )
 
@@ -133,9 +138,18 @@ class TypeChecker:
 
     ``check_or_raise(program, source_name=None) -> None``
         Convenience wrapper that raises the first diagnostic when any exist.
+
+    ``check_declarations(program, source_name=None) -> list[TypeCheckError]``
+        Lightweight declaration-level validation: unknown type names and
+        concrete classes that do not implement every interface member.
+        Used by the interpreter as a pre-execution gate; it skips body
+        checking entirely.
     """
 
     def __init__(self) -> None:
+        self._reset(None)
+
+    def _reset(self, source_name: str | None) -> None:
         self.errors: list[TypeCheckError] = []
         self._seen: set[tuple[Any, ...]] = set()
         self._classes: dict[str, ClassDeclaration] = {}
@@ -144,7 +158,10 @@ class TypeChecker:
         self._aliases: dict[str, XType] = {}
         self._functions: dict[str, list[FunctionDeclaration]] = {}
         self._generic_params: dict[str, list[str]] = {}
-        self._source_name: str | None = None
+        self._namespace_roots: set[str] = set()
+        self._import_names: set[str] = set()
+        self._known_names: set[str] | None = None
+        self._source_name = source_name
         self._location: tuple[int | None, int | None, str | None] | None = None
         self._active_generics: set[str] = set()
         self._class_stack: list[str] = []
@@ -154,24 +171,14 @@ class TypeChecker:
 
     def check(self, program: Program, source_name: str | None = None) -> list[TypeCheckError]:
         """Type-check ``program`` and return all diagnostics (does not raise)."""
-        self.errors = []
-        self._seen = set()
-        self._classes = {}
-        self._interfaces = {}
-        self._enums = set()
-        self._aliases = {}
-        self._functions = {}
-        self._generic_params = {}
-        self._source_name = source_name
-        self._location = None
-        self._active_generics = set()
-        self._class_stack = []
-        self._expected_return = None
-        self._saw_value_return = False
-        self._try_depth = 0
+        self._reset(source_name)
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
+        self._check_type_name_references(program.declarations)
+        for module_declarations in program.modules.values():
+            self._check_type_name_references(module_declarations)
+        self._validate_interface_implementations()
         scope = self._builtin_scope()
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
@@ -183,6 +190,24 @@ class TypeChecker:
         errors = self.check(program, source_name)
         if errors:
             raise errors[0]
+
+    def check_declarations(
+        self, program: Program, source_name: str | None = None
+    ) -> list[TypeCheckError]:
+        """Validate declaration-level type names and interface conformance only.
+
+        Reports unknown type names in annotations/``new`` targets and concrete
+        classes that omit interface members, without checking method bodies.
+        """
+        self._reset(source_name)
+        self._collect_types(program.declarations)
+        for module_declarations in program.modules.values():
+            self._collect_types(module_declarations)
+        self._check_type_name_references(program.declarations)
+        for module_declarations in program.modules.values():
+            self._check_type_name_references(module_declarations)
+        self._validate_interface_implementations()
+        return self.errors
 
     # ------------------------------------------------------------------
     # Scopes and collection
@@ -239,9 +264,82 @@ class TypeChecker:
             elif isinstance(declaration, TypeDeclaration):
                 self._aliases[declaration.name] = parse_type(declaration.type_name)
             elif isinstance(declaration, NamespaceDeclaration):
+                self._namespace_roots.add(declaration.name.split(".")[0])
                 self._collect_types(declaration.declarations)
             elif isinstance(declaration, FunctionDeclaration):
                 self._register_function(declaration)
+                if declaration.generic_parameters:
+                    registered = self._generic_params.setdefault(
+                        declaration.name, []
+                    )
+                    for parameter in declaration.generic_parameters:
+                        if parameter not in registered:
+                            registered.append(parameter)
+            elif isinstance(declaration, ImportDeclaration):
+                for path, alias in declaration.targets:
+                    if alias is not None:
+                        self._import_names.add(alias)
+                    parts = path.split(".")
+                    self._import_names.add(parts[0])
+                    self._import_names.add(parts[-1])
+            elif isinstance(declaration, ImportAlias):
+                self._import_names.add(declaration.alias_name)
+                parts = declaration.source_name.split(".")
+                self._import_names.add(parts[0])
+                self._import_names.add(parts[-1])
+            elif isinstance(declaration, ImportNamespaceAlias):
+                self._import_names.add(declaration.alias_name)
+            elif isinstance(declaration, ModuleImport):
+                if declaration.alias is not None:
+                    self._import_names.add(declaration.alias)
+                if declaration.source_name:
+                    parts = declaration.source_name.split(".")
+                    self._import_names.add(parts[0])
+                    self._import_names.add(parts[-1])
+                self._import_names.update(declaration.exported_names)
+            self._collect_nested_types(declaration)
+
+    def _collect_nested_types(self, node: Any) -> None:
+        """Collect type declarations from nested scopes (function bodies,
+        blocks, match arms, ...).
+
+        Only type-level information is recorded (classes, interfaces, enums,
+        type aliases, namespace roots, generic parameters); functions are
+        registered solely at declaration-list scope by ``_collect_types``.
+        """
+        if node is None or isinstance(node, (str, bytes, int, float, bool)):
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                self._collect_nested_types(value)
+            return
+        if isinstance(node, (list, tuple, set)):
+            for item in node:
+                self._collect_nested_types(item)
+            return
+        if not is_dataclass(node):
+            return
+        if isinstance(node, ClassDeclaration):
+            if node.is_interface:
+                self._interfaces[node.name] = node
+            else:
+                self._classes[node.name] = node
+            if node.generic_parameters:
+                self._generic_params[node.name] = list(node.generic_parameters)
+        elif isinstance(node, EnumDeclaration):
+            self._enums.add(node.name)
+        elif isinstance(node, TypeDeclaration):
+            self._aliases[node.name] = parse_type(node.type_name)
+        elif isinstance(node, FunctionDeclaration):
+            if node.generic_parameters:
+                registered = self._generic_params.setdefault(node.name, [])
+                for parameter in node.generic_parameters:
+                    if parameter not in registered:
+                        registered.append(parameter)
+        elif isinstance(node, NamespaceDeclaration):
+            self._namespace_roots.add(node.name.split(".")[0])
+        for field in fields(node):
+            self._collect_nested_types(getattr(node, field.name))
 
     def _register_function(self, declaration: FunctionDeclaration) -> None:
         registered = self._functions.setdefault(declaration.name, [])
@@ -616,6 +714,53 @@ class TypeChecker:
                 break
             current = self._classes.get(current.parent_name.split("<")[0])
         return False
+
+    def _class_has_property(self, declaration: ClassDeclaration, name: str) -> bool:
+        current: ClassDeclaration | None = declaration
+        while current is not None:
+            for member in current.members:
+                if isinstance(member, VariableDeclaration) and member.name == name:
+                    return True
+            if current.parent_name is None:
+                break
+            current = self._classes.get(current.parent_name.split("<")[0])
+        return False
+
+    def _validate_interface_implementations(self) -> None:
+        """Require concrete classes to provide every member of each interface.
+
+        Abstract classes are exempt (they may leave interface methods
+        unimplemented for their concrete subclasses).  Interface members
+        inherited through ``extends`` are included via ``_interface_members``.
+        """
+        for declaration in self._classes.values():
+            if not declaration.implemented_types:
+                continue
+            if "abstract" in declaration.modifiers:
+                continue
+            for interface_ref in declaration.implemented_types:
+                interface_name = interface_ref.split("<")[0].strip()
+                interface = self._interfaces.get(interface_name)
+                if interface is None:
+                    continue
+                for member in self._interface_members(interface):
+                    if isinstance(member, FunctionDeclaration):
+                        if "static" in member.modifiers:
+                            continue
+                        if not self._class_has_compatible_method(declaration, member):
+                            self._error(
+                                f"Class '{declaration.name}' does not implement "
+                                f"'{member.name}()' from interface '{interface_name}'",
+                                declaration,
+                            )
+                    elif isinstance(member, VariableDeclaration):
+                        if not self._class_has_property(declaration, member.name):
+                            self._error(
+                                f"Class '{declaration.name}' does not implement "
+                                f"property '{member.name}' from interface "
+                                f"'{interface_name}'",
+                                declaration,
+                            )
 
     # ------------------------------------------------------------------
     # Variables
@@ -1676,6 +1821,138 @@ class TypeChecker:
         if interface is None:
             return []
         return self._interface_members(interface)
+
+    # ------------------------------------------------------------------
+    # Declaration-level type-name validation
+    # ------------------------------------------------------------------
+
+    def _known_type_names(self) -> set[str]:
+        """Every name accepted in a type position for the current program."""
+        if self._known_names is None:
+            names = set(BUILTIN_TYPE_NAMES)
+            names.update(self._classes)
+            names.update(self._interfaces)
+            names.update(self._enums)
+            names.update(self._aliases)
+            names.update(self._namespace_roots)
+            names.update(self._import_names)
+            for parameter_names in self._generic_params.values():
+                names.update(parameter_names)
+            self._known_names = names
+        return self._known_names
+
+    def _check_type_name_references(self, declarations: list[Any]) -> None:
+        for declaration in declarations:
+            self._walk_type_references(declaration, declaration)
+
+    def _walk_type_references(self, node: Any, anchor: Any) -> None:
+        """Recursively validate every type-name string reachable from *node*.
+
+        *anchor* is the nearest located declaration; it is used for
+        diagnostics because some nodes (for example ``Parameter``) carry no
+        position information of their own.
+        """
+        if node is None or isinstance(node, (str, bytes, int, float, bool)):
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                self._walk_type_references(value, anchor)
+            return
+        if isinstance(node, (list, tuple, set)):
+            for item in node:
+                self._walk_type_references(item, anchor)
+            return
+        if not is_dataclass(node):
+            return
+        if getattr(node, "line", None) is not None:
+            anchor = node
+        type_name = getattr(node, "type_name", None)
+        if isinstance(type_name, str):
+            self._check_type_string(type_name, anchor)
+        return_type = getattr(node, "return_type", None)
+        if isinstance(return_type, str):
+            self._check_type_string(return_type, anchor)
+        parent_name = getattr(node, "parent_name", None)
+        if isinstance(parent_name, str):
+            self._check_type_string(parent_name, anchor)
+        implemented_types = getattr(node, "implemented_types", None)
+        if implemented_types:
+            for implemented in implemented_types:
+                self._check_type_string(implemented, anchor)
+        if isinstance(node, NewExpression):
+            self._check_type_string(node.class_name, anchor)
+        if isinstance(node, Call) and node.type_arguments:
+            for argument in node.type_arguments:
+                self._check_type_string(argument, anchor)
+        if isinstance(node, TryStatement):
+            for catch in node.catches:
+                if isinstance(catch, tuple) and catch:
+                    self._check_type_string(catch[0], anchor)
+        for field in fields(node):
+            self._walk_type_references(getattr(node, field.name), anchor)
+
+    def _check_type_string(self, text: str | None, anchor: Any) -> None:
+        """Validate one annotation string (union/array/nullable/generic aware)."""
+        if not text:
+            return
+        known = self._known_type_names()
+        stack = [text.strip()]
+        while stack:
+            candidate = stack.pop()
+            if not candidate:
+                continue
+            if "|" in candidate:
+                union_parts = split_union(candidate)
+                if len(union_parts) > 1:
+                    stack.extend(union_parts)
+                    continue
+            while candidate.endswith("?"):
+                candidate = candidate[:-1].strip()
+            while candidate.endswith("[]"):
+                candidate = candidate[:-2].strip()
+            if not candidate:
+                continue
+            if candidate.startswith("record"):
+                remainder = candidate[len("record"):].lstrip()
+                if remainder.startswith("{"):
+                    candidate = remainder
+            if candidate.startswith("{") and candidate.endswith("}"):
+                for field_text in candidate[1:-1].split(";"):
+                    field_text = field_text.strip()
+                    if not field_text:
+                        continue
+                    pieces = field_text.rsplit(None, 1)
+                    stack.append(pieces[0] if len(pieces) == 2 else field_text)
+                continue
+            if "<" in candidate:
+                base, _, rest = candidate.partition("<")
+                stack.append(base.strip())
+                if rest.endswith(">"):
+                    rest = rest[:-1]
+                depth = 0
+                current = ""
+                for character in rest:
+                    if character == "<":
+                        depth += 1
+                        current += character
+                    elif character == ">":
+                        depth -= 1
+                        current += character
+                    elif character == "," and depth == 0:
+                        stack.append(current)
+                        current = ""
+                    else:
+                        current += character
+                stack.append(current)
+                continue
+            if candidate in known:
+                continue
+            segments = [segment.strip() for segment in candidate.split(".")]
+            if segments[0] in known:
+                continue
+            if any(segment in known for segment in segments[1:]):
+                continue
+            self._error(f"Unknown type '{candidate}'", anchor)
 
     # ------------------------------------------------------------------
     # Diagnostics

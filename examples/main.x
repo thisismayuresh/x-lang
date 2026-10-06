@@ -8,7 +8,7 @@ for(int entry of entries ){
     }
 }
 
-function myFunction(intsssssx i = 0) {
+function myFunction(int i = 0) {
     if (i === 10) {
         return;
     }
@@ -43,7 +43,7 @@ class Address {
     string street;
     string city;
 
-    public Address(String street, String city) {
+    public Address(string street, string city) {
         this.street = street;
         this.city = city;
     }
@@ -51,7 +51,7 @@ class Address {
 
 
 public class UserAccount {
-    // 1. Primitive and String fields
+    // 1. Primitive and string fields
     private int userId;
     private string username;
 
@@ -74,7 +74,7 @@ public class UserAccount {
     public void printAccountDetails() {
         print("User: " + this.username + " (ID: " + this.userId + ")");
         print("City: " + this.billingAddress.city);
-        //print("Recent Transactions: " + Arrays.toString(transactionHistory));
+        //print("Recent Transactions: " + Arrays.tostring(transactionHistory));
     }
 }
 
@@ -107,10 +107,16 @@ protected class ANimal implements Person{
 
     print("constr")
  }
+
+ string getGender(){
+    return 1
+ }
 }
 
 
 let classm = new ANimal();
+
+print("getgendr",classm.getGender())
 
 
 
@@ -122,7 +128,7 @@ let classm = new ANimal();
 
  function foo(){
     let integer[] arrayo = [1];
-    //arrayo.push(2);
+    arrayo.push(2);
      return arrayo;
 }
 
@@ -133,5 +139,54 @@ let nestedArray = [[1,2,3],[4,5,6],[7,8,9], [10]]
 let nestedArray2 = [[1,2,3],[4,5,6],[7,8,9], [10]]
 
 
-print(nestedArray[3][0],typeOf(nestedArray[0]))
+const leta3 = nestedArray[3][0]
+typeOf(nestedArray[0]);
+ const len=[].length===0
+print(len)
+print("hi")
+
+
+let testArray = [];
+
+if(!testArray==testArray.length){
+    print("its working")
+}
+else{
+    print("ummmmmmm")
+}
+print(false==0)
+
+
+
+
+
+any function rest(int ...arguments){
+    print("rest:",arguments);
+return arguments
+}
+
+print("returned value-->"+rest(1,2,3,4,5,6,7,8,9,0))
+
+
+
+
+let a = 10;
+
+a > 100
+    ? print("Greater than 100")
+    : a > 50
+        ? print("Greater than 50")
+        : a > 5
+            ? print("Greater than 5")
+            : print("5 or less");
+
+
+
+print(typeOf(print("Hi")))
+print(typeOf("Hi"))
+print(typeOf(1))
+print(typeOf(print))
+
+
+System.process.kill()
 

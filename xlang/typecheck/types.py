@@ -31,6 +31,59 @@ PRIMITIVE_ALIASES = {
 #: Names that always refer to a known built-in type rather than a user type.
 KNOWN_TYPE_NAMES = frozenset(PRIMITIVE_ALIASES.values())
 
+#: Every builtin type-name spelling accepted in X annotations.
+#:
+#: Includes primitive aliases (``int``/``integer``/``bool``/...), collection
+#: classes exposed as types (``HashMap``, ``Stack``, extended collections),
+#: the ``System``/``Collections`` namespace roots, ``ThreadHandle`` and the
+#: built-in exception hierarchy.  User classes, interfaces, enums, type
+#: aliases, namespace roots and generic parameters are collected per program.
+BUILTIN_TYPE_NAMES = frozenset(
+    set(PRIMITIVE_ALIASES)
+    | set(PRIMITIVE_ALIASES.values())
+    | {
+        "record",
+        # Collection classes usable as annotations.
+        "HashMap",
+        "LinkedList",
+        "List",
+        "Stack",
+        "Queue",
+        "PriorityQueue",
+        "Trie",
+        "Set",
+        "TreeMap",
+        "TreeSet",
+        "LinkedHashMap",
+        "LRUCache",
+        "ConcurrentHashMap",
+        "ConcurrentList",
+        "ThreadSafeMap",
+        "ThreadSafeSet",
+        "Collections",
+        # Namespace roots and runtime-provided value types.
+        "Object",
+        "System",
+        "FileSystem",
+        "Thread",
+        "Async",
+        "ThreadHandle",
+        # Built-in exception hierarchy.
+        "Throwable",
+        "Exception",
+        "Error",
+        "RuntimeException",
+        "ArithmeticException",
+        "TypeException",
+        "IllegalArgumentException",
+        "IndexOutOfBoundsException",
+        "IOException",
+        "FileSystemException",
+        "DatabaseException",
+        "DatabaseError",
+    }
+)
+
 
 class TypeRelations(Protocol):
     """Optional hook used by :func:`is_compatible` for nominal types."""

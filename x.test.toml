@@ -1,0 +1,182 @@
+# x.test.toml - X Language Feature Configuration
+# This file lists all configurable language features that can be enabled/disabled
+# Use --feature NAME=on/off to override these settings from command line
+
+[cli]
+default-command = "run"
+color = "auto"  # auto, always, never
+
+# ============================================================================
+# LANGUAGE FEATURES SECTION
+# All features default to true (enabled)
+# ============================================================================
+
+[features]
+
+# Core Language Features
+core_syntax = true
+variables = true
+functions = true
+control_flow = true
+loops = true
+equality = true
+comments = true
+
+# Type System
+type_checker = true
+type_inference = true
+types = true
+generics = true
+unions = true
+records = true
+enums = true
+interfaces = true
+
+# Object-Oriented Programming
+classes = true
+inheritance = true
+constructors = true
+methods = true
+static_methods = true
+access_modifiers = true  # public, private, protected
+abstract_classes = true
+
+# Functional Programming
+arrow_functions = true
+higher_order_functions = true
+closures = true
+decorators = true
+
+# Collections & Data Structures
+collections = true
+arrays = true
+maps = true
+sets = true
+tuples = true
+destructuring = true
+spread = true
+object_literals = true
+
+# Concurrency & Async
+async = true
+async_await = true
+promises = true
+threads = true
+concurrency_primitives = true
+
+# Error Handling
+exceptions = true
+try_catch_finally = true
+custom_exceptions = true
+
+# Modules & Namespaces
+modules = true
+import = true
+export = true
+namespaces = true
+bulk_export = true
+
+# Pattern Matching
+pattern_matching = true
+
+# Filesystem Access
+filesystem = true
+network_access = true
+remote_imports = true  # import "https://..."
+
+# Data Structure Algorithms
+dsa_library = true  # HashMap, LinkedList, Stack, Queue, PriorityQueue, Trie
+
+# Standard Library
+standard_lib = true
+math_library = true
+string_operations = true
+array_methods = true
+date_time = true
+random = true
+regex = true
+
+# Security Features
+sandbox_mode = false
+restrict_network = false
+restrict_filesystem = false
+
+# ============================================================================
+# RUNTIME CONFIGURATION
+# ============================================================================
+
+[run]
+args = []
+
+[run.environment]
+X_LANGUAGE_VERSION = "0.1"
+X_FEATURE_SET = "test"
+
+# ============================================================================
+# RUN PROFILES
+# ============================================================================
+
+[run.profiles.development]
+args = ["--dev"]
+[run.profiles.development.environment]
+X_ENV = "development"
+SANDBOX_MODE = "false"
+
+[run.profiles.production]
+args = []
+[run.profiles.production.environment]
+X_ENV = "production"
+SANDBOX_MODE = "true"
+RESTRICT_NETWORK = "true"
+
+[run.profiles.security]
+args = []
+[run.profiles.security.environment]
+X_ENV = "security"
+SANDBOX_MODE = "true"
+RESTRICT_NETWORK = "true"
+RESTRICT_FILESYSTEM = "true"
+
+[run.profiles.feature-test]
+args = ["--test-features"]
+[run.profiles.feature-test.environment]
+X_ENV = "testing"
+ALL_FEATURES = "true"
+
+# ============================================================================
+# COMPILER OPTIONS
+# ============================================================================
+
+[compiler]
+strict_mode = false
+warnings_as_errors = false
+optimization_level = 0  # 0-3
+emit_debug_info = true
+
+[compiler.type_checking]
+check_return_types = true
+check_interface_implementation = true
+check_access_modifiers = true
+strict_null_checking = false
+
+[compiler.security]
+allow_remote_imports = true
+warn_on_remote_imports = true
+max_import_depth = 10
+allowed_remote_domains = []
+
+# ============================================================================
+# DEBUG & DIAGNOSTICS
+# ============================================================================
+
+[debug]
+show_ast = false
+show_bytecode = false
+show_timing = false
+trace_execution = false
+
+[debug.errors]
+show_all_errors = true  # Show multiple errors instead of just the first
+show_error_context = true
+colorize_errors = true
+suggest_fixes = true

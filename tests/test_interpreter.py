@@ -66,7 +66,7 @@ class InterpreterTests(unittest.TestCase):
                 "number",
                 "boolean",
                 "object",
-                "object",
+                "Array",
                 "function",
                 "function",
                 "object",
@@ -387,7 +387,7 @@ class InterpreterTests(unittest.TestCase):
             }
             """)
         self.assertIsNone(result)
-        self.assertEqual(output, ["Alice", "object", "object"])
+        self.assertEqual(output, ["Alice", "object", "Array"])
 
     def test_regular_access_still_errors_for_invalid_indexes(self):
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index 5"):

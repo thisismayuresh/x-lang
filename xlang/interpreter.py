@@ -159,6 +159,8 @@ _ARRAY_METHODS: dict[str, str] = {
     "last": "_array_last",
     "isEmpty": "_array_is_empty",
     "clear": "_array_clear",
+    "push": "_array_push",
+    "pop": "_array_pop",
 }
 
 #: Dot-callable methods on X strings (``text.toUpperCase()``), keyed the same
@@ -247,7 +249,28 @@ class Interpreter:
         self.output = output
         self._install_builtins(arguments or [])
 
+    def _validate_declarations(self, program: Program) -> None:
+        """Pre-execution gate: unknown type names and interface conformance.
+
+        Runs the checker's lightweight declaration pass and re-raises the
+        first diagnostic as a ``RuntimeErrorX`` carrying ``line``/``column``/
+        ``source_name`` so the CLI renders it like any other runtime error.
+        """
+        from .typecheck import TypeChecker
+
+        errors = TypeChecker().check_declarations(program)
+        if not errors:
+            return
+        first = errors[0]
+        failure = RuntimeErrorX(first.message)
+        failure.line = first.line
+        failure.column = first.column
+        failure.source_name = first.source_name
+        raise failure
+
     def interpret(self, program: Program) -> Any:
+        if self.config.enabled("type_checker"):
+            self._validate_declarations(program)
         declarations = [declaration for declaration in program.declarations if declaration]
         has_top_level_statements = any(
             not isinstance(
@@ -1556,6 +1579,23 @@ class Interpreter:
         array.clear()
         return None
 
+    def _array_push(self, arguments: list[Any]) -> None:
+        """``push(value)`` — append one element in place (returns nothing)."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.push expects one value")
+        array = self._array_receiver(arguments, "push")
+        array.append(arguments[1])
+        return None
+
+    def _array_pop(self, arguments: list[Any]) -> Any:
+        """``pop()`` — remove and return the last element."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.pop expects no arguments")
+        array = self._array_receiver(arguments, "pop")
+        if not array:
+            raise RuntimeErrorX("Array.pop: array is empty")
+        return array.pop()
+
     # ------------------------------------------------------------------
     # String methods (text.toUpperCase())
     # ------------------------------------------------------------------
@@ -2661,6 +2701,21 @@ class Interpreter:
         return None
 
     def _builtin_type_of(self, arguments: list[Any]) -> str:
+        """Report the X-level type name of the single argument.
+
+        Mapping:
+
+        - ``boolean`` for booleans, ``number`` for integers/floats,
+          ``string`` for strings
+        - ``function`` for functions, builtins, overloads, and class objects
+        - ``Array`` for every array value (plain lists and typed ``XArray``)
+        - the class name for instances of user classes and exceptions
+          (for example ``User`` or ``CustomException``)
+        - the collection name for OOP collection instances
+          (``HashMap``, ``Stack``, ``Queue``, ...)
+        - ``object`` for object literals, typed objects, null, undefined,
+          enum members, and any other unclassified value
+        """
         if len(arguments) != 1:
             raise RuntimeErrorX(
                 f"typeOf expects one argument, got {len(arguments)}"
@@ -2676,8 +2731,16 @@ class Interpreter:
             value, (BuiltinFunction, OverloadedFunction, XClass, XFunction)
         ):
             return "function"
+        if isinstance(value, list):
+            return "Array"
         if isinstance(value, XCollectionInstance):
-            return "object"
+            return value.collection_type
+        if isinstance(value, XExceptionValue):
+            return value.name
+        if isinstance(value, XInstance):
+            return value.xclass.name
+        if isinstance(value, XThreadHandle):
+            return "ThreadHandle"
         return "object"
 
     def _builtin_range(self, arguments: list[Any]) -> range:
