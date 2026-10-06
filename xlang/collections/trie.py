@@ -92,3 +92,36 @@ class TrieClass:
         
         _collect_words(self.data, "")
         return words
+
+    def getWordsWithPrefix(self, prefix: str) -> list[str]:
+        """Return all words that begin with *prefix*.
+
+        Traverses to the node corresponding to the last character of *prefix*;
+        returns an empty list when no such prefix exists in the trie.  Then
+        runs a DFS from that node to collect every complete word, seeding each
+        result with the supplied prefix string.
+
+        Args:
+            prefix: The prefix string to search for.
+
+        Returns:
+            A list of words (possibly empty) that all start with *prefix*.
+        """
+        if not isinstance(prefix, str):
+            raise Exception("Trie.getWordsWithPrefix: prefix must be a string")
+        node: dict = self.data
+        for char in prefix:
+            if char not in node["children"]:
+                return []
+            node = node["children"][char]
+
+        words: list[str] = []
+
+        def _collect(current_node: dict, current_prefix: str) -> None:
+            if current_node.get("is_end", False):
+                words.append(current_prefix)
+            for char, child in current_node["children"].items():
+                _collect(child, current_prefix + char)
+
+        _collect(node, prefix)
+        return words

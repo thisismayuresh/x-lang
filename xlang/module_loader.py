@@ -46,6 +46,7 @@ class ModuleLoader:
         "System.utils.Collections.Queue",
         "System.utils.Collections.PriorityQueue",
         "System.utils.Collections.Trie",
+        "System.utils.Collections.Set",
     }
 
     def __init__(

@@ -1,0 +1,42 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Iterator protocol fix + PriorityQueue heapq refactor + Trie.getWordsWithPrefix + Set data structure + List.groupBy/partition. All changes are in interpreter.py (the core engine) plus the xlang/collections/ mirror classes. This is the largest FEAT because all these changes touch the same _install_builtins / _make_collection_ns machinery and must be consistent with each other (especially the PriorityQueue _data shape change and the Set _data being a Python set).",
+  "status": "completed",
+  "steps": [
+    "Step 1 — Iterator protocol fix in xlang/interpreter.py _execute_for (line ~1977). In the 'of' branch: before the try/iter call, add: if isinstance(iterable, XCollectionInstance): inner = iterable._data; iterable = inner['heap'] if isinstance(inner, dict) and 'heap' in inner else inner. In the 'in' branch: after the isinstance(iterable, dict) check but before iter(), add: if isinstance(iterable, XCollectionInstance): iterable = iterable._data. This makes 'for (Student s of students)' work directly on List/Stack/Queue without .toArray().",
+
+    "Step 2 — PriorityQueue heapq refactor in xlang/interpreter.py. Add 'import heapq' at the top. Define module-level class ComparatorItem (before class Interpreter) with fields (value, comparator_fn, call_fn) and __lt__ that calls call_fn(comparator_fn, [self.value, other.value]) < 0. Change _priorityqueue_create to return {'heap': [], 'comparator': None, 'mode': 'min'}; accept optional arg: if arg == 'max' set mode='max', elif isinstance(arg, (XFunction, BuiltinFunction, OverloadedFunction)) set comparator=arg. Change _priorityqueue_enqueue to use heapq.heappush: for min-heap with no comparator push raw value; for max-heap negate numeric values or wrap as (-val, val); for custom comparator wrap as ComparatorItem(value, comparator_fn, self._call). Change _priorityqueue_dequeue to heapq.heappop and unwrap. Change _priorityqueue_peek to heap[0] and unwrap. Change _priorityqueue_to_array to return sorted([unwrap(x) for x in heapq.nsmallest(len(heap), heap)]). Change _priorityqueue_size/_is_empty/_clear to operate on queue['heap']. Change ALL isinstance(queue, list) guards to isinstance(queue, dict) and 'heap' in queue. Update xlang/collections/priorityqueue.py to match (use heapq, same dict structure).",
+
+    "Step 3 — Trie.getWordsWithPrefix in xlang/interpreter.py. Add _trie_get_words_with_prefix method: validate 2 args, traverse to prefix node char by char (return [] if char missing), then run _collect_words DFS starting from that node with prefix as seed string. Register in _trie_members() as 'getWordsWithPrefix'. Add same method to xlang/collections/trie.py TrieClass for parity.",
+
+    "Step 4 — Set data structure. Create xlang/collections/set_collection.py with class SetClass matching the pattern of StackClass: __init__ sets self.data = set(); methods add/has/remove/size/isEmpty/clear/toArray/union/intersection/difference. In xlang/interpreter.py add _set_members() returning BuiltinFunction dict and all _set_* methods (_set_create returns set(), _set_add calls set.add, _set_has returns val in set, _set_remove calls set.discard, _set_size returns len, _set_is_empty returns len==0, _set_clear calls set.clear, _set_to_array returns sorted(set, key=str), _set_union returns s1|s2, _set_intersection returns s1&s2, _set_difference returns s1-s2). All guards check isinstance(s, set). Wire in _install_builtins: set_ns = self._make_collection_ns('Set', self._set_members()); register in collections_namespace and self.globals. Add 'System.utils.Collections.Set' to ModuleLoader.STANDARD_LIBRARY_MODULES. Update xlang/collections/__init__.py: from .set_collection import SetClass; add SetClass to __all__.",
+
+    "Step 5 — List.groupBy and List.partition in xlang/interpreter.py. Add _linkedlist_group_by(arguments): validate [list, fn], iterate list calling fn(item) via self._call, group into dict keyed by str(result); returns dict. Add _linkedlist_partition(arguments): validate [list, fn], split into [truthy_items, falsy_items] lists; returns list of two lists. Register both in _linkedlist_members() as 'groupBy' and 'partition'.",
+
+    "Step 6 — Verify all changes. Run: cd /home/admin/Downloads/Personal/X && .venv/bin/python -m unittest discover -s tests -q; .venv/bin/python -m xlang run examples/dsa_tests/all_tests.x; .venv/bin/python -m xlang run examples/dsa_tests/priorityqueue_test.x; .venv/bin/python -m xlang run examples/dsa_tests/trie_test.x; .venv/bin/python -m xlang run examples/main.x"
+  ],
+  "acceptance_criteria": [
+    "for (Student s of students) where students is a List XCollectionInstance works without .toArray() — examples/main.x runs cleanly",
+    "PriorityQueue.enqueue/dequeue uses heapq.heappush/heappop — O(log n) per operation",
+    "PriorityQueue.create('max') produces a max-heap (largest dequeued first)",
+    "PriorityQueue.create(fn) with a comparator function works correctly",
+    "_priorityqueue_* methods all use isinstance(queue, dict) and 'heap' in queue guards",
+    "Trie.getWordsWithPrefix('he') on a trie containing hello/hey/world returns ['hello', 'hey']",
+    "Set.create() returns XCollectionInstance; add/has/remove/union/intersection/difference all work",
+    "System.utils.Collections.Set is importable via 'import System.utils.Collections.Set'",
+    "List.groupBy and List.partition are callable as instance dot-methods on a List",
+    ".venv/bin/python -m unittest discover -s tests -q passes (86+ tests OK)",
+    ".venv/bin/python -m xlang run examples/dsa_tests/all_tests.x completes without errors",
+    ".venv/bin/python -m xlang run examples/main.x completes without errors"
+  ],
+  "verification": [
+    "cd /home/admin/Downloads/Personal/X && .venv/bin/python -m unittest discover -s tests -q",
+    "cd /home/admin/Downloads/Personal/X && .venv/bin/python -m xlang run examples/dsa_tests/all_tests.x",
+    "cd /home/admin/Downloads/Personal/X && .venv/bin/python -m xlang run examples/dsa_tests/priorityqueue_test.x",
+    "cd /home/admin/Downloads/Personal/X && .venv/bin/python -m xlang run examples/dsa_tests/trie_test.x",
+    "cd /home/admin/Downloads/Personal/X && .venv/bin/python -m xlang run examples/main.x"
+  ],
+  "blocked_reason": null,
+  "findings": "1. ComparatorItem is defined at module level in interpreter.py (before class Interpreter, after the import block). It holds (value, comparator_fn, call_fn) and implements __lt__/__le__/__eq__. FEAT-002 note: if you need to import or reference ComparatorItem outside interpreter.py it is top-level in that module. 2. PriorityQueue _data shape changed from list to dict: {'heap': list, 'comparator': Any|None, 'mode': str}. Any code in FEAT-002 that iterates a PriorityQueue _data directly must use _data['heap'], not _data itself. 3. _set_union/_set_intersection/_set_difference accept XCollectionInstance as the second argument and unwrap it manually — the _make_collection_ns wrapper only unwraps the first argument. 4. _stringify now handles Python set values (sorts by str key and renders as {a, b, c}). 5. examples/main.x had invalid lambda syntax (nums.map(num=>{...})) which was replaced with a for-of loop since anonymous arrow functions are not supported in this X dialect. 6. New files added: xlang/collections/set_collection.py (SetClass), updated xlang/collections/priorityqueue.py (heapq + dict structure), updated xlang/collections/trie.py (getWordsWithPrefix added), updated xlang/collections/__init__.py (SetClass added to __all__), updated xlang/module_loader.py (System.utils.Collections.Set added to STANDARD_LIBRARY_MODULES)."
+}

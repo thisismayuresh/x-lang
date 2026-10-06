@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import inspect
 import os
 import threading
@@ -78,6 +79,46 @@ from .runtime import (
     XSuper,
     XThreadHandle,
 )
+
+
+class ComparatorItem:
+    """Wrapper that makes arbitrary X-language values heap-orderable.
+
+    When a custom comparator function is supplied to PriorityQueue.create,
+    each enqueued value is wrapped in a ComparatorItem.  Python's heapq
+    module calls ``__lt__`` to determine heap order, so we delegate the
+    comparison to the user-supplied X function via ``call_fn``.
+    """
+
+    def __init__(
+        self,
+        value: Any,
+        comparator_fn: Any,
+        call_fn: Any,
+    ) -> None:
+        """Store the wrapped value, the comparator function, and the call dispatch."""
+        self.value = value
+        self.comparator_fn = comparator_fn
+        self.call_fn = call_fn
+
+    def __lt__(self, other: "ComparatorItem") -> bool:
+        """Return True when self should be popped before other (i.e. self < other)."""
+        result = self.call_fn(self.comparator_fn, [self.value, other.value])
+        return (result or 0) < 0
+
+    def __le__(self, other: "ComparatorItem") -> bool:
+        """Return True when self <= other (heapq may call this in Python 3.12+)."""
+        result = self.call_fn(self.comparator_fn, [self.value, other.value])
+        return (result or 0) <= 0
+
+    def __eq__(self, other: object) -> bool:
+        """Equality by wrapped value identity."""
+        if not isinstance(other, ComparatorItem):
+            return NotImplemented
+        return self.value == other.value  # type: ignore[no-any-return]
+
+    def __repr__(self) -> str:
+        return f"ComparatorItem({self.value!r})"
 
 
 class Interpreter:
@@ -295,6 +336,7 @@ class Interpreter:
             queue_ns         = self._make_collection_ns("Queue",          self._queue_members())
             priorityqueue_ns = self._make_collection_ns("PriorityQueue",  self._priorityqueue_members())
             trie_ns          = self._make_collection_ns("Trie",           self._trie_members())
+            set_ns           = self._make_collection_ns("Set",            self._set_members())
             collections_namespace.define("HashMap",       hashmap_ns)
             collections_namespace.define("LinkedList",    linkedlist_ns)
             collections_namespace.define("List",          linkedlist_ns)      # alias
@@ -302,6 +344,7 @@ class Interpreter:
             collections_namespace.define("Queue",         queue_ns)
             collections_namespace.define("PriorityQueue", priorityqueue_ns)
             collections_namespace.define("Trie",          trie_ns)
+            collections_namespace.define("Set",           set_ns)
             # Expose short names globally so Stack.create() works without import
             self.globals.define("HashMap",       hashmap_ns)
             self.globals.define("LinkedList",    linkedlist_ns)
@@ -310,6 +353,7 @@ class Interpreter:
             self.globals.define("Queue",         queue_ns)
             self.globals.define("PriorityQueue", priorityqueue_ns)
             self.globals.define("Trie",          trie_ns)
+            self.globals.define("Set",           set_ns)
         utils_namespace.define("Collections", collections_namespace)
         system_namespace.define("utils", utils_namespace)
         environment_namespace = Environment(system_namespace)
@@ -1065,6 +1109,8 @@ class Interpreter:
             "indexOf": BuiltinFunction("LinkedList.indexOf", self._linkedlist_index_of),
             "toArray": BuiltinFunction("LinkedList.toArray", self._linkedlist_to_array),
             "reverse": BuiltinFunction("LinkedList.reverse", self._linkedlist_reverse),
+            "groupBy": BuiltinFunction("LinkedList.groupBy", self._linkedlist_group_by),
+            "partition": BuiltinFunction("LinkedList.partition", self._linkedlist_partition),
         }
 
     def _linkedlist_create(self, arguments: list[Any]) -> list[Any]:
@@ -1225,6 +1271,44 @@ class Interpreter:
             raise RuntimeErrorX("LinkedList.reverse expects a LinkedList instance")
         linkedlist.reverse()
         return None
+
+    def _linkedlist_group_by(self, arguments: list[Any]) -> dict[str, list[Any]]:
+        """Group list elements by the string key returned by *fn(item)*.
+
+        Returns a dict whose keys are the stringified results of calling *fn*
+        on each element and whose values are lists of the matching elements.
+        """
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.groupBy expects a list and a key function")
+        linkedlist, fn = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.groupBy expects a LinkedList instance")
+        if not isinstance(fn, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("LinkedList.groupBy: second argument must be a function")
+        groups: dict[str, list[Any]] = {}
+        for item in linkedlist:
+            key = str(self._call(fn, [item]))
+            groups.setdefault(key, []).append(item)
+        return groups
+
+    def _linkedlist_partition(self, arguments: list[Any]) -> list[list[Any]]:
+        """Split the list into two sub-lists based on a predicate function.
+
+        Returns ``[[truthy_items], [falsy_items]]`` where *fn(item)* decides
+        which partition each element falls into.
+        """
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.partition expects a list and a predicate function")
+        linkedlist, fn = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.partition expects a LinkedList instance")
+        if not isinstance(fn, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("LinkedList.partition: second argument must be a function")
+        truthy: list[Any] = []
+        falsy: list[Any] = []
+        for item in linkedlist:
+            (truthy if self._is_truthy(self._call(fn, [item])) else falsy).append(item)
+        return [truthy, falsy]
 
     def _stack_members(self) -> dict[str, BuiltinFunction]:
         return {
@@ -1393,96 +1477,163 @@ class Interpreter:
         return list(queue)
 
     def _priorityqueue_members(self) -> dict[str, BuiltinFunction]:
+        """Return the method table for PriorityQueue collection namespace."""
         return {
-            "create": BuiltinFunction("PriorityQueue.create", self._priorityqueue_create),
-            "enqueue": BuiltinFunction("PriorityQueue.enqueue", self._priorityqueue_enqueue),
-            "dequeue": BuiltinFunction("PriorityQueue.dequeue", self._priorityqueue_dequeue),
-            "peek": BuiltinFunction("PriorityQueue.peek", self._priorityqueue_peek),
-            "size": BuiltinFunction("PriorityQueue.size", self._priorityqueue_size),
-            "isEmpty": BuiltinFunction("PriorityQueue.isEmpty", self._priorityqueue_is_empty),
-            "clear": BuiltinFunction("PriorityQueue.clear", self._priorityqueue_clear),
-            "toArray": BuiltinFunction("PriorityQueue.toArray", self._priorityqueue_to_array),
+            "create":   BuiltinFunction("PriorityQueue.create",   self._priorityqueue_create),
+            "enqueue":  BuiltinFunction("PriorityQueue.enqueue",  self._priorityqueue_enqueue),
+            "dequeue":  BuiltinFunction("PriorityQueue.dequeue",  self._priorityqueue_dequeue),
+            "peek":     BuiltinFunction("PriorityQueue.peek",     self._priorityqueue_peek),
+            "size":     BuiltinFunction("PriorityQueue.size",     self._priorityqueue_size),
+            "isEmpty":  BuiltinFunction("PriorityQueue.isEmpty",  self._priorityqueue_is_empty),
+            "clear":    BuiltinFunction("PriorityQueue.clear",    self._priorityqueue_clear),
+            "toArray":  BuiltinFunction("PriorityQueue.toArray",  self._priorityqueue_to_array),
         }
 
-    def _priorityqueue_create(self, arguments: list[Any]) -> list[Any]:
+    def _priorityqueue_create(self, arguments: list[Any]) -> dict[str, Any]:
+        """Create a new PriorityQueue dict.
+
+        Accepts an optional single argument:
+        - ``'max'`` (string)  → max-heap (largest value dequeued first).
+        - A callable X function → custom comparator; called as ``fn(a, b)``
+          and must return a negative number when ``a`` sorts before ``b``.
+        """
         if len(arguments) > 1:
-            raise RuntimeErrorX("PriorityQueue.create accepts at most one argument (comparator)")
-        return []
+            raise RuntimeErrorX(
+                "PriorityQueue.create accepts at most one argument ('max' or comparator fn)"
+            )
+        mode: str = "min"
+        comparator: Any = None
+        if len(arguments) == 1:
+            arg = arguments[0]
+            if arg == "max":
+                mode = "max"
+            elif isinstance(arg, (XFunction, BuiltinFunction, OverloadedFunction)):
+                comparator = arg
+            elif arg is not None:
+                raise RuntimeErrorX(
+                    "PriorityQueue.create argument must be 'max' or a comparator function"
+                )
+        return {"heap": [], "comparator": comparator, "mode": mode}
+
+    def _priorityqueue_unwrap_item(self, item: Any) -> Any:
+        """Unwrap a ComparatorItem or max-heap negation tuple to the original value."""
+        if isinstance(item, ComparatorItem):
+            return item.value
+        # max-heap without comparator stores (-value, value)
+        if isinstance(item, tuple) and len(item) == 2:
+            return item[1]
+        return item
 
     def _priorityqueue_enqueue(self, arguments: list[Any]) -> None:
+        """Push *value* onto the heap in O(log n) time using heapq."""
         if len(arguments) != 2:
-            raise RuntimeErrorX("PriorityQueue.enqueue expects a value argument")
+            raise RuntimeErrorX("PriorityQueue.enqueue expects exactly one value argument")
         queue, value = arguments[0], arguments[1]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.enqueue expects a PriorityQueue instance")
-        queue.append(value)
-        queue.sort()  # Simple implementation using natural ordering
+        heap: list = queue["heap"]
+        comparator = queue["comparator"]
+        mode: str = queue["mode"]
+        if comparator is not None:
+            heapq.heappush(heap, ComparatorItem(value, comparator, self._call))
+        elif mode == "max":
+            # Negate numeric values; fall back to ComparatorItem for non-numeric
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                heapq.heappush(heap, (-value, value))
+            else:
+                # Wrap with a reversed comparator so largest is popped first
+                def _reverse_cmp(a: Any, b: Any) -> int:
+                    if a < b:
+                        return 1
+                    if a > b:
+                        return -1
+                    return 0
+
+                dummy_fn = BuiltinFunction(
+                    "__max_cmp",
+                    lambda args: _reverse_cmp(args[0], args[1]),
+                )
+                heapq.heappush(heap, ComparatorItem(value, dummy_fn, self._call))
+        else:
+            heapq.heappush(heap, value)
         return None
 
     def _priorityqueue_dequeue(self, arguments: list[Any]) -> Any:
+        """Pop and return the highest-priority element in O(log n) time."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.dequeue expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.dequeue expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.dequeue expects a PriorityQueue instance")
-        if not queue:
+        heap: list = queue["heap"]
+        if not heap:
             raise RuntimeErrorX("PriorityQueue.dequeue: queue is empty")
-        return queue.pop(0)
+        return self._priorityqueue_unwrap_item(heapq.heappop(heap))
 
     def _priorityqueue_peek(self, arguments: list[Any]) -> Any:
+        """Return the highest-priority element without removing it."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.peek expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.peek expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.peek expects a PriorityQueue instance")
-        if not queue:
+        heap: list = queue["heap"]
+        if not heap:
             raise RuntimeErrorX("PriorityQueue.peek: queue is empty")
-        return queue[0]
+        return self._priorityqueue_unwrap_item(heap[0])
 
     def _priorityqueue_size(self, arguments: list[Any]) -> int:
+        """Return the number of elements currently in the queue."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.size expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.size expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.size expects a PriorityQueue instance")
-        return len(queue)
+        return len(queue["heap"])
 
     def _priorityqueue_is_empty(self, arguments: list[Any]) -> bool:
+        """Return True when the queue contains no elements."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.isEmpty expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.isEmpty expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.isEmpty expects a PriorityQueue instance")
-        return len(queue) == 0
+        return len(queue["heap"]) == 0
 
     def _priorityqueue_clear(self, arguments: list[Any]) -> None:
+        """Remove all elements from the queue in place."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.clear expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.clear expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.clear expects a PriorityQueue instance")
-        queue.clear()
+        queue["heap"].clear()
         return None
 
     def _priorityqueue_to_array(self, arguments: list[Any]) -> list[Any]:
+        """Return a sorted list of all elements (does not modify the queue)."""
         if len(arguments) != 1:
-            raise RuntimeErrorX("PriorityQueue.toArray expects no arguments")
+            raise RuntimeErrorX("PriorityQueue.toArray expects no extra arguments")
         queue = arguments[0]
-        if not isinstance(queue, list):
+        if not (isinstance(queue, dict) and "heap" in queue):
             raise RuntimeErrorX("PriorityQueue.toArray expects a PriorityQueue instance")
-        return list(queue)
+        heap: list = queue["heap"]
+        sorted_items = heapq.nsmallest(len(heap), heap)
+        return [self._priorityqueue_unwrap_item(item) for item in sorted_items]
 
     def _trie_members(self) -> dict[str, BuiltinFunction]:
+        """Return the method table for Trie collection namespace."""
         return {
-            "create": BuiltinFunction("Trie.create", self._trie_create),
-            "insert": BuiltinFunction("Trie.insert", self._trie_insert),
-            "search": BuiltinFunction("Trie.search", self._trie_search),
-            "startsWith": BuiltinFunction("Trie.startsWith", self._trie_starts_with),
-            "remove": BuiltinFunction("Trie.remove", self._trie_remove),
-            "size": BuiltinFunction("Trie.size", self._trie_size),
-            "isEmpty": BuiltinFunction("Trie.isEmpty", self._trie_is_empty),
-            "clear": BuiltinFunction("Trie.clear", self._trie_clear),
-            "getAllWords": BuiltinFunction("Trie.getAllWords", self._trie_get_all_words),
+            "create":            BuiltinFunction("Trie.create",            self._trie_create),
+            "insert":            BuiltinFunction("Trie.insert",            self._trie_insert),
+            "search":            BuiltinFunction("Trie.search",            self._trie_search),
+            "startsWith":        BuiltinFunction("Trie.startsWith",        self._trie_starts_with),
+            "remove":            BuiltinFunction("Trie.remove",            self._trie_remove),
+            "size":              BuiltinFunction("Trie.size",              self._trie_size),
+            "isEmpty":           BuiltinFunction("Trie.isEmpty",           self._trie_is_empty),
+            "clear":             BuiltinFunction("Trie.clear",             self._trie_clear),
+            "getAllWords":        BuiltinFunction("Trie.getAllWords",       self._trie_get_all_words),
+            "getWordsWithPrefix": BuiltinFunction("Trie.getWordsWithPrefix", self._trie_get_words_with_prefix),
         }
 
     def _trie_create(self, arguments: list[Any]) -> dict[str, Any]:
@@ -1609,6 +1760,182 @@ class Interpreter:
         
         _collect_words(trie, "")
         return words
+
+    def _trie_get_words_with_prefix(self, arguments: list[Any]) -> list[str]:
+        """Return all words stored in the trie that begin with *prefix*.
+
+        Traverses to the prefix node character by character; returns ``[]``
+        if any character in the prefix is missing.  Then runs a DFS from
+        that node, seeding each collected word with the prefix string.
+        """
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Trie.getWordsWithPrefix expects a prefix argument")
+        trie, prefix = arguments[0], arguments[1]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.getWordsWithPrefix expects a Trie instance")
+        if not isinstance(prefix, str):
+            raise RuntimeErrorX("Trie.getWordsWithPrefix: prefix must be a string")
+
+        # Walk to the node at the end of the prefix
+        node: dict[str, Any] = trie
+        for char in prefix:
+            if char not in node["children"]:
+                return []
+            node = node["children"][char]
+
+        # DFS from that node, collecting every complete word
+        words: list[str] = []
+
+        def _collect(current_node: dict[str, Any], current_prefix: str) -> None:
+            if current_node.get("is_end", False):
+                words.append(current_prefix)
+            for char, child in current_node["children"].items():
+                _collect(child, current_prefix + char)
+
+        _collect(node, prefix)
+        return words
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Set methods
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _set_members(self) -> dict[str, BuiltinFunction]:
+        """Return the method table for Set collection namespace."""
+        return {
+            "create":       BuiltinFunction("Set.create",       self._set_create),
+            "add":          BuiltinFunction("Set.add",          self._set_add),
+            "has":          BuiltinFunction("Set.has",          self._set_has),
+            "remove":       BuiltinFunction("Set.remove",       self._set_remove),
+            "size":         BuiltinFunction("Set.size",         self._set_size),
+            "isEmpty":      BuiltinFunction("Set.isEmpty",      self._set_is_empty),
+            "clear":        BuiltinFunction("Set.clear",        self._set_clear),
+            "toArray":      BuiltinFunction("Set.toArray",      self._set_to_array),
+            "union":        BuiltinFunction("Set.union",        self._set_union),
+            "intersection": BuiltinFunction("Set.intersection", self._set_intersection),
+            "difference":   BuiltinFunction("Set.difference",  self._set_difference),
+        }
+
+    def _set_create(self, arguments: list[Any]) -> set[Any]:
+        """Create a new empty Set, optionally initialised from an iterable."""
+        if len(arguments) > 1:
+            raise RuntimeErrorX("Set.create accepts at most one argument (initial iterable)")
+        if len(arguments) == 1:
+            init = arguments[0]
+            if not hasattr(init, "__iter__"):
+                raise RuntimeErrorX("Set.create initial value must be iterable")
+            return set(init)
+        return set()
+
+    def _set_add(self, arguments: list[Any]) -> None:
+        """Add *value* to the set (no-op if already present)."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.add expects exactly one value argument")
+        s, value = arguments[0], arguments[1]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.add expects a Set instance")
+        s.add(value)
+        return None
+
+    def _set_has(self, arguments: list[Any]) -> bool:
+        """Return True when *value* is a member of the set."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.has expects exactly one value argument")
+        s, value = arguments[0], arguments[1]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.has expects a Set instance")
+        return value in s
+
+    def _set_remove(self, arguments: list[Any]) -> bool:
+        """Remove *value* from the set; returns True if it was present."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.remove expects exactly one value argument")
+        s, value = arguments[0], arguments[1]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.remove expects a Set instance")
+        if value in s:
+            s.discard(value)
+            return True
+        return False
+
+    def _set_size(self, arguments: list[Any]) -> int:
+        """Return the number of elements in the set."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Set.size expects no extra arguments")
+        s = arguments[0]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.size expects a Set instance")
+        return len(s)
+
+    def _set_is_empty(self, arguments: list[Any]) -> bool:
+        """Return True when the set contains no elements."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Set.isEmpty expects no extra arguments")
+        s = arguments[0]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.isEmpty expects a Set instance")
+        return len(s) == 0
+
+    def _set_clear(self, arguments: list[Any]) -> None:
+        """Remove all elements from the set in place."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Set.clear expects no extra arguments")
+        s = arguments[0]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.clear expects a Set instance")
+        s.clear()
+        return None
+
+    def _set_to_array(self, arguments: list[Any]) -> list[Any]:
+        """Return a sorted list of the set's elements (sort key: str representation)."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Set.toArray expects no extra arguments")
+        s = arguments[0]
+        if not isinstance(s, set):
+            raise RuntimeErrorX("Set.toArray expects a Set instance")
+        return sorted(s, key=str)
+
+    def _set_union(self, arguments: list[Any]) -> set[Any]:
+        """Return a new set containing elements from both sets."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.union expects exactly two Set arguments")
+        s1 = arguments[0]
+        s2 = arguments[1]
+        # Allow the second arg to be an XCollectionInstance (instance dot-call pattern)
+        if isinstance(s2, XCollectionInstance):
+            s2 = s2._data
+        if not isinstance(s1, set):
+            raise RuntimeErrorX("Set.union: first argument must be a Set instance")
+        if not isinstance(s2, set):
+            raise RuntimeErrorX("Set.union: second argument must be a Set instance")
+        return s1 | s2
+
+    def _set_intersection(self, arguments: list[Any]) -> set[Any]:
+        """Return a new set containing only elements present in both sets."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.intersection expects exactly two Set arguments")
+        s1 = arguments[0]
+        s2 = arguments[1]
+        if isinstance(s2, XCollectionInstance):
+            s2 = s2._data
+        if not isinstance(s1, set):
+            raise RuntimeErrorX("Set.intersection: first argument must be a Set instance")
+        if not isinstance(s2, set):
+            raise RuntimeErrorX("Set.intersection: second argument must be a Set instance")
+        return s1 & s2
+
+    def _set_difference(self, arguments: list[Any]) -> set[Any]:
+        """Return a new set with elements in *s1* that are not in *s2*."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Set.difference expects exactly two Set arguments")
+        s1 = arguments[0]
+        s2 = arguments[1]
+        if isinstance(s2, XCollectionInstance):
+            s2 = s2._data
+        if not isinstance(s1, set):
+            raise RuntimeErrorX("Set.difference: first argument must be a Set instance")
+        if not isinstance(s2, set):
+            raise RuntimeErrorX("Set.difference: second argument must be a Set instance")
+        return s1 - s2
 
     def _validate_argument_count(
         self, operation: str, arguments: list[Any], expected: int
@@ -1977,6 +2304,9 @@ class Interpreter:
     def _execute_for(self, statement: ForStatement, environment: Environment) -> None:
         iterable = self._evaluate(statement.iterable, environment)
         if statement.iteration_mode == "in":
+            # Unwrap XCollectionInstance so we can iterate its raw _data
+            if isinstance(iterable, XCollectionInstance):
+                iterable = iterable._data
             if isinstance(iterable, dict):
                 iterator = iter(iterable.keys())
             elif isinstance(iterable, XInstance):
@@ -1989,6 +2319,10 @@ class Interpreter:
                         "for-in requires an object or iterable value"
                     ) from error
         else:
+            # Unwrap XCollectionInstance — PriorityQueue uses a dict with 'heap'
+            if isinstance(iterable, XCollectionInstance):
+                inner = iterable._data
+                iterable = inner["heap"] if isinstance(inner, dict) and "heap" in inner else inner
             try:
                 iterator = iter(iterable)
             except TypeError as error:
@@ -3682,6 +4016,8 @@ class Interpreter:
             return self._stringify(value._data)
         if isinstance(value, list):
             return "[" + ", ".join(self._stringify(item) for item in value) + "]"
+        if isinstance(value, set):
+            return "{" + ", ".join(self._stringify(item) for item in sorted(value, key=str)) + "}"
         if isinstance(value, dict):
             fields = ", ".join(
                 f"{name}: {self._stringify(item)}"

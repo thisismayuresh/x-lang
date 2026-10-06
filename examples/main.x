@@ -16,7 +16,12 @@ function printStudent(Student student) {
 
 function main() {
 
-    let 
+    let nums = [1,2,3,4,5]
+    print("nums of",nums[0])
+
+    for (integer n of nums) {
+        print(n)
+    }
 
     // ── List<Student> ───────────────────────────────────────────────────
     print("=== Student Registry (List<Student>) ===\n")
