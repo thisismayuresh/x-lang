@@ -7,6 +7,7 @@ from typing import Any
 @dataclass
 class Program:
     declarations: list[Any]
+    modules: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,6 +83,28 @@ class ClassDeclaration:
     modifiers: set[str] = field(default_factory=set)
     is_interface: bool = False
     decorators: list[Any] = field(default_factory=list)
+    implemented_types: list[str] = field(default_factory=list)
+    generic_parameters: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FunctionExpression:
+    """An anonymous function: an arrow function such as ``(User u) => u.name``."""
+
+    parameters: list[Parameter]
+    body: list[Any]
+    return_type: str | None = None
+    is_async: bool = False
+    is_arrow: bool = False
+
+
+@dataclass
+class ModuleImport:
+    module_key: str
+    kind: str
+    source_name: str
+    alias: str | None = None
+    exported_names: list[str] = field(default_factory=list)
 
 
 @dataclass

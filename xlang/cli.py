@@ -12,7 +12,7 @@ from .config import (
     load_env_file,
     load_config,
 )
-from .diagnostics import render_diagnostic, render_warning
+from .diagnostics import SourceWarning, render_diagnostic, render_warning
 from .interpreter import Interpreter
 from .lexer import LexError
 from .module_loader import ModuleLoader
@@ -23,6 +23,7 @@ from .runtime import (
     XExceptionValue,
     XInstance,
 )
+from .typecheck import TypeChecker
 
 
 USAGE = """X language interpreter
@@ -112,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
 
     project_root = config.path.parent if config.path is not None else current_directory
     loader = ModuleLoader(project_root, config, recover_errors=True)
+    interpreter: Interpreter | None = None
     try:
         program = loader.load_program(source_path)
         _report_module_warnings(loader, config.color)
@@ -123,7 +125,19 @@ def main(argv: list[str] | None = None) -> int:
                 config.color,
             )
         if command in ("check", "build"):
+            if config.enabled("type_checker"):
+                type_errors = TypeChecker().check(program, source_name=str(source_path))
+                if type_errors:
+                    return _report_source_errors(
+                        type_errors,
+                        loader.sources,
+                        source_path,
+                        config.color,
+                        label="type error",
+                    )
             print(f"{source_path}: syntax is valid")
+            if config.enabled("type_checker"):
+                print(f"{source_path}: types are valid")
             if command == "build":
                 print(
                     "X 0.1 currently interprets source; no native executable was produced."
@@ -148,7 +162,10 @@ def main(argv: list[str] | None = None) -> int:
             config=config,
             environment=environment,
         )
-        result = interpreter.interpret(program)
+        try:
+            result = interpreter.interpret(program)
+        finally:
+            _report_warnings(interpreter.warnings, loader.sources, config.color)
         if result is None:
             return 0
         if isinstance(result, int) and not isinstance(result, bool):
@@ -219,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         message = "Maximum recursion depth exceeded"
         runtime_error = RuntimeErrorX(message, "RuntimeException")
         # Try to get the current location from the interpreter
-        if interpreter.current_location is not None:
+        if interpreter is not None and interpreter.current_location is not None:
             source_name, line, column = interpreter.current_location
             runtime_error.source_name = source_name or str(source_path)
             runtime_error.line = line
@@ -240,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         message = f"Runtime error: {str(error)}"
         runtime_error = RuntimeErrorX(message, "RuntimeException")
         # Try to get the current location from the interpreter
-        if interpreter.current_location is not None:
+        if interpreter is not None and interpreter.current_location is not None:
             source_name, line, column = interpreter.current_location
             runtime_error.source_name = source_name or str(source_path)
             runtime_error.line = line
@@ -388,6 +405,7 @@ def _report_source_errors(
     sources: dict[Path, str],
     entry_path: Path,
     color_mode: str,
+    label: str = "error",
 ) -> int:
     ordered_errors = sorted(
         errors,
@@ -417,14 +435,22 @@ def _report_source_errors(
             color_mode,
         )
         print(diagnostic, file=sys.stderr)
-    print(f"x: found {len(errors)} error(s)", file=sys.stderr)
+    print(f"x: found {len(errors)} {label}(s)", file=sys.stderr)
     return 1
 
 
 def _report_module_warnings(loader: ModuleLoader, color_mode: str) -> None:
-    for warning in loader.warnings:
+    _report_warnings(loader.warnings, loader.sources, color_mode)
+
+
+def _report_warnings(
+    warnings: list[SourceWarning],
+    sources: dict[Path, str],
+    color_mode: str,
+) -> None:
+    for warning in warnings:
         warning_path = Path(warning.source_name).resolve()
-        source = loader.sources.get(warning_path)
+        source = sources.get(warning_path)
         diagnostic = render_warning(
             warning.message,
             source,

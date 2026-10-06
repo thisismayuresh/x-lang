@@ -220,6 +220,13 @@ class XFunction:
     def _call_sync(self, arguments: list[Any]) -> Any:
         if self.traced:
             self.interpreter.output(f"Calling {self.declaration.name}")
+        self.interpreter.function_stack.append(self)
+        try:
+            return self._invoke(arguments)
+        finally:
+            self.interpreter.function_stack.pop()
+
+    def _invoke(self, arguments: list[Any]) -> Any:
         parameters = self.declaration.parameters
         has_rest_parameter = bool(parameters and parameters[-1].is_rest)
         required_count = sum(

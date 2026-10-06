@@ -2,21 +2,32 @@
 default-command = "run"
 color = "auto"
 
+# Language features default to on. Set any flag to false (or pass
+# --feature NAME=off) to disable that syntax or runtime capability.
 [features]
+arrow_functions = true
 async = true
 classes = true
+collections = true
+concurrency_primitives = true
 decorators = true
 destructuring = true
 enums = true
 equality = true
 exceptions = true
 filesystem = true
+generics = true
+interfaces = true
 loops = true
 namespaces = true
 object_literals = true
 pattern_matching = true
+records = true
 spread = true
+static_methods = true
 threads = true
+type_checker = true
+unions = true
 
 [run]
 args = []

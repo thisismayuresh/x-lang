@@ -1,77 +1,132 @@
-// Inline imports — bring just what you need from Collections
-import System.utils.Collections.List
-import System.utils.Collections.Stack
+import System.io.FileSystem
+let string[] entries = FileSystem.listDirectory("./");
 
-// Student type shape defined as an interface
-interface Student {
-    string name;
-    integer age;
-    string major;
-    float gpa;
+for(int entry of entries ){
+    //print(entry)
+    if(entry==="main.x"){
+        //print(FileSystem.readText(entry))
+    }
 }
 
-function printStudent(Student student) {
-    print(`  Name: {student.name} | Age: {student.age} | Major: {student.major} | GPA: {student.gpa}`)
+function myFunction(intsssssx i = 0) {
+    if (i === 10) {
+        return;
+    }
+
+    print(i);
+    myFunction(i + 1);
 }
 
-function main() {
+myFunction(9);
 
-    let nums = [1,2,3,4,5]
-    print("nums of",nums[0])
 
-    for (integer n of nums) {
-        print(n)
-    }
 
-    // ── List<Student> ───────────────────────────────────────────────────
-    print("=== Student Registry (List<Student>) ===\n")
+let integer[] array = [5,4,3,2,1, getarrayAtZero(), getarrayAtZero(2)]
 
-    let List<Student> students = new List<Student>()
 
-    // Add 5 students using OOP-style dot calls
-    students.add({ name: "Alice Chen",   age: 20, major: "Computer Science", gpa: 3.9 })
-    students.add({ name: "Bob Martins",  age: 22, major: "Mathematics",      gpa: 3.5 })
-    students.add({ name: "Carol Singh",  age: 21, major: "Data Science",     gpa: 3.8 })
-    students.add({ name: "Dave Okonkwo", age: 23, major: "Software Eng.",    gpa: 3.7 })
-    students.add({ name: "Eve Larsson",  age: 20, major: "Cybersecurity",    gpa: 3.6 })
 
-    print(`Total students enrolled: {students.size()}\n`)
-
-    // ── for (integer i in range) — index-based traversal ──────────────
-    print("All Students (for integer i in range):")
-    let Student[] arr = students.toArray()
-    for (integer i in range(0, students.size())) {
-        print(`  [{i}] {arr[i].name} | Age: {arr[i].age} | Major: {arr[i].major} | GPA: {arr[i].gpa}`)
-    }
-
-    // ── for...of — element-based traversal ────────────────────────────
-    print("\nAll Students (for Student s of array):")
-    for (Student s of arr) {
-        printStudent(s)
-    }
-
-    // Random access via dot-style methods
-    print(`\nFirst student : {students.getFirst().name}`)
-    print(`Last student  : {students.getLast().name}`)
-    print(`Student at [2]: {students.get(2).name}`)
-
-    // ── Stack<string> ────────────────────────────────────────────────────
-    print("\n=== Course History (Stack<string>) ===\n")
-
-    let Stack<string> courseHistory = new Stack<string>()
-
-    courseHistory.push("Intro to Programming")
-    courseHistory.push("Data Structures")
-    courseHistory.push("Algorithms")
-    courseHistory.push("Operating Systems")
-    courseHistory.push("Machine Learning")
-
-    print(`Courses taken : {courseHistory.size()}`)
-    print(`Latest course : {courseHistory.peek()}`)
-
-    print("\nCourse history (most recent first):")
-    while (!courseHistory.isEmpty()) {
-        print(`  - {courseHistory.pop()}`)
-    }
-
+integer function getarrayAtZero(){
+    return 1
 }
+
+integer function getarrayAtZero(xp){
+    return xp
+}
+
+
+print(`Value of is {array}`)
+
+
+
+
+class Address {
+    string street;
+    string city;
+
+    public Address(String street, String city) {
+        this.street = street;
+        this.city = city;
+    }
+}
+
+
+public class UserAccount {
+    // 1. Primitive and String fields
+    private int userId;
+    private string username;
+
+    // 2. A custom object field (Composition)
+    private Address billingAddress;
+
+    // 3. An array field
+    private int[] transactionHistory;
+
+    // 4. Constructor to initialize the complex object
+    public UserAccount(int userId, string username, Address billingAddress, int[] transactionHistory) {
+        print("username", username);
+        this.userId = userId;
+        this.username = username;
+        this.billingAddress = billingAddress;
+        this.transactionHistory = transactionHistory;
+    }
+
+    // 5. Behavior (Method)
+    public void printAccountDetails() {
+        print("User: " + this.username + " (ID: " + this.userId + ")");
+        print("City: " + this.billingAddress.city);
+        //print("Recent Transactions: " + Arrays.toString(transactionHistory));
+    }
+}
+
+
+
+let Address userAddress = new Address("123 Java Lane", "Tech City");
+let int[] history = [100, 250, 15]; 
+
+let UserAccount account = new UserAccount(9876, "DevUser", userAddress, history);
+
+account.printAccountDetails();
+
+let obj = {
+    "type": "us",
+   
+}
+
+obj.x = "xxx";
+
+
+print(obj.x);
+print(obj)
+
+interface Person{
+    string getGender()
+}
+
+protected class ANimal implements Person{
+  protected ANimal(){
+
+    print("constr")
+ }
+}
+
+
+let classm = new ANimal();
+
+
+
+
+
+
+
+
+
+ function foo(){
+    let integer[] arrayo = [1];
+    arrayo.push(2);
+     return arrayo;
+}
+
+print("fooed",             foo())
+
+
+

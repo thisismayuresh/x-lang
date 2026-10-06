@@ -18,21 +18,29 @@ except ModuleNotFoundError:
 
 
 FEATURE_DEFAULTS = {
+    "arrow_functions": True,
     "async": True,
     "classes": True,
     "collections": True,
+    "concurrency_primitives": True,
     "decorators": True,
     "destructuring": True,
     "enums": True,
     "equality": True,
     "exceptions": True,
     "filesystem": True,
+    "generics": True,
+    "interfaces": True,
     "loops": True,
     "namespaces": True,
     "object_literals": True,
     "pattern_matching": True,
+    "records": True,
     "spread": True,
+    "static_methods": True,
     "threads": True,
+    "type_checker": True,
+    "unions": True,
 }
 
 

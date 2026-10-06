@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from typing import TextIO
+
+
+@dataclass
+class SourceWarning:
+    """A non-fatal diagnostic attached to a source location."""
+
+    message: str
+    source_name: str
+    line: int | None = None
+    column: int | None = None
 
 
 RED = "\x1b[31m"

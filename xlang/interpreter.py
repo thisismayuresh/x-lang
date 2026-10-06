@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import heapq
 import inspect
 import os
@@ -24,6 +25,7 @@ from .ast_nodes import (
     ExpressionStatement,
     ForStatement,
     FunctionDeclaration,
+    FunctionExpression,
     ImportDeclaration,
     ImportAlias,
     ImportNamespaceAlias,
@@ -59,6 +61,7 @@ from .ast_nodes import (
     WildcardPattern,
 )
 from .config import XConfig
+from .diagnostics import SourceWarning
 from .runtime import (
     BuiltinFunction,
     Environment,
@@ -121,6 +124,56 @@ class ComparatorItem:
         return f"ComparatorItem({self.value!r})"
 
 
+#: Dot-callable methods on plain X arrays (``myArray.map(cb)``).
+#: Maps method name -> ``Interpreter`` method implementing the call.  Every
+#: implementation receives the receiver as ``arguments[0]`` — the same shape
+#: the HashMap/LinkedList builtins use — so ``List.map(array, cb)`` works too.
+_ARRAY_METHODS: dict[str, str] = {
+    "map": "_array_map",
+    "filter": "_array_filter",
+    "reduce": "_array_reduce",
+    "forEach": "_array_for_each",
+    "find": "_array_find",
+    "some": "_array_some",
+    "every": "_array_every",
+    "indexOf": "_array_index_of",
+    "contains": "_array_contains",
+    "sort": "_array_sort",
+    "reverse": "_array_reverse",
+    "slice": "_array_slice",
+    "concat": "_array_concat",
+    "join": "_array_join",
+    "first": "_array_first",
+    "last": "_array_last",
+    "isEmpty": "_array_is_empty",
+    "clear": "_array_clear",
+}
+
+#: Dot-callable methods on X strings (``text.toUpperCase()``), keyed the same
+#: way as ``_ARRAY_METHODS``.  Index arguments count Unicode code points,
+#: matching the language's documented string-indexing behavior.
+_STRING_METHODS: dict[str, str] = {
+    "toUpperCase": "_string_to_upper_case",
+    "toLowerCase": "_string_to_lower_case",
+    "trim": "_string_trim",
+    "startsWith": "_string_starts_with",
+    "endsWith": "_string_ends_with",
+    "contains": "_string_contains",
+    "indexOf": "_string_index_of",
+    "replace": "_string_replace",
+    "replaceAll": "_string_replace_all",
+    "split": "_string_split",
+    "charAt": "_string_char_at",
+    "substring": "_string_substring",
+    "slice": "_string_slice",
+    "repeat": "_string_repeat",
+    "padStart": "_string_pad_start",
+    "padEnd": "_string_pad_end",
+    "isEmpty": "_string_is_empty",
+    "toCharArray": "_string_to_char_array",
+}
+
+
 class Interpreter:
     EXCEPTION_PARENTS = {
         "Error": "Throwable",
@@ -136,6 +189,33 @@ class Interpreter:
         "DatabaseError": "Error",
     }
 
+    #: Global names that only exist while a ``[features]`` flag is enabled.
+    #: Used to turn "Name 'x' is not defined" into an actionable message.
+    FEATURE_GLOBALS: dict[str, tuple[str, ...]] = {
+        "collections": (
+            "Collections",
+            "HashMap",
+            "LinkedList",
+            "List",
+            "Stack",
+            "Queue",
+            "PriorityQueue",
+            "Trie",
+            "Set",
+            "TreeMap",
+            "TreeSet",
+            "LinkedHashMap",
+            "LRUCache",
+            "ThreadSafeMap",
+            "ThreadSafeSet",
+        ),
+        "threads": ("Thread",),
+        "async": ("Async", "sleep"),
+        "filesystem": ("FileSystem",),
+        "object_literals": ("Object",),
+        "decorators": ("trace",),
+    }
+
     def __init__(
         self,
         arguments: list[str] | None = None,
@@ -148,6 +228,9 @@ class Interpreter:
         if environment is not None:
             self.environment.update(environment)
         self.current_location: tuple[str | None, int | None, int | None] | None = None
+        self.warnings: list[SourceWarning] = []
+        self._warning_keys: set[tuple[str, str | None, int | None, int | None]] = set()
+        self.function_stack: list[XFunction] = []
         self.globals = Environment()
         self.output = output
         self._install_builtins(arguments or [])
@@ -260,7 +343,7 @@ class Interpreter:
 
     def _resolve_import(self, qualified_name: str) -> Any:
         parts = qualified_name.split(".")
-        value = self.globals.get(parts[0])
+        value = self._lookup(self.globals, parts[0])
         for part in parts[1:]:
             value = self._get_member(value, part)
         return value
@@ -345,6 +428,14 @@ class Interpreter:
             collections_namespace.define("PriorityQueue", priorityqueue_ns)
             collections_namespace.define("Trie",          trie_ns)
             collections_namespace.define("Set",           set_ns)
+            from .stdlib.extended_collections import build_namespaces
+
+            for collection_name, collection_members in build_namespaces().items():
+                collection_ns = self._make_collection_ns(
+                    collection_name, collection_members
+                )
+                collections_namespace.define(collection_name, collection_ns)
+                self.globals.define(collection_name, collection_ns)
             # Expose short names globally so Stack.create() works without import
             self.globals.define("HashMap",       hashmap_ns)
             self.globals.define("LinkedList",    linkedlist_ns)
@@ -448,6 +539,44 @@ class Interpreter:
         error.source_name = source_name
         error.line = line
         error.column = column
+
+    def warn(self, message: str) -> None:
+        """Record a yellow warning at the current source location.
+
+        Warnings are deduplicated by message and location so that a warning
+        raised inside a hot loop is reported once instead of once per turn.
+        """
+        source_name, line, column = self.current_location or (None, None, None)
+        key = (message, source_name, line, column)
+        if key in self._warning_keys:
+            return
+        self._warning_keys.add(key)
+        self.warnings.append(
+            SourceWarning(message, source_name or "<unknown>", line, column)
+        )
+
+    def _disabled_feature_for(self, name: str) -> str | None:
+        """Return the disabled feature that would provide ``name``, if any."""
+        for feature, names in self.FEATURE_GLOBALS.items():
+            if name in names and not self.config.enabled(feature):
+                return feature
+        return None
+
+    def undefined_name_error(self, name: str) -> RuntimeErrorX:
+        """Build the "name is not defined" error, mentioning a disabled feature."""
+        feature = self._disabled_feature_for(name)
+        message = f"Name '{name}' is not defined"
+        if feature is not None:
+            message += f" because the '{feature}' feature is disabled in x.toml"
+        error = RuntimeErrorX(message)
+        self.annotate_error(error)
+        return error
+
+    def _lookup(self, environment: Environment, name: str) -> Any:
+        try:
+            return environment.get(name)
+        except RuntimeErrorX as error:
+            raise self.undefined_name_error(name) from error
 
     def _source_stack(
         self, source_name: str | None, line: int | None, column: int | None
@@ -1090,8 +1219,566 @@ class Interpreter:
         hashmap.update(other)
         return None
 
+    # ------------------------------------------------------------------
+    # Array methods (myArray.map(cb), List.map(array, cb))
+    # ------------------------------------------------------------------
+
+    def _array_receiver(self, arguments: list[Any], name: str) -> list[Any]:
+        """Return the array bound as ``arguments[0]`` for method *name*."""
+        if not arguments:
+            raise RuntimeErrorX(f"Array.{name} expects an array instance")
+        receiver = self._unwrap_collection(arguments[0])
+        if not isinstance(receiver, list):
+            raise RuntimeErrorX(f"Array.{name} expects an array instance")
+        return receiver
+
+    def _require_callback(self, value: Any, message: str) -> Any:
+        """Normalize *value* (overload lists) and require a callable result."""
+        callback = self._normalize_callable(value, "callback")
+        if isinstance(callback, (XFunction, BuiltinFunction, OverloadedFunction)):
+            return callback
+        raise RuntimeErrorX(message)
+
+    def _call_callback(self, callback: Any, arguments: list[Any], context: str) -> Any:
+        """Call *callback* with *arguments*, offering only what it declares.
+
+        ``XFunction.call`` rejects surplus arguments, so a one-parameter
+        callback such as ``(int n) => n * 2`` must not be handed the index
+        argument that two-parameter callbacks accept.
+        """
+        if isinstance(callback, BuiltinFunction):
+            return callback.call(arguments)
+        if isinstance(callback, XFunction):
+            parameters = callback.declaration.parameters
+            if parameters and parameters[-1].is_rest:
+                return callback.call(arguments)
+            return callback.call(arguments[: len(parameters)])
+        if isinstance(callback, OverloadedFunction):
+            for count in range(len(arguments), -1, -1):
+                if any(
+                    self._accepts_argument_count(function.declaration.parameters, count)
+                    for function in callback.functions
+                ):
+                    return self._call(callback, arguments[:count])
+            raise RuntimeErrorX(
+                f"No overload of {context} accepts {len(arguments)} argument(s)"
+            )
+        raise RuntimeErrorX(f"{context} must be a function")
+
+    def _natural_sort_key(self, value: Any) -> tuple[int, Any]:
+        """Natural ordering key used by ``sort()`` without a callback.
+
+        Numbers sort numerically, then booleans, then strings lexicographically;
+        anything else falls back to its printed form so a mixed array never
+        fails to compare.
+        """
+        if isinstance(value, bool):
+            return (1, float(value))
+        if isinstance(value, (int, float)):
+            return (0, float(value))
+        if isinstance(value, str):
+            return (2, value)
+        return (3, self._stringify(value))
+
+    def _slice_bounds(
+        self, start_value: Any, end_value: Any, length: int, label: str
+    ) -> tuple[int, int]:
+        """Normalize JS-style slice bounds: negatives count from the end and
+        both bounds clamp into ``[0, length]``."""
+        def normalize(value: Any, default: int) -> int:
+            if value is None:
+                return default
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise RuntimeErrorX(f"{label} indices must be integers")
+            index = value if value >= 0 else length + value
+            return max(0, min(length, index))
+
+        return normalize(start_value, 0), normalize(end_value, length)
+
+    def _array_map(self, arguments: list[Any]) -> list[Any]:
+        """``map(callback)`` — a new array of ``callback(value, index)`` results."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.map expects a callback function")
+        array = self._array_receiver(arguments, "map")
+        mapper = self._require_callback(
+            arguments[1], "Array.map callback must be a function"
+        )
+        return [
+            self._call_callback(mapper, [value, index], "Array.map callback")
+            for index, value in enumerate(array)
+        ]
+
+    def _array_filter(self, arguments: list[Any]) -> list[Any]:
+        """``filter(callback)`` — elements whose callback result is truthy."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.filter expects a callback function")
+        array = self._array_receiver(arguments, "filter")
+        predicate = self._require_callback(
+            arguments[1], "Array.filter callback must be a function"
+        )
+        return [
+            value
+            for index, value in enumerate(array)
+            if self._is_truthy(
+                self._call_callback(predicate, [value, index], "Array.filter callback")
+            )
+        ]
+
+    def _array_reduce(self, arguments: list[Any]) -> Any:
+        """``reduce(callback, initialValue?)`` — fold the array into one value.
+
+        Without an initial value the first element seeds the accumulator, so
+        reducing an empty array that way is an error.
+        """
+        if len(arguments) not in (2, 3):
+            raise RuntimeErrorX(
+                "Array.reduce expects a callback function and an optional initial value"
+            )
+        array = self._array_receiver(arguments, "reduce")
+        reducer = self._require_callback(
+            arguments[1], "Array.reduce callback must be a function"
+        )
+        if len(arguments) == 3:
+            accumulator = arguments[2]
+            start = 0
+        else:
+            if not array:
+                raise RuntimeErrorX(
+                    "Array.reduce of an empty array requires an initial value"
+                )
+            accumulator = array[0]
+            start = 1
+        for index in range(start, len(array)):
+            accumulator = self._call_callback(
+                reducer, [accumulator, array[index], index], "Array.reduce callback"
+            )
+        return accumulator
+
+    def _array_for_each(self, arguments: list[Any]) -> None:
+        """``forEach(callback)`` — run the callback for its side effects."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.forEach expects a callback function")
+        array = self._array_receiver(arguments, "forEach")
+        visitor = self._require_callback(
+            arguments[1], "Array.forEach callback must be a function"
+        )
+        for index, value in enumerate(array):
+            self._call_callback(visitor, [value, index], "Array.forEach callback")
+        return None
+
+    def _array_find(self, arguments: list[Any]) -> Any:
+        """``find(callback)`` — first matching element, or null when none match."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.find expects a callback function")
+        array = self._array_receiver(arguments, "find")
+        predicate = self._require_callback(
+            arguments[1], "Array.find callback must be a function"
+        )
+        for index, value in enumerate(array):
+            if self._is_truthy(
+                self._call_callback(predicate, [value, index], "Array.find callback")
+            ):
+                return value
+        return None
+
+    def _array_some(self, arguments: list[Any]) -> bool:
+        """``some(callback)`` — true when at least one element matches."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.some expects a callback function")
+        array = self._array_receiver(arguments, "some")
+        predicate = self._require_callback(
+            arguments[1], "Array.some callback must be a function"
+        )
+        for index, value in enumerate(array):
+            if self._is_truthy(
+                self._call_callback(predicate, [value, index], "Array.some callback")
+            ):
+                return True
+        return False
+
+    def _array_every(self, arguments: list[Any]) -> bool:
+        """``every(callback)`` — true when all elements match (vacuously on [])."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.every expects a callback function")
+        array = self._array_receiver(arguments, "every")
+        predicate = self._require_callback(
+            arguments[1], "Array.every callback must be a function"
+        )
+        for index, value in enumerate(array):
+            if not self._is_truthy(
+                self._call_callback(predicate, [value, index], "Array.every callback")
+            ):
+                return False
+        return True
+
+    def _array_index_of(self, arguments: list[Any]) -> int:
+        """``indexOf(value)`` — index of the first strict match, or -1."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.indexOf expects a value argument")
+        array = self._array_receiver(arguments, "indexOf")
+        sought = arguments[1]
+        for index, value in enumerate(array):
+            if self._strict_equal(value, sought):
+                return index
+        return -1
+
+    def _array_contains(self, arguments: list[Any]) -> bool:
+        """``contains(value)`` — whether a strict match exists."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.contains expects a value argument")
+        array = self._array_receiver(arguments, "contains")
+        sought = arguments[1]
+        return any(self._strict_equal(value, sought) for value in array)
+
+    def _array_sort(self, arguments: list[Any]) -> list[Any]:
+        """Stable in-place sort; returns the array, like JavaScript.
+
+        With no callback, values order naturally (numbers numerically, then
+        booleans, then strings, then printed forms).  With a two-argument
+        callback the result must be a number: negative/zero/positive, like
+        ``Array.prototype.sort``.
+        """
+        if len(arguments) > 2:
+            raise RuntimeErrorX("Array.sort accepts at most one callback")
+        array = self._array_receiver(arguments, "sort")
+        if len(arguments) == 2:
+            comparator = self._require_callback(
+                arguments[1], "Array.sort callback must be a function"
+            )
+
+            def compare(left: Any, right: Any) -> int:
+                outcome = self._call_callback(
+                    comparator, [left, right], "Array.sort callback"
+                )
+                if isinstance(outcome, bool) or not isinstance(outcome, (int, float)):
+                    raise RuntimeErrorX("Array.sort callback must return a number")
+                if outcome < 0:
+                    return -1
+                if outcome > 0:
+                    return 1
+                return 0
+
+            array.sort(key=functools.cmp_to_key(compare))
+        else:
+            array.sort(key=self._natural_sort_key)
+        return array
+
+    def _array_reverse(self, arguments: list[Any]) -> list[Any]:
+        """``reverse()`` — reverse in place and return the array."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.reverse expects no arguments")
+        array = self._array_receiver(arguments, "reverse")
+        array.reverse()
+        return array
+
+    def _array_slice(self, arguments: list[Any]) -> list[Any]:
+        """``slice(start?, end?)`` — sub-array; negatives count from the end."""
+        if len(arguments) > 3:
+            raise RuntimeErrorX("Array.slice accepts a start and an end index")
+        array = self._array_receiver(arguments, "slice")
+        start, end = self._slice_bounds(
+            arguments[1] if len(arguments) > 1 else None,
+            arguments[2] if len(arguments) > 2 else None,
+            len(array),
+            "Array.slice",
+        )
+        return array[start:end]
+
+    def _array_concat(self, arguments: list[Any]) -> list[Any]:
+        """``concat(other)`` — a new array with *other* appended."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Array.concat expects one array argument")
+        array = self._array_receiver(arguments, "concat")
+        other = self._unwrap_collection(arguments[1])
+        if not isinstance(other, list):
+            raise RuntimeErrorX("Array.concat expects an array argument")
+        return list(array) + list(other)
+
+    def _array_join(self, arguments: list[Any]) -> str:
+        """``join(separator?)`` — stringify elements and join them.
+
+        The default separator is ``,``; null and undefined elements become
+        empty strings, as in JavaScript.
+        """
+        if len(arguments) > 2:
+            raise RuntimeErrorX("Array.join accepts at most one separator")
+        array = self._array_receiver(arguments, "join")
+        separator = ","
+        if len(arguments) == 2:
+            separator = arguments[1]
+            if not isinstance(separator, str):
+                raise RuntimeErrorX("Array.join separator must be a string")
+        return separator.join(
+            ""
+            if element is None or element is UNDEFINED
+            else self._stringify(element)
+            for element in array
+        )
+
+    def _array_first(self, arguments: list[Any]) -> Any:
+        """``first()`` — first element, or null when the array is empty."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.first expects no arguments")
+        array = self._array_receiver(arguments, "first")
+        return array[0] if array else None
+
+    def _array_last(self, arguments: list[Any]) -> Any:
+        """``last()`` — last element, or null when the array is empty."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.last expects no arguments")
+        array = self._array_receiver(arguments, "last")
+        return array[-1] if array else None
+
+    def _array_is_empty(self, arguments: list[Any]) -> bool:
+        """``isEmpty()`` — whether the array has no elements."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.isEmpty expects no arguments")
+        array = self._array_receiver(arguments, "isEmpty")
+        return len(array) == 0
+
+    def _array_clear(self, arguments: list[Any]) -> None:
+        """``clear()`` — remove every element in place."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Array.clear expects no arguments")
+        array = self._array_receiver(arguments, "clear")
+        array.clear()
+        return None
+
+    # ------------------------------------------------------------------
+    # String methods (text.toUpperCase())
+    # ------------------------------------------------------------------
+
+    def _string_receiver(self, arguments: list[Any], name: str) -> str:
+        """Return the string bound as ``arguments[0]`` for method *name*."""
+        if not arguments or not isinstance(arguments[0], str):
+            raise RuntimeErrorX(f"String.{name} expects a string instance")
+        return arguments[0]
+
+    def _string_index_argument(
+        self, arguments: list[Any], position: int, label: str
+    ) -> int:
+        """Validate an integer index argument at *position*."""
+        if len(arguments) <= position:
+            raise RuntimeErrorX(f"{label} expects an index argument")
+        value = arguments[position]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeErrorX(f"{label} index must be an integer")
+        return value
+
+    def _string_to_upper_case(self, arguments: list[Any]) -> str:
+        """``toUpperCase()`` — Unicode-aware upper-casing."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.toUpperCase expects no arguments")
+        return self._string_receiver(arguments, "toUpperCase").upper()
+
+    def _string_to_lower_case(self, arguments: list[Any]) -> str:
+        """``toLowerCase()`` — Unicode-aware lower-casing."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.toLowerCase expects no arguments")
+        return self._string_receiver(arguments, "toLowerCase").lower()
+
+    def _string_trim(self, arguments: list[Any]) -> str:
+        """``trim()`` — drop leading and trailing whitespace."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.trim expects no arguments")
+        return self._string_receiver(arguments, "trim").strip()
+
+    def _string_starts_with(self, arguments: list[Any]) -> bool:
+        """``startsWith(prefix)`` — whether the string begins with *prefix*."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.startsWith expects a prefix argument")
+        text = self._string_receiver(arguments, "startsWith")
+        prefix = arguments[1]
+        if not isinstance(prefix, str):
+            raise RuntimeErrorX("String.startsWith prefix must be a string")
+        return text.startswith(prefix)
+
+    def _string_ends_with(self, arguments: list[Any]) -> bool:
+        """``endsWith(suffix)`` — whether the string ends with *suffix*."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.endsWith expects a suffix argument")
+        text = self._string_receiver(arguments, "endsWith")
+        suffix = arguments[1]
+        if not isinstance(suffix, str):
+            raise RuntimeErrorX("String.endsWith suffix must be a string")
+        return text.endswith(suffix)
+
+    def _string_contains(self, arguments: list[Any]) -> bool:
+        """``contains(part)`` — whether *part* occurs anywhere in the string."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.contains expects a part argument")
+        text = self._string_receiver(arguments, "contains")
+        part = arguments[1]
+        if not isinstance(part, str):
+            raise RuntimeErrorX("String.contains part must be a string")
+        return part in text
+
+    def _string_index_of(self, arguments: list[Any]) -> int:
+        """``indexOf(part)`` — code-point index of the first match, or -1."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.indexOf expects a part argument")
+        text = self._string_receiver(arguments, "indexOf")
+        part = arguments[1]
+        if not isinstance(part, str):
+            raise RuntimeErrorX("String.indexOf part must be a string")
+        return text.find(part)
+
+    def _string_replace(self, arguments: list[Any]) -> str:
+        """``replace(old, new)`` — replace only the first occurrence."""
+        if len(arguments) != 3:
+            raise RuntimeErrorX("String.replace expects old and new string arguments")
+        text = self._string_receiver(arguments, "replace")
+        old, new = arguments[1], arguments[2]
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise RuntimeErrorX("String.replace expects old and new to be strings")
+        return text.replace(old, new, 1)
+
+    def _string_replace_all(self, arguments: list[Any]) -> str:
+        """``replaceAll(old, new)`` — replace every occurrence."""
+        if len(arguments) != 3:
+            raise RuntimeErrorX("String.replaceAll expects old and new string arguments")
+        text = self._string_receiver(arguments, "replaceAll")
+        old, new = arguments[1], arguments[2]
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise RuntimeErrorX("String.replaceAll expects old and new to be strings")
+        return text.replace(old, new)
+
+    def _string_split(self, arguments: list[Any]) -> list[str]:
+        """``split(separator?)`` — split into an array of strings.
+
+        With no separator the string splits on whitespace runs (Python
+        ``str.split``); ``""`` splits into individual Unicode code points.
+        """
+        if len(arguments) > 2:
+            raise RuntimeErrorX("String.split accepts at most one separator")
+        text = self._string_receiver(arguments, "split")
+        if len(arguments) == 1:
+            return text.split()
+        separator = arguments[1]
+        if not isinstance(separator, str):
+            raise RuntimeErrorX("String.split separator must be a string")
+        if separator == "":
+            return list(text)
+        return text.split(separator)
+
+    def _string_char_at(self, arguments: list[Any]) -> str:
+        """``charAt(index)`` — the one-character string at *index*.
+
+        Indexing counts Unicode code points (negatives count backward from the
+        end, like all X string indexing); out-of-range indices raise.
+        """
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.charAt expects an index argument")
+        text = self._string_receiver(arguments, "charAt")
+        index = self._string_index_argument(arguments, 1, "String.charAt")
+        try:
+            return text[index]
+        except IndexError:
+            raise RuntimeErrorX("String.charAt index out of bounds") from None
+
+    def _string_substring(self, arguments: list[Any]) -> str:
+        """``substring(start?, end?)`` — JS-style bounds in code points.
+
+        Negative indices clamp to 0 and the bounds swap when *start* > *end*,
+        unlike ``slice`` where negatives count from the end.
+        """
+        if len(arguments) > 3:
+            raise RuntimeErrorX("String.substring accepts a start and an end index")
+        text = self._string_receiver(arguments, "substring")
+        if len(arguments) > 1:
+            start = self._string_index_argument(arguments, 1, "String.substring")
+        else:
+            start = 0
+        if len(arguments) > 2:
+            end = self._string_index_argument(arguments, 2, "String.substring")
+        else:
+            end = len(text)
+        start = max(0, start)
+        end = max(0, end)
+        if start > end:
+            start, end = end, start
+        return text[start:end]
+
+    def _string_slice(self, arguments: list[Any]) -> str:
+        """``slice(start?, end?)`` — code-point slice; negatives count from
+        the end and out-of-range bounds clamp."""
+        if len(arguments) > 3:
+            raise RuntimeErrorX("String.slice accepts a start and an end index")
+        text = self._string_receiver(arguments, "slice")
+        start, end = self._slice_bounds(
+            arguments[1] if len(arguments) > 1 else None,
+            arguments[2] if len(arguments) > 2 else None,
+            len(text),
+            "String.slice",
+        )
+        return text[start:end]
+
+    def _string_repeat(self, arguments: list[Any]) -> str:
+        """``repeat(count)`` — concatenate the string *count* times."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.repeat expects a count argument")
+        text = self._string_receiver(arguments, "repeat")
+        count = arguments[1]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise RuntimeErrorX("String.repeat count must be a non-negative integer")
+        return text * count
+
+    def _pad_text(self, text: str, length: int, pad: str, left: bool) -> str:
+        """Pad *text* out to *length* with *pad* cycled (JS ``padStart``/``padEnd``).
+
+        The padding is built from repetitions of *pad* truncated to the exact
+        number of missing characters; an empty pad leaves *text* unchanged.
+        """
+        if len(text) >= length or pad == "":
+            return text
+        missing = length - len(text)
+        fill = (pad * (missing // len(pad) + 1))[:missing]
+        return fill + text if left else text + fill
+
+    def _string_pad_start(self, arguments: list[Any]) -> str:
+        """``padStart(length, pad?)`` — left-pad to *length* (default pad ``" "``).
+
+        A multi-character pad repeats, as in JavaScript; an empty pad leaves
+        the text unchanged because there is nothing to fill with.
+        """
+        if len(arguments) not in (2, 3):
+            raise RuntimeErrorX("String.padStart expects a length argument")
+        text = self._string_receiver(arguments, "padStart")
+        length = arguments[1]
+        if isinstance(length, bool) or not isinstance(length, int) or length < 0:
+            raise RuntimeErrorX("String.padStart length must be a non-negative integer")
+        pad = " " if len(arguments) == 2 else arguments[2]
+        if not isinstance(pad, str):
+            raise RuntimeErrorX("String.padStart pad must be a string")
+        return self._pad_text(text, length, pad, left=True)
+
+    def _string_pad_end(self, arguments: list[Any]) -> str:
+        """``padEnd(length, pad?)`` — right-pad to *length* (default pad ``" "``)."""
+        if len(arguments) not in (2, 3):
+            raise RuntimeErrorX("String.padEnd expects a length argument")
+        text = self._string_receiver(arguments, "padEnd")
+        length = arguments[1]
+        if isinstance(length, bool) or not isinstance(length, int) or length < 0:
+            raise RuntimeErrorX("String.padEnd length must be a non-negative integer")
+        pad = " " if len(arguments) == 2 else arguments[2]
+        if not isinstance(pad, str):
+            raise RuntimeErrorX("String.padEnd pad must be a string")
+        return self._pad_text(text, length, pad, left=False)
+
+    def _string_is_empty(self, arguments: list[Any]) -> bool:
+        """``isEmpty()`` — whether the string has no characters."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.isEmpty expects no arguments")
+        return self._string_receiver(arguments, "isEmpty") == ""
+
+    def _string_to_char_array(self, arguments: list[Any]) -> list[str]:
+        """``toCharArray()`` — one-character strings, one per code point."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.toCharArray expects no arguments")
+        return list(self._string_receiver(arguments, "toCharArray"))
+
     def _linkedlist_members(self) -> dict[str, BuiltinFunction]:
-        return {
+        members: dict[str, BuiltinFunction] = {
             "create": BuiltinFunction("LinkedList.create", self._linkedlist_create),
             "add": BuiltinFunction("LinkedList.add", self._linkedlist_add),
             "addFirst": BuiltinFunction("LinkedList.addFirst", self._linkedlist_add_first),
@@ -1112,6 +1799,17 @@ class Interpreter:
             "groupBy": BuiltinFunction("LinkedList.groupBy", self._linkedlist_group_by),
             "partition": BuiltinFunction("LinkedList.partition", self._linkedlist_partition),
         }
+        # Array methods double as the functional API: List.map(array, cb).
+        # LinkedList-specific entries above (indexOf, reverse, ...) keep their
+        # own behavior.
+        for method_name, implementation_name in _ARRAY_METHODS.items():
+            members.setdefault(
+                method_name,
+                BuiltinFunction(
+                    f"List.{method_name}", getattr(self, implementation_name)
+                ),
+            )
+        return members
 
     def _linkedlist_create(self, arguments: list[Any]) -> list[Any]:
         if len(arguments) > 1:
@@ -2075,6 +2773,45 @@ class Interpreter:
             if isinstance(nested_declaration, VariableDeclaration):
                 self._execute(nested_declaration, namespace_environment)
 
+    def _reject_final_overrides(
+        self, declaration: ClassDeclaration, parent: XClass
+    ) -> None:
+        """Reject a subclass member that redefines a final member of a base."""
+        for member in declaration.members:
+            if not isinstance(member, FunctionDeclaration):
+                continue
+            if member.name == declaration.name or member.name == "constructor":
+                continue  # constructors do not override inherited methods
+            for ancestor in self._class_hierarchy(parent):
+                for inherited in ancestor.declaration.members:
+                    if (
+                        isinstance(inherited, FunctionDeclaration)
+                        and inherited.name == member.name
+                        and "final" in inherited.modifiers
+                    ):
+                        self._set_declaration_location(member)
+                        override_error = RuntimeErrorX(
+                            f"Cannot override final method "
+                            f"'{ancestor.name}.{inherited.name}'"
+                        )
+                        self.annotate_error(override_error)
+                        raise override_error
+
+    def _inside_defining_constructor(self, owner: XClass) -> bool:
+        """True while a constructor of ``owner`` or one of its subclasses runs.
+
+        ``final`` properties may be assigned exactly once, during
+        construction; every other assignment is rejected.
+        """
+        for function in reversed(self.function_stack):
+            if function.parent_class is None:
+                continue
+            if function.declaration.name != function.parent_class.name:
+                continue  # not a constructor
+            if owner in self._class_hierarchy(function.parent_class):
+                return True
+        return False
+
     def _define_class(
         self,
         declaration: ClassDeclaration,
@@ -2094,6 +2831,8 @@ class Interpreter:
                 self.annotate_error(final_class_error)
                 raise final_class_error
             parent = parent_value
+        if parent is not None:
+            self._reject_final_overrides(declaration, parent)
         class_environment = Environment(environment)
         xclass = XClass(
             declaration,
@@ -2162,7 +2901,7 @@ class Interpreter:
 
     def _resolve_name(self, environment: Environment, qualified_name: str) -> Any:
         parts = qualified_name.split(".")
-        value = environment.get(parts[0])
+        value = self._lookup(environment, parts[0])
         for part in parts[1:]:
             value = self._get_member(value, part)
         return value
@@ -2505,6 +3244,22 @@ class Interpreter:
             return "FileSystemException"
         return "RuntimeException"
 
+    def _arrow_function(
+        self, expression: FunctionExpression, environment: Environment
+    ) -> XFunction:
+        """Evaluate an arrow function into a closured function value."""
+        declaration = FunctionDeclaration(
+            "<arrow>",
+            expression.parameters,
+            expression.body,
+            expression.return_type,
+            set(),
+            [],
+            expression.is_async,
+            [],
+        )
+        return XFunction(declaration, environment, self)
+
     def _evaluate(self, expression: Any, environment: Environment) -> Any:
         if isinstance(expression, Literal):
             return expression.value
@@ -2518,7 +3273,7 @@ class Interpreter:
                 for part in expression.parts
             )
         if isinstance(expression, Identifier):
-            value = environment.get(expression.name)
+            value = self._lookup(environment, expression.name)
             if (
                 isinstance(value, list)
                 and value
@@ -2547,6 +3302,8 @@ class Interpreter:
                 else:
                     fields[name] = self._evaluate(value, environment)
             return fields
+        if isinstance(expression, FunctionExpression):
+            return self._arrow_function(expression, environment)
         if isinstance(expression, AwaitExpression):
             value = self._evaluate(expression.value, environment)
             if not inspect.isawaitable(value):
@@ -3111,6 +3868,53 @@ class Interpreter:
             current_class = current_class.parent
         return None
 
+    def _static_member_via_instance(
+        self, xclass: XClass, name: str, access_context: XClass | None
+    ) -> tuple[str, Any] | None:
+        """Resolve a static field or method reached through an instance.
+
+        Returns ``(owner class name, value)`` or ``None`` when the class
+        hierarchy declares no static member with that name.  Callers use this
+        to emit a warning instead of failing, so that legacy code that calls
+        static members on instances keeps running.
+        """
+        field_definition = self._find_field_owner(xclass, name, is_static=True)
+        if field_definition is not None:
+            field_owner, field_declaration = field_definition
+            if not self._can_access_member(
+                field_declaration.modifiers, field_owner, access_context
+            ):
+                visibility = self._visibility(field_declaration.modifiers)
+                raise RuntimeErrorX(
+                    f"Cannot access {visibility} property '{field_owner.name}.{name}'"
+                )
+            return field_owner.name, field_owner.static_fields[name]
+        for candidate_class in self._class_hierarchy(xclass):
+            for member in candidate_class.declaration.members:
+                if (
+                    isinstance(member, FunctionDeclaration)
+                    and member.name == name
+                    and "static" in member.modifiers
+                ):
+                    if not self._can_access_member(
+                        member.modifiers, candidate_class, access_context
+                    ):
+                        visibility = self._visibility(member.modifiers)
+                        raise RuntimeErrorX(
+                            f"Cannot access {visibility} method "
+                            f"'{candidate_class.name}.{name}'"
+                        )
+                    function = XFunction(
+                        member,
+                        candidate_class.closure,
+                        self,
+                        parent_class=candidate_class,
+                    )
+                    return candidate_class.name, self._apply_function_decorators(
+                        member.decorators, function, candidate_class.closure
+                    )
+        return None
+
     def _get_member(
         self,
         object_value: Any,
@@ -3206,6 +4010,17 @@ class Interpreter:
                     name,
                     bound_methods,
                 )
+            static_member = self._static_member_via_instance(
+                object_value.xclass, name, access_context
+            )
+            if static_member is not None:
+                owner_name, value = static_member
+                self.warn(
+                    f"'{name}' is a static member of '{owner_name}' and must be "
+                    f"accessed through the class; calling it on an instance is "
+                    f"deprecated"
+                )
+                return value
             raise RuntimeErrorX(f"'{object_value.xclass.name}' has no member '{name}'")
         if isinstance(object_value, XSuper):
             methods = object_value.parent_class.find_methods(name)
@@ -3245,15 +4060,28 @@ class Interpreter:
                 )
             raise RuntimeErrorX(f"Parent class has no method '{name}'")
         if isinstance(object_value, Environment):
-            return object_value.get(name)
-        if isinstance(object_value, list) and name == "length":
-            return len(object_value)
-        if isinstance(object_value, str) and name == "length":
-            return len(object_value)
-        if isinstance(object_value, (list, str)) and name == "add" and isinstance(object_value, list):
-            return BuiltinFunction("add", lambda arguments: self._list_add(object_value, arguments))
-        if isinstance(object_value, str) and name == "toString":
-            return BuiltinFunction("toString", lambda arguments: self._no_argument_string(object_value, arguments))
+            return self._lookup(object_value, name)
+        if isinstance(object_value, list):
+            if name == "length":
+                return len(object_value)
+            if name == "add":
+                return BuiltinFunction(
+                    "add", lambda arguments: self._list_add(object_value, arguments)
+                )
+            array_member = self._array_member(object_value, name)
+            if array_member is not None:
+                return array_member
+        elif isinstance(object_value, str):
+            if name == "length":
+                return len(object_value)
+            if name == "toString":
+                return BuiltinFunction(
+                    "toString",
+                    lambda arguments: self._no_argument_string(object_value, arguments),
+                )
+            string_member = self._string_member(object_value, name)
+            if string_member is not None:
+                return string_member
         if isinstance(object_value, (int, float, bool)) and name == "toString":
             return BuiltinFunction(
                 "toString",
@@ -3325,6 +4153,43 @@ class Interpreter:
             raise RuntimeErrorX(f"Cannot access member '{name}' on null")
         raise RuntimeErrorX(f"Value has no member '{name}'")
 
+    def _array_member(self, array: list[Any], name: str) -> BuiltinFunction | None:
+        """Bound dot-callable for array method *name*, or None if not one.
+
+        ``myArray.map(cb)`` binds *array* as the receiver argument, so the
+        same implementation also serves the functional ``List.map(array, cb)``
+        form.
+        """
+        implementation_name = _ARRAY_METHODS.get(name)
+        if implementation_name is None:
+            return None
+        implementation = getattr(self, implementation_name)
+        return BuiltinFunction(
+            f"Array.{name}",
+            lambda arguments, receiver=array, call=implementation: call(
+                [receiver] + arguments
+            ),
+        )
+
+    def _string_member(self, text: str, name: str) -> BuiltinFunction | None:
+        """Bound dot-callable for string method *name*, or None if not one.
+
+        Strings are sequences of Unicode code points: every index argument
+        (``charAt``, ``substring``, ``slice``, ...) counts code points exactly
+        like Python ``str`` indexing — not UTF-16 code units, and not grapheme
+        clusters — matching the documented behavior of ``text[index]``.
+        """
+        implementation_name = _STRING_METHODS.get(name)
+        if implementation_name is None:
+            return None
+        implementation = getattr(self, implementation_name)
+        return BuiltinFunction(
+            f"String.{name}",
+            lambda arguments, receiver=text, call=implementation: call(
+                [receiver] + arguments
+            ),
+        )
+
     def _class_hierarchy(self, xclass: XClass) -> list[XClass]:
         hierarchy: list[XClass] = []
         current_class: XClass | None = xclass
@@ -3352,6 +4217,16 @@ class Interpreter:
                         f"Cannot modify {visibility} property "
                         f"'{object_value.xclass.name}.{name}'"
                     )
+                if "final" in field_declaration.modifiers and not (
+                    self._inside_defining_constructor(field_owner)
+                ):
+                    self._set_declaration_location(field_declaration)
+                    final_error = RuntimeErrorX(
+                        f"Cannot assign to final property "
+                        f"'{field_owner.name}.{name}'"
+                    )
+                    self.annotate_error(final_error)
+                    raise final_error
                 if (
                     field_declaration.type_name is not None
                     and field_declaration.type_name.endswith("[]")
@@ -3393,6 +4268,13 @@ class Interpreter:
                 raise RuntimeErrorX(
                     f"Cannot modify {visibility} property '{field_owner.name}.{name}'"
                 )
+            if "final" in field_declaration.modifiers:
+                self._set_declaration_location(field_declaration)
+                final_error = RuntimeErrorX(
+                    f"Cannot assign to final static field '{field_owner.name}.{name}'"
+                )
+                self.annotate_error(final_error)
+                raise final_error
             if (
                 field_declaration.type_name is not None
                 and field_declaration.type_name.endswith("[]")

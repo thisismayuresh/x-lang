@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,17 +18,10 @@ from .ast_nodes import (
     TypeDeclaration,
     VariableDeclaration,
 )
+from .diagnostics import SourceWarning as ModuleWarning
 from .lexer import Lexer
 from .parser import Parser
 from .runtime import RuntimeErrorX
-
-
-@dataclass
-class ModuleWarning:
-    message: str
-    source_name: str
-    line: int | None
-    column: int | None
 
 
 class ModuleLoader:
@@ -201,7 +193,12 @@ class ModuleLoader:
             "System.concurrent.Thread": "threads",
             "System.io.FileSystem": "filesystem",
         }
-        feature_name = feature_for_module.get(module_path)
+        if module_path == "System.utils.Collections" or module_path.startswith(
+            "System.utils.Collections."
+        ):
+            feature_name = "collections"
+        else:
+            feature_name = feature_for_module.get(module_path)
         if feature_name is not None and not self.config.enabled(feature_name):
             raise RuntimeErrorX(
                 f"Cannot import '{module_path}': feature '{feature_name}' is disabled"
