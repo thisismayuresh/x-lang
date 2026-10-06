@@ -371,6 +371,12 @@ class XClass:
             self.interpreter.output(f"Constructing {self.name}")
         instance = XInstance(self)
         self.interpreter._initialize_fields(instance, self)
+        
+        # Check for custom constructor implementation (for Python class wrappers)
+        if hasattr(self, 'constructor_impl'):
+            self.constructor_impl(instance, arguments)
+            return instance
+        
         if self.is_exception_base:
             self.interpreter._initialize_exception_instance(instance, arguments)
             return instance
@@ -411,6 +417,22 @@ class XEnumMember:
     name: str
     value: Any
     enum_identity: object
+
+
+class XCollectionInstance:
+    """An OOP-style collection instance that supports dot-method calls.
+    
+    `students.add(x)` is sugar for `List.add(students, x)`.
+    The underlying data is a plain list or dict stored in `_data`.
+    The `_methods` dict maps method names to BuiltinFunctions that
+    already expect (instance, arguments) style — the interpreter
+    pre-binds `_data` when dispatching.
+    """
+
+    def __init__(self, collection_type: str, data: Any, methods: dict) -> None:
+        self.collection_type = collection_type  # e.g. "Stack", "List"
+        self._data = data                        # the underlying list / dict
+        self._methods = methods                  # name -> BuiltinFunction
 
 
 @dataclass

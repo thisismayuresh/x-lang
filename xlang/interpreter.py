@@ -26,6 +26,7 @@ from .ast_nodes import (
     ImportDeclaration,
     ImportAlias,
     ImportNamespaceAlias,
+    ImportNamespaceAlias,
     Identifier,
     IfStatement,
     Index,
@@ -68,6 +69,7 @@ from .runtime import (
     UNDEFINED,
     XArray,
     XClass,
+    XCollectionInstance,
     XEnumMember,
     XExceptionValue,
     XFunction,
@@ -145,7 +147,13 @@ class Interpreter:
         for declaration in declarations:
             if isinstance(declaration, ImportAlias):
                 imported_value = self._resolve_import(declaration.source_name)
-                self.globals.define(declaration.alias_name, imported_value)
+                alias = declaration.alias_name
+                # If the name already exists in globals (e.g. a builtin collection
+                # short-name) allow the import to silently re-bind it.
+                if alias in self.globals.values:
+                    self.globals.values[alias] = imported_value
+                else:
+                    self.globals.define(alias, imported_value)
             elif isinstance(declaration, ImportNamespaceAlias):
                 exported_values = {}
                 for name in declaration.exported_names:
@@ -278,6 +286,32 @@ class Interpreter:
         if self.config.enabled("async"):
             concurrent_namespace.define("Async", self._async_members())
         system_namespace.define("concurrent", concurrent_namespace)
+        utils_namespace = Environment(system_namespace)
+        collections_namespace = Environment(utils_namespace)
+        if self.config.enabled("collections"):
+            hashmap_ns       = self._make_collection_ns("HashMap",       self._hashmap_members())
+            linkedlist_ns    = self._make_collection_ns("LinkedList",     self._linkedlist_members())
+            stack_ns         = self._make_collection_ns("Stack",          self._stack_members())
+            queue_ns         = self._make_collection_ns("Queue",          self._queue_members())
+            priorityqueue_ns = self._make_collection_ns("PriorityQueue",  self._priorityqueue_members())
+            trie_ns          = self._make_collection_ns("Trie",           self._trie_members())
+            collections_namespace.define("HashMap",       hashmap_ns)
+            collections_namespace.define("LinkedList",    linkedlist_ns)
+            collections_namespace.define("List",          linkedlist_ns)      # alias
+            collections_namespace.define("Stack",         stack_ns)
+            collections_namespace.define("Queue",         queue_ns)
+            collections_namespace.define("PriorityQueue", priorityqueue_ns)
+            collections_namespace.define("Trie",          trie_ns)
+            # Expose short names globally so Stack.create() works without import
+            self.globals.define("HashMap",       hashmap_ns)
+            self.globals.define("LinkedList",    linkedlist_ns)
+            self.globals.define("List",          linkedlist_ns)      # List is an alias for LinkedList
+            self.globals.define("Stack",         stack_ns)
+            self.globals.define("Queue",         queue_ns)
+            self.globals.define("PriorityQueue", priorityqueue_ns)
+            self.globals.define("Trie",          trie_ns)
+        utils_namespace.define("Collections", collections_namespace)
+        system_namespace.define("utils", utils_namespace)
         environment_namespace = Environment(system_namespace)
         environment_namespace.define(
             "has", BuiltinFunction("Environment.has", self._environment_has)
@@ -299,6 +333,69 @@ class Interpreter:
         if arguments:
             raise RuntimeErrorX("Environment.all expects no arguments")
         return dict(self.environment)
+
+    def _create_wrapper_class(self, name: str, python_class: type) -> XClass:
+        """Create an X class that wraps a Python class"""
+        from .ast_nodes import ClassDeclaration, FunctionDeclaration, VariableDeclaration, Block
+        
+        # Create a minimal X class declaration
+        declaration = ClassDeclaration(name, [])
+        
+        # Add constructor
+        constructor_decl = FunctionDeclaration("constructor", [], None, [], Block([]), False, False)
+        declaration.members.append(constructor_decl)
+        
+        # Get all methods from Python class
+        import inspect
+        methods = inspect.getmembers(python_class, predicate=inspect.isfunction)
+        
+        for method_name, method_func in methods:
+            if method_name.startswith('_'):
+                continue
+            
+            # Get method signature
+            sig = inspect.signature(method_func)
+            params = []
+            for param_name, param in sig.parameters.items():
+                if param_name == 'self':
+                    continue
+                params.append(VariableDeclaration(param_name, None, None, None, [], None, None))
+            
+            method_decl = FunctionDeclaration(method_name, params, None, [], Block([]), False, False)
+            declaration.members.append(method_decl)
+        
+        # Create X class
+        xclass = XClass(declaration, self, self.globals)
+        
+        # Store Python class reference
+        xclass.python_class = python_class
+        
+        # Override construct to create Python instance
+        def construct(this: XInstance, arguments: list[Any]) -> None:
+            # Create Python instance
+            python_instance = python_class(*arguments)
+            this.fields["__python_instance__"] = python_instance
+        
+        # Store constructor
+        xclass.constructor_impl = construct
+        
+        # Store method implementations
+        xclass.method_impls = {}
+        for method_name, method_func in methods:
+            if method_name.startswith('_'):
+                continue
+            
+            def make_method(func):
+                def method_impl(this: XInstance, arguments: list[Any]) -> Any:
+                    python_instance = this.fields.get("__python_instance__")
+                    if python_instance is None:
+                        raise RuntimeErrorX(f"{name} instance not properly initialized")
+                    return func(python_instance, *arguments)
+                return method_impl
+            
+            xclass.method_impls[method_name] = make_method(method_func)
+        
+        return xclass
 
     def annotate_error(self, error: RuntimeErrorX | ThrownValue) -> None:
         if self.current_location is None or error.line is not None:
@@ -663,6 +760,856 @@ class Interpreter:
             ) from error
         return None
 
+    def _hashmap_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("HashMap.create", self._hashmap_create),
+            "set": BuiltinFunction("HashMap.set", self._hashmap_set),
+            "get": BuiltinFunction("HashMap.get", self._hashmap_get),
+            "has": BuiltinFunction("HashMap.has", self._hashmap_has),
+            "remove": BuiltinFunction("HashMap.remove", self._hashmap_remove),
+            "size": BuiltinFunction("HashMap.size", self._hashmap_size),
+            "isEmpty": BuiltinFunction("HashMap.isEmpty", self._hashmap_is_empty),
+            "clear": BuiltinFunction("HashMap.clear", self._hashmap_clear),
+            "keys": BuiltinFunction("HashMap.keys", self._hashmap_keys),
+            "values": BuiltinFunction("HashMap.values", self._hashmap_values),
+            "entries": BuiltinFunction("HashMap.entries", self._hashmap_entries),
+            "merge": BuiltinFunction("HashMap.merge", self._hashmap_merge),
+            "filter": BuiltinFunction("HashMap.filter", self._hashmap_filter),
+            "map": BuiltinFunction("HashMap.map", self._hashmap_map),
+            "reduce": BuiltinFunction("HashMap.reduce", self._hashmap_reduce),
+            "getOrDefault": BuiltinFunction("HashMap.getOrDefault", self._hashmap_get_or_default),
+            "computeIfAbsent": BuiltinFunction("HashMap.computeIfAbsent", self._hashmap_compute_if_absent),
+            "computeIfPresent": BuiltinFunction("HashMap.computeIfPresent", self._hashmap_compute_if_present),
+            "putAll": BuiltinFunction("HashMap.putAll", self._hashmap_put_all),
+        }
+
+    def _hashmap_create(self, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("HashMap.create accepts at most one argument (initial capacity)")
+        initial_capacity = arguments[0] if arguments else 16
+        if not isinstance(initial_capacity, int) or initial_capacity < 1:
+            raise RuntimeErrorX("HashMap.create initial capacity must be a positive integer")
+        return {}  # Python dict already provides hash map functionality
+
+    def _hashmap_set(self, arguments: list[Any]) -> None:
+        if len(arguments) != 3:
+            raise RuntimeErrorX("HashMap.set expects hashmap, key, and value arguments")
+        hashmap, key, value = arguments[0], arguments[1], arguments[2]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.set expects a HashMap instance")
+        if not isinstance(key, (str, int, float, bool)):
+            raise RuntimeErrorX("HashMap keys must be strings, numbers, or booleans")
+        hashmap[str(key)] = value
+        return None
+
+    def _hashmap_get(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.get expects key argument")
+        hashmap, key = arguments[0], arguments[1]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.get expects a HashMap instance")
+        return hashmap.get(str(key))
+
+    def _hashmap_has(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.has expects key argument")
+        hashmap, key = arguments[0], arguments[1]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.has expects a HashMap instance")
+        return str(key) in hashmap
+
+    def _hashmap_remove(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.remove expects key argument")
+        hashmap, key = arguments[0], arguments[1]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.remove expects a HashMap instance")
+        return hashmap.pop(str(key), None)
+
+    def _hashmap_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.size expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.size expects a HashMap instance")
+        return len(hashmap)
+
+    def _hashmap_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.isEmpty expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.isEmpty expects a HashMap instance")
+        return len(hashmap) == 0
+
+    def _hashmap_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.clear expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.clear expects a HashMap instance")
+        hashmap.clear()
+        return None
+
+    def _hashmap_keys(self, arguments: list[Any]) -> list[str]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.keys expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.keys expects a HashMap instance")
+        return list(hashmap.keys())
+
+    def _hashmap_values(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.values expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.values expects a HashMap instance")
+        return list(hashmap.values())
+
+    def _hashmap_entries(self, arguments: list[Any]) -> list[list[Any]]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("HashMap.entries expects no arguments")
+        hashmap = arguments[0]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.entries expects a HashMap instance")
+        return [[key, value] for key, value in hashmap.items()]
+
+    def _hashmap_merge(self, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) < 2:
+            raise RuntimeErrorX("HashMap.merge expects at least one other HashMap")
+        hashmap = self._unwrap_collection(arguments[0])
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.merge expects a HashMap instance")
+        result = dict(hashmap)
+        for other in arguments[1:]:
+            other = self._unwrap_collection(other)
+            if not isinstance(other, dict):
+                raise RuntimeErrorX("HashMap.merge all arguments must be HashMaps")
+            result.update(other)
+        return result
+
+    def _normalize_callable(self, value: Any, context: str) -> Any:
+        """Normalize a callable value: unwrap list[XFunction] into OverloadedFunction."""
+        if isinstance(value, list) and value and all(isinstance(f, XFunction) for f in value):
+            return OverloadedFunction(context, value)
+        return value
+
+    def _unwrap_collection(self, value: Any) -> Any:
+        """Unwrap an XCollectionInstance to its underlying data (list or dict)."""
+        if isinstance(value, XCollectionInstance):
+            return value._data
+        return value
+
+    def _make_collection_ns(self, type_name: str, members: dict) -> dict:
+        """Wrap a collection method dict so that `new Stack()` returns an
+        XCollectionInstance and instance dot-calls work on it.
+
+        The raw `create` builtin receives a plain list/dict as first argument
+        from the functional API.  We replace it with one that returns an
+        XCollectionInstance wrapping that data, and also wrap every other
+        method so it transparently unpacks the instance's _data before
+        delegating to the original builtin.
+        """
+        raw_create = members["create"]
+
+        def instance_create(arguments: list) -> XCollectionInstance:
+            data = raw_create.call(arguments)
+            return XCollectionInstance(type_name, data, wrapped)
+
+        wrapped: dict = {}
+        for method_name, builtin in members.items():
+            if method_name == "create":
+                continue
+            original = builtin
+
+            def make_wrapper(orig: BuiltinFunction, mname: str) -> BuiltinFunction:
+                def dispatch(arguments: list) -> Any:
+                    # If first arg is an XCollectionInstance, unwrap it
+                    if arguments and isinstance(arguments[0], XCollectionInstance):
+                        return orig.call([arguments[0]._data] + arguments[1:])
+                    return orig.call(arguments)
+                return BuiltinFunction(f"{type_name}.{mname}", dispatch)
+
+            wrapped[method_name] = make_wrapper(original, method_name)
+
+        wrapped["create"] = BuiltinFunction(f"{type_name}.create", instance_create)
+        return wrapped
+
+    def _hashmap_filter(self, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.filter expects a predicate function")
+        hashmap, predicate = arguments[0], arguments[1]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.filter expects a HashMap instance")
+        predicate = self._normalize_callable(predicate, "filter")
+        if not isinstance(predicate, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("HashMap.filter predicate must be a function")
+        result = {}
+        for key, value in hashmap.items():
+            try:
+                if predicate.call([[key, value]]) if isinstance(predicate, (XFunction, BuiltinFunction)) else self._call(predicate, [[key, value]]):
+                    result[key] = value
+            except Exception:
+                pass
+        return result
+
+    def _hashmap_map(self, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.map expects a mapper function")
+        hashmap, mapper = arguments[0], arguments[1]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.map expects a HashMap instance")
+        mapper = self._normalize_callable(mapper, "map")
+        if not isinstance(mapper, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("HashMap.map mapper must be a function")
+        result = {}
+        for key, value in hashmap.items():
+            try:
+                mapped = self._call(mapper, [[key, value]])
+                if isinstance(mapped, list) and len(mapped) == 2:
+                    result[str(mapped[0])] = mapped[1]
+            except Exception:
+                pass
+        return result
+
+    def _hashmap_reduce(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 3:
+            raise RuntimeErrorX("HashMap.reduce expects an initial value and reducer function")
+        hashmap, initial, reducer = arguments[0], arguments[1], arguments[2]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.reduce expects a HashMap instance")
+        reducer = self._normalize_callable(reducer, "reduce")
+        if not isinstance(reducer, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("HashMap.reduce reducer must be a function")
+        accumulator = initial
+        for key, value in hashmap.items():
+            try:
+                accumulator = self._call(reducer, [accumulator, [key, value]])
+            except Exception:
+                pass
+        return accumulator
+
+    def _hashmap_get_or_default(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 3:
+            raise RuntimeErrorX("HashMap.getOrDefault expects key and default value")
+        hashmap, key, default = arguments[0], arguments[1], arguments[2]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.getOrDefault expects a HashMap instance")
+        return hashmap.get(str(key), default)
+
+    def _hashmap_compute_if_absent(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 3:
+            raise RuntimeErrorX("HashMap.computeIfAbsent expects key and mapping function")
+        hashmap, key, mapping_func = arguments[0], arguments[1], arguments[2]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.computeIfAbsent expects a HashMap instance")
+        mapping_func = self._normalize_callable(mapping_func, "computeIfAbsent")
+        if not isinstance(mapping_func, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("HashMap.computeIfAbsent mapping function must be a function")
+        key_str = str(key)
+        if key_str not in hashmap:
+            try:
+                hashmap[key_str] = self._call(mapping_func, [key])
+            except Exception:
+                pass
+        return hashmap.get(key_str)
+
+    def _hashmap_compute_if_present(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 3:
+            raise RuntimeErrorX("HashMap.computeIfPresent expects key and remapping function")
+        hashmap, key, remapping_func = arguments[0], arguments[1], arguments[2]
+        if not isinstance(hashmap, dict):
+            raise RuntimeErrorX("HashMap.computeIfPresent expects a HashMap instance")
+        remapping_func = self._normalize_callable(remapping_func, "computeIfPresent")
+        if not isinstance(remapping_func, (XFunction, BuiltinFunction, OverloadedFunction)):
+            raise RuntimeErrorX("HashMap.computeIfPresent remapping function must be a function")
+        key_str = str(key)
+        if key_str in hashmap:
+            try:
+                new_value = self._call(remapping_func, [key, hashmap[key_str]])
+                if new_value is not None:
+                    hashmap[key_str] = new_value
+                else:
+                    del hashmap[key_str]
+            except Exception:
+                pass
+        return hashmap.get(key_str)
+
+    def _hashmap_put_all(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("HashMap.putAll expects another HashMap")
+        hashmap = self._unwrap_collection(arguments[0])
+        other = self._unwrap_collection(arguments[1])
+        if not isinstance(hashmap, dict) or not isinstance(other, dict):
+            raise RuntimeErrorX("HashMap.putAll expects HashMap instances")
+        hashmap.update(other)
+        return None
+
+    def _linkedlist_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("LinkedList.create", self._linkedlist_create),
+            "add": BuiltinFunction("LinkedList.add", self._linkedlist_add),
+            "addFirst": BuiltinFunction("LinkedList.addFirst", self._linkedlist_add_first),
+            "addLast": BuiltinFunction("LinkedList.addLast", self._linkedlist_add_last),
+            "remove": BuiltinFunction("LinkedList.remove", self._linkedlist_remove),
+            "removeFirst": BuiltinFunction("LinkedList.removeFirst", self._linkedlist_remove_first),
+            "removeLast": BuiltinFunction("LinkedList.removeLast", self._linkedlist_remove_last),
+            "get": BuiltinFunction("LinkedList.get", self._linkedlist_get),
+            "getFirst": BuiltinFunction("LinkedList.getFirst", self._linkedlist_get_first),
+            "getLast": BuiltinFunction("LinkedList.getLast", self._linkedlist_get_last),
+            "size": BuiltinFunction("LinkedList.size", self._linkedlist_size),
+            "isEmpty": BuiltinFunction("LinkedList.isEmpty", self._linkedlist_is_empty),
+            "clear": BuiltinFunction("LinkedList.clear", self._linkedlist_clear),
+            "contains": BuiltinFunction("LinkedList.contains", self._linkedlist_contains),
+            "indexOf": BuiltinFunction("LinkedList.indexOf", self._linkedlist_index_of),
+            "toArray": BuiltinFunction("LinkedList.toArray", self._linkedlist_to_array),
+            "reverse": BuiltinFunction("LinkedList.reverse", self._linkedlist_reverse),
+        }
+
+    def _linkedlist_create(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("LinkedList.create accepts at most one argument (initial array)")
+        if len(arguments) == 1:
+            if not isinstance(arguments[0], list):
+                raise RuntimeErrorX("LinkedList.create initial value must be an array")
+            return list(arguments[0])
+        return []
+
+    def _linkedlist_add(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.add expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.add expects a LinkedList instance")
+        linkedlist.append(value)
+        return None
+
+    def _linkedlist_add_first(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.addFirst expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.addFirst expects a LinkedList instance")
+        linkedlist.insert(0, value)
+        return None
+
+    def _linkedlist_add_last(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.addLast expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.addLast expects a LinkedList instance")
+        linkedlist.append(value)
+        return None
+
+    def _linkedlist_remove(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.remove expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.remove expects a LinkedList instance")
+        try:
+            linkedlist.remove(value)
+            return True
+        except ValueError:
+            return False
+
+    def _linkedlist_remove_first(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.removeFirst expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.removeFirst expects a LinkedList instance")
+        if not linkedlist:
+            raise RuntimeErrorX("LinkedList.removeFirst: list is empty")
+        return linkedlist.pop(0)
+
+    def _linkedlist_remove_last(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.removeLast expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.removeLast expects a LinkedList instance")
+        if not linkedlist:
+            raise RuntimeErrorX("LinkedList.removeLast: list is empty")
+        return linkedlist.pop()
+
+    def _linkedlist_get(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.get expects an index argument")
+        linkedlist, index = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.get expects a LinkedList instance")
+        if not isinstance(index, int) or index < 0 or index >= len(linkedlist):
+            raise RuntimeErrorX("LinkedList.get index out of bounds")
+        return linkedlist[index]
+
+    def _linkedlist_get_first(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.getFirst expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.getFirst expects a LinkedList instance")
+        if not linkedlist:
+            raise RuntimeErrorX("LinkedList.getFirst: list is empty")
+        return linkedlist[0]
+
+    def _linkedlist_get_last(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.getLast expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.getLast expects a LinkedList instance")
+        if not linkedlist:
+            raise RuntimeErrorX("LinkedList.getLast: list is empty")
+        return linkedlist[-1]
+
+    def _linkedlist_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.size expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.size expects a LinkedList instance")
+        return len(linkedlist)
+
+    def _linkedlist_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.isEmpty expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.isEmpty expects a LinkedList instance")
+        return len(linkedlist) == 0
+
+    def _linkedlist_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.clear expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.clear expects a LinkedList instance")
+        linkedlist.clear()
+        return None
+
+    def _linkedlist_contains(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.contains expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.contains expects a LinkedList instance")
+        return value in linkedlist
+
+    def _linkedlist_index_of(self, arguments: list[Any]) -> int:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("LinkedList.indexOf expects a value argument")
+        linkedlist, value = arguments[0], arguments[1]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.indexOf expects a LinkedList instance")
+        try:
+            return linkedlist.index(value)
+        except ValueError:
+            return -1
+
+    def _linkedlist_to_array(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.toArray expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.toArray expects a LinkedList instance")
+        return list(linkedlist)
+
+    def _linkedlist_reverse(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("LinkedList.reverse expects no arguments")
+        linkedlist = arguments[0]
+        if not isinstance(linkedlist, list):
+            raise RuntimeErrorX("LinkedList.reverse expects a LinkedList instance")
+        linkedlist.reverse()
+        return None
+
+    def _stack_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("Stack.create", self._stack_create),
+            "push": BuiltinFunction("Stack.push", self._stack_push),
+            "pop": BuiltinFunction("Stack.pop", self._stack_pop),
+            "peek": BuiltinFunction("Stack.peek", self._stack_peek),
+            "size": BuiltinFunction("Stack.size", self._stack_size),
+            "isEmpty": BuiltinFunction("Stack.isEmpty", self._stack_is_empty),
+            "clear": BuiltinFunction("Stack.clear", self._stack_clear),
+            "toArray": BuiltinFunction("Stack.toArray", self._stack_to_array),
+        }
+
+    def _stack_create(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("Stack.create accepts at most one argument (initial array)")
+        if len(arguments) == 1:
+            if not isinstance(arguments[0], list):
+                raise RuntimeErrorX("Stack.create initial value must be an array")
+            return list(arguments[0])
+        return []
+
+    def _stack_push(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Stack.push expects a value argument")
+        stack, value = arguments[0], arguments[1]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.push expects a Stack instance")
+        stack.append(value)
+        return None
+
+    def _stack_pop(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.pop expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.pop expects a Stack instance")
+        if not stack:
+            raise RuntimeErrorX("Stack.pop: stack is empty")
+        return stack.pop()
+
+    def _stack_peek(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.peek expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.peek expects a Stack instance")
+        if not stack:
+            raise RuntimeErrorX("Stack.peek: stack is empty")
+        return stack[-1]
+
+    def _stack_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.size expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.size expects a Stack instance")
+        return len(stack)
+
+    def _stack_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.isEmpty expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.isEmpty expects a Stack instance")
+        return len(stack) == 0
+
+    def _stack_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.clear expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.clear expects a Stack instance")
+        stack.clear()
+        return None
+
+    def _stack_to_array(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Stack.toArray expects no arguments")
+        stack = arguments[0]
+        if not isinstance(stack, list):
+            raise RuntimeErrorX("Stack.toArray expects a Stack instance")
+        return list(stack)
+
+    def _queue_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("Queue.create", self._queue_create),
+            "enqueue": BuiltinFunction("Queue.enqueue", self._queue_enqueue),
+            "dequeue": BuiltinFunction("Queue.dequeue", self._queue_dequeue),
+            "peek": BuiltinFunction("Queue.peek", self._queue_peek),
+            "size": BuiltinFunction("Queue.size", self._queue_size),
+            "isEmpty": BuiltinFunction("Queue.isEmpty", self._queue_is_empty),
+            "clear": BuiltinFunction("Queue.clear", self._queue_clear),
+            "toArray": BuiltinFunction("Queue.toArray", self._queue_to_array),
+        }
+
+    def _queue_create(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("Queue.create accepts at most one argument (initial array)")
+        if len(arguments) == 1:
+            if not isinstance(arguments[0], list):
+                raise RuntimeErrorX("Queue.create initial value must be an array")
+            return list(arguments[0])
+        return []
+
+    def _queue_enqueue(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Queue.enqueue expects a value argument")
+        queue, value = arguments[0], arguments[1]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.enqueue expects a Queue instance")
+        queue.append(value)
+        return None
+
+    def _queue_dequeue(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.dequeue expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.dequeue expects a Queue instance")
+        if not queue:
+            raise RuntimeErrorX("Queue.dequeue: queue is empty")
+        return queue.pop(0)
+
+    def _queue_peek(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.peek expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.peek expects a Queue instance")
+        if not queue:
+            raise RuntimeErrorX("Queue.peek: queue is empty")
+        return queue[0]
+
+    def _queue_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.size expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.size expects a Queue instance")
+        return len(queue)
+
+    def _queue_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.isEmpty expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.isEmpty expects a Queue instance")
+        return len(queue) == 0
+
+    def _queue_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.clear expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.clear expects a Queue instance")
+        queue.clear()
+        return None
+
+    def _queue_to_array(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Queue.toArray expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("Queue.toArray expects a Queue instance")
+        return list(queue)
+
+    def _priorityqueue_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("PriorityQueue.create", self._priorityqueue_create),
+            "enqueue": BuiltinFunction("PriorityQueue.enqueue", self._priorityqueue_enqueue),
+            "dequeue": BuiltinFunction("PriorityQueue.dequeue", self._priorityqueue_dequeue),
+            "peek": BuiltinFunction("PriorityQueue.peek", self._priorityqueue_peek),
+            "size": BuiltinFunction("PriorityQueue.size", self._priorityqueue_size),
+            "isEmpty": BuiltinFunction("PriorityQueue.isEmpty", self._priorityqueue_is_empty),
+            "clear": BuiltinFunction("PriorityQueue.clear", self._priorityqueue_clear),
+            "toArray": BuiltinFunction("PriorityQueue.toArray", self._priorityqueue_to_array),
+        }
+
+    def _priorityqueue_create(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) > 1:
+            raise RuntimeErrorX("PriorityQueue.create accepts at most one argument (comparator)")
+        return []
+
+    def _priorityqueue_enqueue(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("PriorityQueue.enqueue expects a value argument")
+        queue, value = arguments[0], arguments[1]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.enqueue expects a PriorityQueue instance")
+        queue.append(value)
+        queue.sort()  # Simple implementation using natural ordering
+        return None
+
+    def _priorityqueue_dequeue(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.dequeue expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.dequeue expects a PriorityQueue instance")
+        if not queue:
+            raise RuntimeErrorX("PriorityQueue.dequeue: queue is empty")
+        return queue.pop(0)
+
+    def _priorityqueue_peek(self, arguments: list[Any]) -> Any:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.peek expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.peek expects a PriorityQueue instance")
+        if not queue:
+            raise RuntimeErrorX("PriorityQueue.peek: queue is empty")
+        return queue[0]
+
+    def _priorityqueue_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.size expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.size expects a PriorityQueue instance")
+        return len(queue)
+
+    def _priorityqueue_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.isEmpty expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.isEmpty expects a PriorityQueue instance")
+        return len(queue) == 0
+
+    def _priorityqueue_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.clear expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.clear expects a PriorityQueue instance")
+        queue.clear()
+        return None
+
+    def _priorityqueue_to_array(self, arguments: list[Any]) -> list[Any]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("PriorityQueue.toArray expects no arguments")
+        queue = arguments[0]
+        if not isinstance(queue, list):
+            raise RuntimeErrorX("PriorityQueue.toArray expects a PriorityQueue instance")
+        return list(queue)
+
+    def _trie_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "create": BuiltinFunction("Trie.create", self._trie_create),
+            "insert": BuiltinFunction("Trie.insert", self._trie_insert),
+            "search": BuiltinFunction("Trie.search", self._trie_search),
+            "startsWith": BuiltinFunction("Trie.startsWith", self._trie_starts_with),
+            "remove": BuiltinFunction("Trie.remove", self._trie_remove),
+            "size": BuiltinFunction("Trie.size", self._trie_size),
+            "isEmpty": BuiltinFunction("Trie.isEmpty", self._trie_is_empty),
+            "clear": BuiltinFunction("Trie.clear", self._trie_clear),
+            "getAllWords": BuiltinFunction("Trie.getAllWords", self._trie_get_all_words),
+        }
+
+    def _trie_create(self, arguments: list[Any]) -> dict[str, Any]:
+        if len(arguments) > 0:
+            raise RuntimeErrorX("Trie.create accepts no arguments")
+        return {"children": {}, "is_end": False, "count": 0}
+
+    def _trie_insert(self, arguments: list[Any]) -> None:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Trie.insert expects a word argument")
+        trie, word = arguments[0], arguments[1]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.insert expects a Trie instance")
+        if not isinstance(word, str):
+            raise RuntimeErrorX("Trie.insert word must be a string")
+        node = trie
+        for char in word:
+            if char not in node["children"]:
+                node["children"][char] = {"children": {}, "is_end": False}
+            node = node["children"][char]
+        if not node["is_end"]:
+            node["is_end"] = True
+            trie["count"] = trie.get("count", 0) + 1
+        return None
+
+    def _trie_search(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Trie.search expects a word argument")
+        trie, word = arguments[0], arguments[1]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.search expects a Trie instance")
+        if not isinstance(word, str):
+            raise RuntimeErrorX("Trie.search word must be a string")
+        node = trie
+        for char in word:
+            if char not in node["children"]:
+                return False
+            node = node["children"][char]
+        return node.get("is_end", False)
+
+    def _trie_starts_with(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Trie.startsWith expects a prefix argument")
+        trie, prefix = arguments[0], arguments[1]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.startsWith expects a Trie instance")
+        if not isinstance(prefix, str):
+            raise RuntimeErrorX("Trie.startsWith prefix must be a string")
+        node = trie
+        for char in prefix:
+            if char not in node["children"]:
+                return False
+            node = node["children"][char]
+        return True
+
+    def _trie_remove(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 2:
+            raise RuntimeErrorX("Trie.remove expects a word argument")
+        trie, word = arguments[0], arguments[1]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.remove expects a Trie instance")
+        if not isinstance(word, str):
+            raise RuntimeErrorX("Trie.remove word must be a string")
+        
+        def _remove_helper(node: dict[str, Any], word: str, index: int) -> bool:
+            if index == len(word):
+                if not node.get("is_end", False):
+                    return False
+                node["is_end"] = False
+                trie["count"] = trie.get("count", 0) - 1
+                return len(node["children"]) == 0
+            char = word[index]
+            if char not in node["children"]:
+                return False
+            should_delete = _remove_helper(node["children"][char], word, index + 1)
+            if should_delete:
+                del node["children"][char]
+                return len(node["children"]) == 0 and not node.get("is_end", False)
+            return False
+        
+        return _remove_helper(trie, word, 0)
+
+    def _trie_size(self, arguments: list[Any]) -> int:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Trie.size expects no arguments")
+        trie = arguments[0]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.size expects a Trie instance")
+        return trie.get("count", 0)
+
+    def _trie_is_empty(self, arguments: list[Any]) -> bool:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Trie.isEmpty expects no arguments")
+        trie = arguments[0]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.isEmpty expects a Trie instance")
+        return trie.get("count", 0) == 0
+
+    def _trie_clear(self, arguments: list[Any]) -> None:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Trie.clear expects no arguments")
+        trie = arguments[0]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.clear expects a Trie instance")
+        trie["children"] = {}
+        trie["is_end"] = False
+        trie["count"] = 0
+        return None
+
+    def _trie_get_all_words(self, arguments: list[Any]) -> list[str]:
+        if len(arguments) != 1:
+            raise RuntimeErrorX("Trie.getAllWords expects no arguments")
+        trie = arguments[0]
+        if not isinstance(trie, dict) or "children" not in trie:
+            raise RuntimeErrorX("Trie.getAllWords expects a Trie instance")
+        
+        words = []
+        
+        def _collect_words(node: dict[str, Any], prefix: str) -> None:
+            if node.get("is_end", False):
+                words.append(prefix)
+            for char, child in node["children"].items():
+                _collect_words(child, prefix + char)
+        
+        _collect_words(trie, "")
+        return words
+
     def _validate_argument_count(
         self, operation: str, arguments: list[Any], expected: int
     ) -> None:
@@ -692,6 +1639,8 @@ class Interpreter:
             value, (BuiltinFunction, OverloadedFunction, XClass, XFunction)
         ):
             return "function"
+        if isinstance(value, XCollectionInstance):
+            return "object"
         return "object"
 
     def _builtin_range(self, arguments: list[Any]) -> range:
@@ -1303,6 +2252,10 @@ class Interpreter:
             arguments = self._evaluate_call_arguments(expression.arguments, environment)
             if isinstance(class_value, BuiltinFunction):
                 return self._call(class_value, arguments)
+            # Support `new Stack()`, `new Collections.Stack()` etc. —
+            # collection namespaces are dicts of BuiltinFunctions with a "create" entry.
+            if isinstance(class_value, dict) and "create" in class_value:
+                return self._call(class_value["create"], arguments)
             if not isinstance(class_value, XClass):
                 raise RuntimeErrorX(f"'{expression.class_name}' is not a constructible class")
             return class_value.construct(arguments)
@@ -1830,6 +2783,19 @@ class Interpreter:
         name: str,
         access_context: XClass | None = None,
     ) -> Any:
+        # OOP-style dot access on a collection instance: students.add(x)
+        if isinstance(object_value, XCollectionInstance):
+            methods = object_value._methods
+            if name not in methods:
+                raise RuntimeErrorX(
+                    f"{object_value.collection_type} has no method '{name}'"
+                )
+            original = methods[name]
+            data = object_value._data
+            return BuiltinFunction(
+                f"{object_value.collection_type}.{name}",
+                lambda arguments, orig=original, d=data: orig.call([d] + arguments),
+            )
         if isinstance(object_value, XExceptionValue):
             if name == "message":
                 return object_value.message
@@ -1854,6 +2820,14 @@ class Interpreter:
                     lambda arguments: self._thread_is_alive(object_value, arguments),
                 )
         if isinstance(object_value, XInstance):
+            # Check for Python class wrapper methods
+            if hasattr(object_value.xclass, 'method_impls') and name in object_value.xclass.method_impls:
+                method_impl = object_value.xclass.method_impls[name]
+                return BuiltinFunction(
+                    f"{object_value.xclass.name}.{name}",
+                    lambda arguments, this=object_value, impl=method_impl: impl(this, arguments)
+                )
+            
             if name in object_value.fields:
                 field_definition = self._find_field_owner(object_value.xclass, name)
                 if field_definition is not None:
@@ -2234,7 +3208,9 @@ class Interpreter:
         if handle.thread.is_alive():
             return None
         if handle.error is not None:
-            raise RuntimeErrorX(f"Thread failed: {handle.error}") from handle.error
+            # Convert Python exceptions to X language errors to avoid exposing implementation details
+            error_message = str(handle.error)
+            raise RuntimeErrorX(f"Thread failed: {error_message}", "RuntimeException")
         return handle.result_value
 
     def _thread_is_alive(self, handle: XThreadHandle, arguments: list[Any]) -> bool:
@@ -2702,6 +3678,8 @@ class Interpreter:
             return "true"
         if value is False:
             return "false"
+        if isinstance(value, XCollectionInstance):
+            return self._stringify(value._data)
         if isinstance(value, list):
             return "[" + ", ".join(self._stringify(item) for item in value) + "]"
         if isinstance(value, dict):

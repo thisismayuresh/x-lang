@@ -38,6 +38,14 @@ class ModuleLoader:
         "System.concurrent.Thread",
         "System.io.FileSystem",
         "System.Environment",
+        "System.utils.Collections",
+        "System.utils.Collections.HashMap",
+        "System.utils.Collections.LinkedList",
+        "System.utils.Collections.List",
+        "System.utils.Collections.Stack",
+        "System.utils.Collections.Queue",
+        "System.utils.Collections.PriorityQueue",
+        "System.utils.Collections.Trie",
     }
 
     def __init__(

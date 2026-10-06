@@ -143,11 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         }
         if run_profile is not None:
             environment.update(run_profile.environment)
-        result = Interpreter(
+        interpreter = Interpreter(
             program_arguments,
             config=config,
             environment=environment,
-        ).interpret(program)
+        )
+        result = interpreter.interpret(program)
         if result is None:
             return 0
         if isinstance(result, int) and not isinstance(result, bool):
@@ -214,6 +215,46 @@ def main(argv: list[str] | None = None) -> int:
         source_name = getattr(error, "filename", None) or str(source_path)
         print(f"x: cannot read '{source_name}': {error}", file=sys.stderr)
         return 2
+    except RecursionError as error:
+        message = "Maximum recursion depth exceeded"
+        runtime_error = RuntimeErrorX(message, "RuntimeException")
+        # Try to get the current location from the interpreter
+        if interpreter.current_location is not None:
+            source_name, line, column = interpreter.current_location
+            runtime_error.source_name = source_name or str(source_path)
+            runtime_error.line = line
+            runtime_error.column = column
+        else:
+            runtime_error.source_name = str(source_path)
+            runtime_error.line = None
+            runtime_error.column = None
+        return _report_source_error(
+            runtime_error,
+            loader.sources,
+            source_path,
+            config.color,
+        )
+    except Exception as error:
+        # Catch any other Python exceptions and convert to X language errors
+        # to avoid exposing Python implementation details
+        message = f"Runtime error: {str(error)}"
+        runtime_error = RuntimeErrorX(message, "RuntimeException")
+        # Try to get the current location from the interpreter
+        if interpreter.current_location is not None:
+            source_name, line, column = interpreter.current_location
+            runtime_error.source_name = source_name or str(source_path)
+            runtime_error.line = line
+            runtime_error.column = column
+        else:
+            runtime_error.source_name = str(source_path)
+            runtime_error.line = None
+            runtime_error.column = None
+        return _report_source_error(
+            runtime_error,
+            loader.sources,
+            source_path,
+            config.color,
+        )
 
 
 def _is_exception_instance(value: XInstance) -> bool:

@@ -20,6 +20,7 @@ except ModuleNotFoundError:
 FEATURE_DEFAULTS = {
     "async": True,
     "classes": True,
+    "collections": True,
     "decorators": True,
     "destructuring": True,
     "enums": True,
