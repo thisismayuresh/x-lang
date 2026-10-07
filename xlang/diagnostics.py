@@ -30,6 +30,7 @@ def render_diagnostic(
     source_name: str,
     color_mode: str = "auto",
     stream: TextIO | None = None,
+    show_context: bool = True,
 ) -> str:
     output_stream = stream or sys.stderr
     use_color = _should_use_color(color_mode, output_stream)
@@ -49,7 +50,7 @@ def render_diagnostic(
         f"{error_source}: {message}",
         f" {location_marker} {location}",
     ]
-    if source is None:
+    if source is None or not show_context:
         return "\n".join(lines)
 
     source_lines = source.splitlines()

@@ -27,12 +27,12 @@ class LexError(Exception):
 
 
 KEYWORDS = {
-    "abstract", "as", "async", "await", "break", "catch", "class", "const", "continue",
-    "do", "else", "enum", "extends", "false", "finally", "for", "function",
+    "abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "continue",
+    "default", "do", "else", "enum", "extends", "false", "finally", "for", "function",
     "if", "implements", "import", "in", "interface", "internal", "let", "new",
     "match", "namespace", "null", "Null", "undefined", "Undefined", "of", "package",
     "private", "protected", "public", "return",
-    "static", "super", "this", "throw", "true", "try", "type", "void",
+    "static", "super", "switch", "this", "throw", "true", "try", "type", "void",
     "while", "export", "override", "virtual", "final",
 }
 

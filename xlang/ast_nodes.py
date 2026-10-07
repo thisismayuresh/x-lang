@@ -249,6 +249,18 @@ class TryStatement:
 
 
 @dataclass
+class SwitchCase:
+    value: Any | None  # None for default case
+    body: Block
+
+
+@dataclass
+class SwitchStatement:
+    expression: Any
+    cases: list[SwitchCase]
+
+
+@dataclass
 class Literal:
     value: Any
 

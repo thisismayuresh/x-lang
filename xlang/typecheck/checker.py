@@ -37,6 +37,8 @@ from ..ast_nodes import (
     Program,
     ReturnStatement,
     Spread,
+    SwitchCase,
+    SwitchStatement,
     TemplateLiteral,
     ThisExpression,
     ThrowStatement,
@@ -510,6 +512,8 @@ class TypeChecker:
             self._infer(declaration.value, scope)
         elif isinstance(declaration, TryStatement):
             self._check_try(declaration, scope)
+        elif isinstance(declaration, SwitchStatement):
+            self._check_switch(declaration, scope)
         elif isinstance(declaration, ExpressionStatement):
             self._infer(declaration.expression, scope)
         elif isinstance(declaration, Assignment):
@@ -568,6 +572,13 @@ class TypeChecker:
             self._check_statements(
                 declaration.finally_body.statements, scope.child()
             )
+
+    def _check_switch(self, declaration: SwitchStatement, scope: TypeScope) -> None:
+        self._infer(declaration.expression, scope)
+        for case in declaration.cases:
+            if case.value is not None:
+                self._infer(case.value, scope)
+            self._check_statements(case.body.statements, scope.child())
 
     # ------------------------------------------------------------------
     # Functions

@@ -62,6 +62,8 @@ from .ast_nodes import (
     BindingPattern,
     EnumPattern,
     ObjectPattern,
+    SwitchCase,
+    SwitchStatement,
     ThisExpression,
     TemplateLiteral,
     ThrowStatement,
@@ -172,21 +174,35 @@ _STRING_METHODS: dict[str, str] = {
     "toUpperCase": "_string_to_upper_case",
     "toLowerCase": "_string_to_lower_case",
     "trim": "_string_trim",
+    "strip": "_string_strip",
+    "stripLeading": "_string_strip_leading",
+    "stripTrailing": "_string_strip_trailing",
     "startsWith": "_string_starts_with",
     "endsWith": "_string_ends_with",
     "contains": "_string_contains",
     "indexOf": "_string_index_of",
+    "lastIndexOf": "_string_last_index_of",
     "replace": "_string_replace",
     "replaceAll": "_string_replace_all",
     "split": "_string_split",
     "charAt": "_string_char_at",
+    "codePointAt": "_string_code_point_at",
     "substring": "_string_substring",
     "slice": "_string_slice",
     "repeat": "_string_repeat",
     "padStart": "_string_pad_start",
     "padEnd": "_string_pad_end",
     "isEmpty": "_string_is_empty",
+    "isBlank": "_string_is_blank",
     "toCharArray": "_string_to_char_array",
+    "chars": "_string_chars",
+    "codePoints": "_string_code_points",
+    "format": "_string_format",
+    "valueOf": "_string_value_of",
+    "join": "_string_join",
+    "lines": "_string_lines",
+    "indent": "_string_indent",
+    "transform": "_string_transform",
 }
 
 
@@ -2096,6 +2112,142 @@ class Interpreter:
             raise RuntimeErrorX("String.toCharArray expects no arguments")
         return list(self._string_receiver(arguments, "toCharArray"))
 
+    def _string_strip(self, arguments: list[Any]) -> str:
+        """``strip()`` — remove leading and trailing whitespace."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.strip expects no arguments")
+        return self._string_receiver(arguments, "strip").strip()
+
+    def _string_strip_leading(self, arguments: list[Any]) -> str:
+        """``stripLeading()`` — remove leading whitespace."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.stripLeading expects no arguments")
+        return self._string_receiver(arguments, "stripLeading").lstrip()
+
+    def _string_strip_trailing(self, arguments: list[Any]) -> str:
+        """``stripTrailing()`` — remove trailing whitespace."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.stripTrailing expects no arguments")
+        return self._string_receiver(arguments, "stripTrailing").rstrip()
+
+    def _string_last_index_of(self, arguments: list[Any]) -> int:
+        """``lastIndexOf(substr, fromIndex?)`` — last index of substring."""
+        if len(arguments) not in (2, 3):
+            raise RuntimeErrorX("String.lastIndexOf expects 1 or 2 arguments")
+        text = self._string_receiver(arguments, "lastIndexOf")
+        substr = arguments[1]
+        if not isinstance(substr, str):
+            raise RuntimeErrorX("String.lastIndexOf substring must be a string")
+        if len(arguments) == 3:
+            from_idx = arguments[2]
+            if isinstance(from_idx, bool) or not isinstance(from_idx, int):
+                raise RuntimeErrorX("String.lastIndexOf fromIndex must be an integer")
+            return text.rfind(substr, 0, from_idx + 1)
+        return text.rfind(substr)
+
+    def _string_code_point_at(self, arguments: list[Any]) -> int:
+        """``codePointAt(index)`` — Unicode code point at index."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.codePointAt expects an index argument")
+        text = self._string_receiver(arguments, "codePointAt")
+        index = arguments[1]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise RuntimeErrorX("String.codePointAt index must be an integer")
+        if index < 0 or index >= len(text):
+            raise RuntimeErrorX("String.codePointAt index out of bounds")
+        return ord(text[index])
+
+    def _string_is_blank(self, arguments: list[Any]) -> bool:
+        """``isBlank()`` — whether string is empty or only whitespace."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.isBlank expects no arguments")
+        return self._string_receiver(arguments, "isBlank").strip() == ""
+
+    def _string_to_char_array(self, arguments: list[Any]) -> list[str]:
+        """``toCharArray()`` — one-character strings, one per code point."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.toCharArray expects no arguments")
+        return list(self._string_receiver(arguments, "toCharArray"))
+
+    def _string_chars(self, arguments: list[Any]) -> list[str]:
+        """``chars()`` — stream of characters (alias for toCharArray)."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.chars expects no arguments")
+        return list(self._string_receiver(arguments, "chars"))
+
+    def _string_code_points(self, arguments: list[Any]) -> list[int]:
+        """``codePoints()`` — stream of Unicode code points."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.codePoints expects no arguments")
+        return [ord(c) for c in self._string_receiver(arguments, "codePoints")]
+
+    def _string_format(self, arguments: list[Any]) -> str:
+        """``format(args...)`` — Python-style string formatting."""
+        if len(arguments) < 2:
+            raise RuntimeErrorX("String.format expects at least one format argument")
+        template = self._string_receiver(arguments, "format")
+        args = arguments[1:]
+        try:
+            return template.format(*args)
+        except (KeyError, ValueError, IndexError) as e:
+            raise RuntimeErrorX(f"String.format failed: {e}")
+
+    def _string_value_of(self, arguments: list[Any]) -> str:
+        """``valueOf(value)`` — string representation of any value."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.valueOf expects one argument")
+        value = arguments[1]
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def _string_join(self, arguments: list[Any]) -> str:
+        """``join(delimiter, elements...)`` — join array elements with delimiter."""
+        if len(arguments) < 2:
+            raise RuntimeErrorX("String.join expects at least delimiter and one element")
+        delimiter = arguments[1]
+        if not isinstance(delimiter, str):
+            raise RuntimeErrorX("String.join delimiter must be a string")
+        elements = []
+        for arg in arguments[2:]:
+            if isinstance(arg, list):
+                elements.extend(str(x) for x in arg)
+            else:
+                elements.append(str(arg))
+        return delimiter.join(elements)
+
+    def _string_lines(self, arguments: list[Any]) -> list[str]:
+        """``lines()`` — split string into lines."""
+        if len(arguments) != 1:
+            raise RuntimeErrorX("String.lines expects no arguments")
+        text = self._string_receiver(arguments, "lines")
+        return text.splitlines()
+
+    def _string_indent(self, arguments: list[Any]) -> str:
+        """``indent(n)`` — indent each line by n spaces."""
+        if len(arguments) not in (2, 3):
+            raise RuntimeErrorX("String.indent expects 1 or 2 arguments")
+        text = self._string_receiver(arguments, "indent")
+        n = arguments[1]
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise RuntimeErrorX("String.indent spaces must be an integer")
+        prefix = " " * max(0, n)
+        lines = text.splitlines(keepends=True)
+        return "".join(prefix + line if line.strip() or n > 0 else line for line in lines)
+
+    def _string_transform(self, arguments: list[Any]) -> str:
+        """``transform(fn)`` — apply function to string."""
+        if len(arguments) != 2:
+            raise RuntimeErrorX("String.transform expects a function argument")
+        text = self._string_receiver(arguments, "transform")
+        fn = arguments[1]
+        # fn should be callable (XFunction or BuiltinFunction)
+        if hasattr(fn, 'call'):
+            return fn.call([text])
+        raise RuntimeErrorX("String.transform argument must be a function")
+
     def _linkedlist_members(self) -> dict[str, BuiltinFunction]:
         members: dict[str, BuiltinFunction] = {
             "create": BuiltinFunction("LinkedList.create", self._linkedlist_create),
@@ -3353,6 +3505,8 @@ class Interpreter:
             raise ThrownValue(self._evaluate(statement.value, environment))
         elif isinstance(statement, TryStatement):
             self._execute_try(statement, environment)
+        elif isinstance(statement, SwitchStatement):
+            self._execute_switch(statement, environment)
         else:
             raise RuntimeErrorX(f"Unsupported statement '{type(statement).__name__}'")
 
@@ -3585,6 +3739,39 @@ class Interpreter:
         if isinstance(error, OSError):
             return "FileSystemException"
         return "RuntimeException"
+
+    def _execute_switch(self, statement: SwitchStatement, environment: Environment) -> None:
+        switch_value = self._evaluate(statement.expression, environment)
+        matched = False
+        for case in statement.cases:
+            if matched:
+                # Fall through - execute all subsequent cases
+                self._execute_block(case.body.statements, environment)
+            elif case.value is None:
+                # Default case
+                matched = True
+                self._execute_block(case.body.statements, environment)
+            else:
+                case_value = self._evaluate(case.value, environment)
+                if self._values_equal(switch_value, case_value):
+                    matched = True
+                    self._execute_block(case.body.statements, environment)
+
+    def _values_equal(self, a: Any, b: Any) -> bool:
+        """Check equality for switch case matching."""
+        if type(a) != type(b):
+            return False
+        if isinstance(a, (int, float, str, bool)) or a is None:
+            return a == b
+        if isinstance(a, list):
+            if len(a) != len(b):
+                return False
+            return all(self._values_equal(x, y) for x, y in zip(a, b))
+        if isinstance(a, dict):
+            if set(a.keys()) != set(b.keys()):
+                return False
+            return all(self._values_equal(a[k], b[k]) for k in a.keys())
+        return a == b
 
     def _arrow_function(
         self, expression: FunctionExpression, environment: Environment

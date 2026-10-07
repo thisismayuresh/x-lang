@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
             parsed.color,
         )
     except ConfigError as error:
-        return _report_config_error(error, parsed.color)
+        return _report_config_error(error, parsed.color, show_context=not parsed.no_context)
 
     command = config.default_command if is_implicit_command else parsed.command
     if parsed.profile is not None and command != "run":
@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_profile = config.selected_run(parsed.profile) if command == "run" else None
     except ConfigError as error:
-        return _report_config_error(error, config.color)
+        return _report_config_error(error, config.color, show_context=not parsed.no_context)
 
     program_arguments = []
     if run_profile is not None:
@@ -138,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
                 loader.sources,
                 source_path,
                 config.color,
+                show_context=not parsed.no_context,
             )
         if command in ("check", "build"):
             if config.enabled("type_checker"):
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
                         source_path,
                         config.color,
                         label="type error",
+                        show_context=not parsed.no_context,
                     )
             print(f"{source_path}: syntax is valid")
             if config.enabled("type_checker"):
@@ -191,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         print("x: main must return void or an integer exit code", file=sys.stderr)
         return 1
     except ConfigError as error:
-        return _report_config_error(error, config.color)
+        return _report_config_error(error, config.color, show_context=not parsed.no_context)
     except (LexError, ParseError, RuntimeErrorX) as error:
         if (
             isinstance(error, RuntimeErrorX)
@@ -216,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             loader.sources,
             source_path,
             config.color,
+            show_context=not parsed.no_context,
         )
     except ThrownValue as thrown:
         value = thrown.value
@@ -316,6 +319,9 @@ def _create_argument_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--color", choices=("auto", "always", "never"), default=argparse.SUPPRESS
     )
+    common_parser.add_argument(
+        "--no-context", action="store_true", default=argparse.SUPPRESS
+    )
 
     parser = argparse.ArgumentParser(
         prog="x",
@@ -329,6 +335,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         feature_overrides=[],
         profile=None,
         color=None,
+        no_context=False,
     )
     subparsers = parser.add_subparsers(dest="command")
     for command in ("run", "check", "build", "install"):
@@ -378,7 +385,7 @@ def _insert_implicit_run_command(
     return arguments, False
 
 
-def _report_config_error(error: ConfigError, color_mode: str | None) -> int:
+def _report_config_error(error: ConfigError, color_mode: str | None, show_context: bool = True) -> int:
     source_text = None
     try:
         source_text = error.path.read_text(encoding="utf-8")
@@ -389,6 +396,7 @@ def _report_config_error(error: ConfigError, color_mode: str | None) -> int:
         source_text,
         str(error.path),
         color_mode or "auto",
+        show_context=show_context,
     )
     print(diagnostic, file=sys.stderr)
     return 2
@@ -399,6 +407,7 @@ def _report_source_error(
     sources: dict[Path, str],
     entry_path: Path,
     color_mode: str,
+    show_context: bool = True,
 ) -> int:
     source_name = getattr(error, "source_name", None)
     resolved_name = Path(source_name).resolve() if source_name else entry_path.resolve()
@@ -413,6 +422,7 @@ def _report_source_error(
         source_text,
         source_name or str(entry_path),
         color_mode,
+        show_context=show_context,
     )
     print(diagnostic, file=sys.stderr)
     return 1
@@ -424,6 +434,7 @@ def _report_source_errors(
     entry_path: Path,
     color_mode: str,
     label: str = "error",
+    show_context: bool = True,
 ) -> int:
     ordered_errors = sorted(
         errors,
@@ -451,6 +462,7 @@ def _report_source_errors(
             source_text,
             source_name or str(entry_path),
             color_mode,
+            show_context=show_context,
         )
         print(diagnostic, file=sys.stderr)
     print(f"x: found {len(errors)} {label}(s)", file=sys.stderr)

@@ -41,6 +41,8 @@ from .ast_nodes import (
     BindingPattern,
     EnumPattern,
     ObjectPattern,
+    SwitchCase,
+    SwitchStatement,
     ThisExpression,
     TemplateLiteral,
     ThrowStatement,
@@ -872,6 +874,10 @@ class Parser:
                 )
             raise ParseError("Expected ';', 'in', or 'of' in for loop", self._peek())
 
+        if self._match("switch"):
+            self._require_feature("switch", self._previous())
+            return self._switch_statement()
+
         if self._match("match"):
             self._require_feature("pattern_matching", self._previous())
             self.position -= 1
@@ -1013,6 +1019,27 @@ class Parser:
         return self._peek(1).kind == "IDENTIFIER" or (
             self._peek(1).kind == "[" and self._peek(2).kind == "]"
         )
+
+    def _switch_statement(self) -> SwitchStatement:
+        self._consume("(", "Expected '(' after 'switch'")
+        expression = self._expression()
+        self._consume(")", "Expected ')' after switch expression")
+        self._consume("{", "Expected '{' after switch expression")
+        cases: list[SwitchCase] = []
+        while not self._check("}") and not self._check("EOF"):
+            if self._match("case"):
+                value = self._expression()
+                self._consume(":", "Expected ':' after case value")
+                body = self._block()
+                cases.append(SwitchCase(value, body))
+            elif self._match("default"):
+                self._consume(":", "Expected ':' after 'default'")
+                body = self._block()
+                cases.append(SwitchCase(None, body))
+            else:
+                raise ParseError("Expected 'case' or 'default' in switch statement", self._peek())
+        self._consume("}", "Expected '}' after switch cases")
+        return SwitchStatement(expression, cases)
 
     def _match_expression(self) -> MatchExpression:
         self._require_feature("pattern_matching", self._peek())
