@@ -1,3 +1,3 @@
-export function greeting() {
+export any function greeting() {
     return "Hello from lib/messages/greeting.x";
 }

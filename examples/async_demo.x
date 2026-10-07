@@ -1,11 +1,11 @@
 import System.concurrent.Async
 
-async function loadLabel(string label, integer delayMilliseconds) {
+async string function loadLabel(string label, integer delayMilliseconds) {
     await Async.delay(delayMilliseconds);
     return label;
 }
 
-async function main() {
+async any function main() {
     print("Starting concurrent async work.");
 
     let string[] labels = await Async.all([

@@ -1,0 +1,55 @@
+[cli]
+default-command = "run"
+color = "auto"
+
+# Language features default to on. Set any flag to false (or pass
+# --feature NAME=off) to disable that syntax or runtime capability.
+# 
+# WARNING: All features are enabled by default!
+# Run 'x --help' for documentation on available features and configuration.
+# 
+# strict_typing: When true, requires explicit type annotations on all functions,
+# variables, and parameters. When false (default), types are inferred.
+# WARNING: With strict_typing = false, type errors may only surface at runtime!
+
+[features]
+arrow_functions = true
+async = true
+classes = true
+collections = true
+concurrency_primitives = true
+decorators = true
+destructuring = true
+enums = true
+equality = true
+exceptions = true
+filesystem = true
+generics = true
+interfaces = true
+loops = true
+namespaces = true
+object_literals = true
+pattern_matching = true
+records = true
+spread = true
+static_methods = true
+switch = true
+threads = true
+type_checker = true
+unions = true
+access_modifiers = true
+strict_typing = false
+enhanced_input = true
+command_input = true
+
+[run]
+args = []
+
+[run.environment]
+X_PROJECT = "x-language-test"
+
+[run.profiles.feature-tour]
+args = ["argument from x.toml", "an argument with spaces"]
+
+[run.profiles.feature-tour.environment]
+X_MODE = "feature-tour"

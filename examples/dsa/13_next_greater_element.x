@@ -23,6 +23,6 @@ integer[] function nextGreater(integer[] numbers) {
     return answer;
 }
 
-function main() {
+any function main() {
     print("Next greater values:", nextGreater([2, 1, 2, 4, 3]));
 }

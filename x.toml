@@ -3,20 +3,7 @@ default-command = "run"
 color = "auto"
 
 [features]
-async = true
-classes = true
-decorators = true
-destructuring = true
-enums = true
-equality = true
-exceptions = true
-filesystem = true
-loops = true
-namespaces = true
-object_literals = true
-pattern_matching = true
-spread = true
-threads = true
+strict_typing = true
 
 [run]
 args = []

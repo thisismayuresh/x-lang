@@ -22,7 +22,7 @@ class Dog extends Animal {
     }
 }
 
-function main() {
+any function main() {
     let Animal dog = new Dog("Rex");
 
     let integer[] array = [1, 2, 3, 4, 5];

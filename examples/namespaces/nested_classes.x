@@ -18,7 +18,7 @@ class Container {
     }
 }
 
-function main() {
+any function main() {
     let Demo.Models.User user = new Demo.Models.User("Ada")
     let Container.Entry entry = new Container.Entry("sample")
 

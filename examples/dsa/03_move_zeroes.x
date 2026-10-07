@@ -1,4 +1,4 @@
-function moveZeroes(integer[] numbers) {
+any function moveZeroes(integer[] numbers) {
     let integer nextNonZero = 0;
     let integer value = 0;
 
@@ -12,7 +12,7 @@ function moveZeroes(integer[] numbers) {
     }
 }
 
-function main() {
+any function main() {
     let integer[] numbers = [0, 1, 0, 3, 12];
     moveZeroes(numbers);
     print("Move zeroes:", numbers);

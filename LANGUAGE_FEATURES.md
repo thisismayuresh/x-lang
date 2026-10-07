@@ -1,0 +1,73 @@
+# X Language Features
+
+## Core Features
+- arrow_functions
+- async
+- classes
+- collections
+- concurrency_primitives
+- decorators
+- destructuring
+- enums
+- equality
+- exceptions
+- filesystem
+- generics
+- interfaces
+- loops
+- namespaces
+- object_literals
+- pattern_matching
+- records
+- spread
+- static_methods
+- switch
+- threads
+- type_checker
+- unions
+
+## Experimental Features
+- url_imports
+- package_manager
+- math_library
+- access_modifiers
+- bulk_export
+- array_push
+- command_input
+- strict_typing
+- enhanced_input
+
+## Standard Library Namespaces
+- System
+  - io
+    - FileSystem
+    - Console
+  - concurrent
+    - Thread
+    - Async
+  - utils
+    - Collections
+      - HashMap
+      - LinkedList
+      - List
+      - Stack
+      - Queue
+      - PriorityQueue
+      - Trie
+      - Set
+      - TreeMap
+      - TreeSet
+      - LinkedHashMap
+      - LRUCache
+      - ConcurrentHashMap
+      - ConcurrentList
+      - ThreadSafeMap
+      - ThreadSafeSet
+    - Math
+  - Environment
+- Object
+  - keys
+  - values
+  - entries
+  - assign
+  - hasOwn

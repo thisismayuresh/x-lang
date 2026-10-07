@@ -13,6 +13,6 @@ boolean function isPalindrome(string text) {
     return true;
 }
 
-function main() {
+any function main() {
     print("Palindrome checks:", isPalindrome("racecar"), isPalindrome("x-language"));
 }

@@ -21,7 +21,7 @@ integer function lowerBound(integer[] numbers, integer target) {
     return candidate + 1;
 }
 
-function main() {
+any function main() {
     let integer[] numbers = [1, 2, 2, 2, 4, 7];
     print("First position of 2:", lowerBound(numbers, 2));
     print("Insertion position of 3:", lowerBound(numbers, 3));

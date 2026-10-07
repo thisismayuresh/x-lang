@@ -33,7 +33,7 @@ boolean function isValidParentheses(string text) {
     return top == 0;
 }
 
-function main() {
+any function main() {
     print("Balanced brackets:", isValidParentheses("{[()]}"));
     print("Unbalanced brackets:", isValidParentheses("([)]"));
 }

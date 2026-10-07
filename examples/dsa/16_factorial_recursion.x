@@ -8,6 +8,6 @@ integer function factorial(integer number) {
     return number * factorial(number - 1);
 }
 
-function main() {
+any function main() {
     print("Factorial:", factorial(6));
 }

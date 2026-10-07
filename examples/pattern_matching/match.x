@@ -3,7 +3,7 @@ enum Result {
     FAILURE
 }
 
-function describe(object value) {
+any function describe(object value) {
     return match value {
         null => "no result",
         [code, ...details] if code == 200 =>
@@ -14,7 +14,7 @@ function describe(object value) {
     }
 }
 
-function main() {
+any function main() {
     print(describe([200, "cached", "fast"]))
     print(describe({kind: "error", message: "offline"}))
     print(describe(Result.SUCCESS))

@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     let string name = "Maya";
     let integer count = 3;
 

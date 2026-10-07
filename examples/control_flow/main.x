@@ -1,5 +1,5 @@
 // Exported module function invoked by runner.x.
-export function main() {
+export any function main() {
      enum X {
         YES,
         NO

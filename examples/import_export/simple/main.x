@@ -4,11 +4,11 @@ import greeting.*
 import greeting.* as Greet
 
 
-function test(){
+any function test(){
     print("Hello-----------------");
 }
 
-function main() {
+any function main() {
     print(1+1+2);
   try {
     // Code that might throw an exception

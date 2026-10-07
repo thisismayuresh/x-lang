@@ -48,7 +48,7 @@ x help
 The CLI discovers `x.toml` in the current directory by default. Pass
 `--config path/to/file.toml` to select another file, or `--no-config` to
 disable discovery. Command-line `--feature NAME=on|off` settings override
-feature values in TOML. The supported features are `async`, `classes`,
+feature values in TOML. The supported features are `async`, `classes`, `collections`,
 `decorators`, `destructuring`, `enums`, `equality`, `exceptions`, `filesystem`,
 `loops`, `namespaces`, `object_literals`, `pattern_matching`, `spread`, and
 `threads`. All default to enabled.
@@ -129,6 +129,13 @@ Implemented and currently demonstrated features:
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
   `object<K, V>` annotations validate dictionary key/value types at runtime.
+- [x] `Function`/`function` callback annotations validate function values.
+  `interface` declarations support comma- or semicolon-separated fields and
+  method signatures, including nested interface types and typed arrays.
+  Interface-typed values are checked structurally: `x check` rejects a value
+  whose type lacks a compatible method or fields, and the interpreter applies
+  the same conformance rules again at runtime. A method must exist with a
+  compatible signature and fields must satisfy their declared types.
 - [x] Nested named functions in blocks; their declarations bind functions without
   executing their bodies, and the functions can capture surrounding locals.
 - [x] Typed rest parameters (`integer ...values`), array/call-argument spread, and
@@ -170,35 +177,75 @@ Implemented and currently demonstrated features:
 - [x] The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
   modules described below.
 
-The interpreter executes code dynamically. It does **not** yet provide the
-specification's promised static type checker; declared types are primarily
-syntax and overload-resolution hints at runtime.
+The interpreter executes code dynamically, and `x check`, `x build`, and
+`x run` all run the static type checker first: declared types, interface
+conformance, definite assignment, and `strict_typing` rules become
+compile-time diagnostics printed before any statement executes. Runtime
+failures still stop execution at the point of failure.
 
-### Source diagnostics
+### Diagnostics
 
 Lexical errors identify invalid characters (for example,
 `Unexpected character '$'`). Syntax errors identify tokens that cannot appear
 in the current grammar position (for example,
 `Unexpected token ')'; expected an expression`). The CLI prints each
 recoverable source diagnostic with its own file location and excerpt, then
-exits unsuccessfully without running the program. Runtime failures still stop
-execution at the point of failure.
+exits unsuccessfully without running the program.
 
 Run `x check examples/errors/syntax_error.x` to see an unexpected-token
 diagnostic. The invalid `;` after `=` is a valid character, but it is not a
 valid expression token; by contrast, a character such as `$` is reported by
 the lexer as an unexpected character.
 
+Type errors use the same rustc-style block, with optional `= note:` and
+`= help:` follow-up lines. Run `x check examples/errors/typed_array.x` to
+see a note:
+
+```text
+error: Cannot assign '(integer|string)[]' to 'values' of type 'integer[]'
+ --> examples/errors/typed_array.x:2:5
+  |
+2 |     let integer[] values = [1, 2, "name"];
+  |     ^ Cannot assign '(integer|string)[]' to 'values' of type 'integer[]'
+  = note: expected `integer[]`, found `(integer|string)[]`
+x: found 1 type error(s)
+```
+
+and `x check examples/test/test_interface.x` to see a help:
+
+```text
+error: Class 'Animal' does not implement 'getGender()' from interface 'Person'
+ --> examples/test/test_interface.x:5:1
+  |
+5 | class Animal implements Person{
+  | ^ Class 'Animal' does not implement 'getGender()' from interface 'Person'
+  = help: implement `string getGender()` on class `Animal`
+x: found 1 type error(s)
+```
+
+`x check` and `x run` report a type error identically, block for block, and
+one run can report several errors at once:
+`x check examples/test/test_multiple_errors.x` prints two independent
+blocks — each with its own header, location, excerpt, and caret — followed
+by the single line `x: found 2 type error(s)`. The excerpt is dropped by
+`--no-context` (the location and hints stay), and `--color always`,
+`--color never`, or `NO_COLOR` control whether the block carries ANSI
+colours.
+
 ## Runtime types and typed objects
 
 `typeOf(value)` is a built-in and needs no import. It returns JavaScript-style
 runtime type names: `"string"`, `"number"` for both integers and floats,
-`"boolean"`, `"function"` for X functions and classes, and `"object"` for
-object literals, arrays, class instances, enums, `null`, and `undefined`.
-Both `null`/`Null` and `undefined`/`Undefined` are accepted literal spellings.
-Optional access that finds no value produces `undefined`, so
-`typeOf(profile[0]?.x)` returns `"object"` while printing that value displays
-`undefined`. `typeOf` requires exactly one argument.
+`"boolean"`, `"Array"` for every array, `"object"` for object literals, enum
+members, `null`, and `undefined`, and the class name for instances of a user
+class (for example `"User"`). Callable values are labelled by where they are
+declared: class methods — instance or static, single or overloaded — report
+`"method"`, while functions, lambdas, class objects, and builtins report
+`"function"`. Collections report their collection name (`"HashMap"`,
+`"Stack"`, `"Queue"`, ...). Both `null`/`Null` and `undefined`/`Undefined`
+are accepted literal spellings. Optional access that finds no value produces
+`undefined`, so `typeOf(profile[0]?.x)` returns `"object"` while printing that
+value displays `undefined`. `typeOf` requires exactly one argument.
 
 ```x
 let object profile = {
@@ -214,16 +261,15 @@ print(typeOf(profile.age)); // number
 X's existing type annotation syntax puts the type before the variable name.
 For example, `let object profile = ...` declares a variable named `profile`
 with the broad `object` type, while `let profile object = ...` means a
-variable named `object` annotated with type `profile`. Unknown non-generic
-annotations are not yet consistently validated because X does not have its
-static type checker yet; use the type-before-name order shown here.
+variable named `object` annotated with type `profile`. The type checker
+reports an unknown annotation in either order (`Unknown type 'profile'`), so
+use the type-before-name order shown here.
 For a dictionary whose keys and values are both strings, write
 `let object<string, string> user = ...`; the key and value types are checked
 when the value is created or assigned, passed to a typed parameter, or
 mutated. This generic object type describes key/value types, not a fixed set
 of named properties. X does not currently support TypeScript's
-`let user: object<string, string>` annotation syntax or compile-time type
-checking.
+`let user: object<string, string>` annotation syntax.
 
 Run the complete sample with:
 
@@ -526,6 +572,521 @@ operation and path. File access is **not sandboxed**: X programs run with the
 operating-system permissions of the process. Only run programs whose source you
 trust.
 
+## Data Structures and Algorithms (DSA) Library
+
+X provides a robust collection of data structures through the `System.utils.Collections` namespace. Every structure supports three usage styles — choose the one that fits your code best.
+
+### Usage Styles
+
+**1. OOP instance style (recommended)** — `new Stack()` returns an instance; call methods directly on it:
+
+```x
+import System.utils.Collections.Stack
+
+let Stack<string> history = new Stack<string>()
+history.push("first")
+history.push("second")
+print(history.peek())   // second
+print(history.size())   // 2
+history.pop()
+```
+
+**2. Inline import + short name** — import one structure and use it without a prefix:
+
+```x
+import System.utils.Collections.List
+
+let List<string> names = new List<string>()
+names.add("Alice")
+names.add("Bob")
+print(names.getFirst())  // Alice
+```
+
+**3. Namespace style** — import the whole module and prefix each call with the structure name:
+
+```x
+import System.utils.Collections
+
+let stack = Collections.Stack.create()
+Collections.Stack.push(stack, "item")
+print(Collections.Stack.peek(stack))  // item
+```
+
+**4. Full path** — no import needed, reference via `System.utils.Collections.*`:
+
+```x
+let stack = System.utils.Collections.Stack.create()
+System.utils.Collections.Stack.push(stack, "item")
+```
+
+### Generics
+
+All structures accept a generic type parameter as a documentation/shape hint:
+
+```x
+let List<Student> students = new List<Student>()
+let Stack<integer> ints    = new Stack<integer>()
+let Queue<string>  names   = new Queue<string>()
+```
+
+The type parameter documents intent but is not enforced yet: `x check`
+accepts a `List<string>` value in a `List<integer>` variable, so treat the
+element type as a promise the code keeps, not a guarantee the toolchain
+checks.
+
+### Available Data Structures
+
+| Structure | Alias | Description | Advanced Features |
+|-----------|-------|-------------|-------------------|
+| **HashMap** | — | True hash map with O(1) average-case operations | `computeIfAbsent`, `computeIfPresent`, `filter`, `map`, `reduce`, `merge`, functional operations |
+| **LinkedList** | **List** | Doubly-linked list with O(1) insertions at ends | `addFirst`, `addLast`, `removeFirst`, `removeLast`, `reverse`, bidirectional traversal |
+| **Stack** | — | LIFO stack with O(1) push/pop operations | OOP dot-call style, toArray conversion, isEmpty check |
+| **Queue** | — | FIFO queue with O(1) enqueue/dequeue operations | OOP dot-call style, peek, toArray conversion |
+| **PriorityQueue** | — | Min-heap based priority queue | Automatic ordering, peek at minimum element |
+| **Trie** | — | Prefix tree for efficient string operations | `startsWith`, `getAllWords`, prefix search, word count |
+
+`List` is a built-in alias for `LinkedList` — `new List()` and `new LinkedList()` are identical.
+
+### List (LinkedList)
+
+A doubly-linked list. Import as `List` or `LinkedList` — they are the same structure.
+
+```x
+import System.utils.Collections.List
+
+interface Student {
+    string name;
+    integer age;
+    string major;
+    float gpa;
+}
+
+function main() {
+    let List<Student> students = new List<Student>()
+
+    students.add({ name: "Alice", age: 20, major: "CS",   gpa: 3.9 })
+    students.add({ name: "Bob",   age: 22, major: "Math", gpa: 3.5 })
+    students.add({ name: "Carol", age: 21, major: "Data", gpa: 3.8 })
+
+    print(students.size())        // 3
+    print(students.getFirst().name)  // Alice
+    print(students.getLast().name)   // Carol
+
+    // for...in with range — index-based
+    let Student[] arr = students.toArray()
+    for (integer i in range(0, students.size())) {
+        print(`[{i}] {arr[i].name}`)
+    }
+
+    // for...of — element-based
+    for (Student s of arr) {
+        print(s.name)
+    }
+}
+```
+
+**List / LinkedList Methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `add` | `add(value)` | Adds to end |
+| `addFirst` | `addFirst(value)` | Adds to beginning |
+| `addLast` | `addLast(value)` | Adds to end (alias for `add`) |
+| `remove` | `remove(value)` | Removes first occurrence |
+| `removeFirst` | `removeFirst()` | Removes and returns first |
+| `removeLast` | `removeLast()` | Removes and returns last |
+| `get` | `get(index)` | Gets element at index |
+| `getFirst` | `getFirst()` | Gets first element |
+| `getLast` | `getLast()` | Gets last element |
+| `size` | `size()` | Returns size |
+| `isEmpty` | `isEmpty()` | Checks if empty |
+| `clear` | `clear()` | Removes all elements |
+| `contains` | `contains(value)` | Checks if value exists |
+| `indexOf` | `indexOf(value)` | Returns index or -1 |
+| `toArray` | `toArray()` | Converts to array |
+| `reverse` | `reverse()` | Reverses in place |
+
+### HashMap
+
+The HashMap implementation provides a true hash map with advanced functional programming capabilities:
+
+```x
+import System.utils.Collections
+
+// Create and use
+let map = Collections.HashMap.create()
+
+// Basic operations
+Collections.HashMap.set(map, "name", "Alice")
+Collections.HashMap.set(map, "age", 30)
+print(Collections.HashMap.get(map, "name"))  // Alice
+print(Collections.HashMap.has(map, "age"))   // true
+print(Collections.HashMap.size(map))        // 2
+
+// Advanced operations
+print(Collections.HashMap.getOrDefault(map, "missing", "default"))
+
+// Lazy initialization
+let cache = Collections.HashMap.create()
+function compute(string key) {
+    return key.length * 10
+}
+let value = Collections.HashMap.computeIfAbsent(cache, "test", compute)
+
+// Functional operations
+function isLong(string[] entry) {
+    return entry[0].length > 3
+}
+let filtered = Collections.HashMap.filter(map, isLong)
+
+function uppercase(string[] entry) {
+    return [entry[0].toUpperCase(), entry[1]]
+}
+let mapped = Collections.HashMap.map(map, uppercase)
+
+function sum(int acc, string[] entry) {
+    if (typeof entry[1] === "number") {
+        return acc + entry[1]
+    }
+    return acc
+}
+let total = Collections.HashMap.reduce(map, 0, sum)
+```
+
+**Note:** You can also use the full path without importing:
+```x
+let map = System.utils.Collections.HashMap.create()
+System.utils.Collections.HashMap.set(map, "key", "value")
+```
+
+**HashMap Methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create` | `create(capacity?)` | Creates a new HashMap (optional initial capacity) |
+| `set` | `set(map, key, value)` | Sets a key-value pair |
+| `get` | `get(map, key)` | Gets value by key (returns null if not found) |
+| `has` | `has(map, key)` | Checks if key exists |
+| `remove` | `remove(map, key)` | Removes and returns value by key |
+| `size` | `size(map)` | Returns number of entries |
+| `isEmpty` | `isEmpty(map)` | Checks if map is empty |
+| `clear` | `clear(map)` | Removes all entries |
+| `keys` | `keys(map)` | Returns array of all keys |
+| `values` | `values(map)` | Returns array of all values |
+| `entries` | `entries(map)` | Returns array of [key, value] pairs |
+| `getOrDefault` | `getOrDefault(map, key, default)` | Gets value or default if not found |
+| `computeIfAbsent` | `computeIfAbsent(map, key, function)` | Computes value if key absent |
+| `computeIfPresent` | `computeIfPresent(map, key, function)` | Computes new value if key present |
+| `merge` | `merge(map, otherMap, ...)` | Merges multiple maps |
+| `filter` | `filter(map, predicate)` | Filters entries by predicate |
+| `map` | `map(map, mapper)` | Transforms entries |
+| `reduce` | `reduce(map, initial, reducer)` | Reduces entries to single value |
+| `putAll` | `putAll(target, source)` | Copies all entries from source to target |
+
+### LinkedList
+
+### LinkedList / List
+
+A doubly-linked list with efficient operations at both ends. `List` is a built-in alias — `new List()` and `new LinkedList()` are identical. See the **[List (LinkedList)](#list-linkedlist)** section above for the full OOP-style documentation and example with generics and `for` loop traversal.
+
+Namespace style (also still works):
+
+```x
+import System.utils.Collections
+
+let list = Collections.LinkedList.create()
+
+// Add elements
+Collections.LinkedList.add(list, "middle")
+Collections.LinkedList.addFirst(list, "first")
+Collections.LinkedList.addLast(list, "last")
+
+// Access
+print(Collections.LinkedList.getFirst(list))  // first
+print(Collections.LinkedList.getLast(list))   // last
+print(Collections.LinkedList.get(list, 1))    // middle
+
+// Remove
+Collections.LinkedList.remove(list, "middle")
+let removed = Collections.LinkedList.removeFirst(list)
+
+// Utility
+print(Collections.LinkedList.size(list))
+print(Collections.LinkedList.contains(list, "last"))
+Collections.LinkedList.reverse(list)
+print(Collections.LinkedList.toArray(list))
+```
+
+### Stack
+
+LIFO (Last-In-First-Out) stack implementation.
+
+```x
+import System.utils.Collections.Stack
+
+// OOP instance style (recommended)
+let Stack<string> history = new Stack<string>()
+history.push("first")
+history.push("second")
+history.push("third")
+
+print(history.peek())    // third
+print(history.pop())     // third
+print(history.size())    // 2
+print(history.isEmpty()) // false
+history.clear()
+
+// Namespace style still works
+import System.utils.Collections
+let stack = Collections.Stack.create()
+Collections.Stack.push(stack, "item")
+print(Collections.Stack.peek(stack))  // item
+```
+
+**Stack Methods (OOP dot-call):**
+
+| Method | Description |
+|--------|-------------|
+| `push(value)` | Pushes value onto the top |
+| `pop()` | Removes and returns top value |
+| `peek()` | Returns top value without removing |
+| `size()` | Returns stack size |
+| `isEmpty()` | Returns true if empty |
+| `clear()` | Removes all elements |
+| `toArray()` | Returns all elements as an array |
+
+### Queue
+
+FIFO (First-In-First-Out) queue implementation.
+
+```x
+import System.utils.Collections.Queue
+
+// OOP instance style
+let Queue<string> q = new Queue<string>()
+q.enqueue("first")
+q.enqueue("second")
+q.enqueue("third")
+
+print(q.peek())     // first
+print(q.dequeue())  // first
+print(q.dequeue())  // second
+print(q.size())     // 1
+```
+
+**Queue Methods (OOP dot-call):**
+
+| Method | Description |
+|--------|-------------|
+| `enqueue(value)` | Adds value to the back |
+| `dequeue()` | Removes and returns the front value |
+| `peek()` | Returns front value without removing |
+| `size()` | Returns queue size |
+| `isEmpty()` | Returns true if empty |
+| `clear()` | Removes all elements |
+| `toArray()` | Returns all elements as an array |
+| `clear` | `clear(queue)` | Clears queue |
+| `toArray` | `toArray(queue)` | Converts to array |
+
+### PriorityQueue
+
+Min-heap based priority queue (smallest element has highest priority):
+
+```x
+import System.utils.Collections
+
+let pq = Collections.PriorityQueue.create()
+
+Collections.PriorityQueue.enqueue(pq, 5)
+Collections.PriorityQueue.enqueue(pq, 2)
+Collections.PriorityQueue.enqueue(pq, 8)
+
+print(Collections.PriorityQueue.peek(pq))     // 2
+print(Collections.PriorityQueue.dequeue(pq))  // 2
+print(Collections.PriorityQueue.dequeue(pq))  // 5
+```
+
+**PriorityQueue Methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create` | `create(comparator?)` | Creates a new PriorityQueue |
+| `enqueue` | `enqueue(pq, value)` | Adds value (maintains order) |
+| `dequeue` | `dequeue(pq)` | Removes and returns minimum |
+| `peek` | `peek(pq)` | Returns minimum without removing |
+| `size` | `size(pq)` | Returns queue size |
+| `isEmpty` | `isEmpty(pq)` | Checks if empty |
+| `clear` | `clear(pq)` | Clears queue |
+| `toArray` | `toArray(pq)` | Converts to array |
+
+### Trie
+
+Prefix tree for efficient string operations:
+
+```x
+import System.utils.Collections
+
+let trie = Collections.Trie.create()
+
+Collections.Trie.insert(trie, "hello")
+Collections.Trie.insert(trie, "world")
+Collections.Trie.insert(trie, "hey")
+
+print(Collections.Trie.search(trie, "hello"))     // true
+print(Collections.Trie.search(trie, "hel"))        // false
+print(Collections.Trie.startsWith(trie, "he"))    // true
+print(Collections.Trie.getAllWords(trie))         // [hello, hey, world]
+print(Collections.Trie.size(trie))                 // 3
+
+Collections.Trie.remove(trie, "hey")
+print(Collections.Trie.size(trie))                 // 2
+```
+
+**Trie Methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create` | `create()` | Creates a new Trie |
+| `insert` | `insert(trie, word)` | Inserts a word |
+| `search` | `search(trie, word)` | Checks if exact word exists |
+| `startsWith` | `startsWith(trie, prefix)` | Checks if any word starts with prefix |
+| `remove` | `remove(trie, word)` | Removes a word |
+| `size` | `size(trie)` | Returns word count |
+| `isEmpty` | `isEmpty(trie)` | Checks if empty |
+| `clear` | `clear(trie)` | Clears all words |
+| `getAllWords` | `getAllWords(trie)` | Returns all words |
+
+### Running DSA Tests
+
+Comprehensive test suites are available in the `examples/dsa_tests` directory:
+
+```sh
+# Run all DSA tests
+x run examples/dsa_tests/all_tests.x
+
+# Run individual structure tests
+x run examples/dsa_tests/hashmap_test.x
+x run examples/dsa_tests/linkedlist_test.x
+x run examples/dsa_tests/stack_test.x
+x run examples/dsa_tests/queue_test.x
+x run examples/dsa_tests/priorityqueue_test.x
+x run examples/dsa_tests/trie_test.x
+```
+
+### Collections Implementation Status
+
+This checklist covers both what is implemented and what remains. Items added or fixed in the current session are marked **[new]**.
+
+#### Core API styles **[new]** ✅
+- [x] OOP instance style — `new Stack()` returns an instance; methods called as `stack.push(x)`
+- [x] Inline import — `import System.utils.Collections.Stack` binds `Stack` directly
+- [x] Namespace import — `import System.utils.Collections` then `Collections.Stack.create()`
+- [x] Full path without import — `System.utils.Collections.Stack.create()` always works
+- [x] `List` as a built-in alias for `LinkedList` — `new List()` and `new LinkedList()` are identical
+- [x] Generic type annotations — `let List<Student> students = new List<Student>()` (hint only, not statically enforced yet)
+- [x] Short names globally available — `Stack`, `Queue`, `HashMap`, `LinkedList`, `List`, `PriorityQueue`, `Trie` without any import
+- [x] Re-importing an already-bound name does not crash — `import System.utils.Collections.Stack` is safe even when `Stack` is already in scope
+
+#### HashMap ✅
+- [x] Basic CRUD — `create`, `set`, `get`, `has`, `remove`
+- [x] O(1) average-case get/set
+- [x] String, number, and boolean key support
+- [x] `getOrDefault` — safe access with fallback
+- [x] `computeIfAbsent` — lazy initialization
+- [x] `computeIfPresent` — conditional update
+- [x] Functional operations — `filter`, `map`, `reduce`
+- [x] `merge` — combine multiple maps **[fixed: now accepts XCollectionInstance]**
+- [x] `putAll` — bulk copy from another map **[fixed: now accepts XCollectionInstance]**
+- [x] `keys`, `values`, `entries` views
+- [x] `size`, `isEmpty`, `clear`
+- [x] Callbacks passed as X functions work correctly **[fixed: list[XFunction] normalized to OverloadedFunction]**
+
+#### LinkedList / List ✅
+- [x] OOP dot-call style — `list.add(x)`, `list.getFirst()`, `list.size()` **[new]**
+- [x] O(1) insertions at both ends — `addFirst`, `addLast`
+- [x] O(1) removals at both ends — `removeFirst`, `removeLast`
+- [x] Random access by index — `get(index)`
+- [x] Bidirectional access — `getFirst`, `getLast`
+- [x] Contains and indexOf
+- [x] Reverse in place
+- [x] `toArray` conversion
+- [x] `clear`
+- [x] Create from initial array — `new List([1, 2, 3])`
+- [ ] Iterator protocol (for…of directly on instance without `.toArray()` first)
+
+#### Stack ✅
+- [x] OOP dot-call style — `stack.push(x)`, `stack.pop()`, `stack.peek()` **[new]**
+- [x] O(1) push and pop
+- [x] Peek without removal
+- [x] `size`, `isEmpty`, `clear`
+- [x] `toArray`
+- [x] Create from initial array
+- [ ] Iterator protocol (for…of directly on instance)
+
+#### Queue ✅
+- [x] OOP dot-call style — `queue.enqueue(x)`, `queue.dequeue()` **[new]**
+- [x] O(1) enqueue and dequeue
+- [x] Peek without removal
+- [x] `size`, `isEmpty`, `clear`
+- [x] `toArray`
+- [x] Create from initial array
+- [ ] Iterator protocol (for…of directly on instance)
+
+#### PriorityQueue ✅
+- [x] OOP dot-call style **[new]**
+- [x] Automatic ordering (min-heap via sort)
+- [x] Peek at minimum element
+- [x] `size`, `isEmpty`, `clear`, `toArray`
+- [ ] True O(log n) binary heap — current implementation uses `list.sort()`, giving O(n log n) enqueue
+- [ ] Custom comparator support
+- [ ] Max-heap option
+
+#### Trie ✅
+- [x] OOP dot-call style **[new]**
+- [x] O(k) insert/search (k = word length)
+- [x] Exact word search
+- [x] Prefix search — `startsWith`
+- [x] Get all words
+- [x] Remove
+- [x] `size`, `isEmpty`, `clear`
+- [x] Inline import — `import System.utils.Collections.Trie` **[fixed: no longer crashes on re-declaration]**
+- [ ] Wildcard / regex search
+- [ ] `getWordsWithPrefix(prefix)` — return only words starting with a given prefix
+
+### Known Bugs Fixed This Session
+
+| Bug | Status |
+|-----|--------|
+| Interpreter crashed on startup — `_create_wrapper_class` called `VariableDeclaration` with wrong arg count | ✅ Fixed |
+| `Stack.create()` / bare short names undefined without import | ✅ Fixed — short names defined globally at startup |
+| `import System.utils.Collections.Stack` caused "already declared" error | ✅ Fixed — re-import silently re-binds |
+| `new Stack()` returned a raw list, not a callable instance | ✅ Fixed — returns `XCollectionInstance` with bound methods |
+| `students.add(x)` style (OOP dot-call) not supported | ✅ Fixed — `_get_member` dispatches on `XCollectionInstance` |
+| `HashMap.merge` / `putAll` rejected `XCollectionInstance` args | ✅ Fixed — `_unwrap_collection` normalizes before type check |
+| `HashMap.computeIfAbsent/filter/map/reduce` rejected X function callbacks | ✅ Fixed — `_normalize_callable` wraps `list[XFunction]` into `OverloadedFunction` |
+| `hashmap_test.x` used `typeof` (JS) instead of `typeOf` (X) | ✅ Fixed in test file |
+
+### Remaining Work (Collections)
+
+- [ ] **Iterator protocol** — `for (Student s of students)` should work directly on an instance without calling `.toArray()` first
+- [ ] **True binary heap** for PriorityQueue — current sort-based approach is O(n log n) per enqueue
+- [ ] **Custom comparator** for PriorityQueue — `new PriorityQueue((a, b) => a.priority - b.priority)`
+- [ ] **Max-heap** option for PriorityQueue
+- [ ] **Static type enforcement** for generics — `List<Student>` currently accepts any value
+- [ ] **`new StructureName(initialArray)`** — constructing with data e.g. `new Stack([1,2,3])` works; `new List(existingArray)` also works; document clearly
+- [ ] **Set** data structure — unique-value collection
+- [ ] **TreeMap / TreeSet** — sorted key ordering
+- [ ] **LinkedHashMap** — insertion-order preserving map
+- [ ] **LRU Cache** — built on top of LinkedHashMap
+- [ ] **Thread-safe wrappers** — concurrent access guards
+- [ ] **Immutable/frozen variants**
+- [ ] **Serialization** — `toJSON()` / `fromJSON()` round-trip
+- [ ] **`groupBy` / `partition`** functional operators on List
+- [ ] **Graph** — adjacency list and matrix representations
+- [ ] **BST / AVL / Red-Black tree**
+- [ ] **Union-Find (Disjoint Set)**
+- [ ] **Bloom Filter**
+
 ## Asynchronous functions and threads
 
 ### Async/await
@@ -797,9 +1358,9 @@ python -m unittest discover -s tests -v
 The tests cover parsing and execution of core syntax, functions, classes,
 access control, final classes, decorators, nested types, namespaces,
 exceptions, all loop forms, pattern matching, destructuring, ASI, equality,
-objects, project configuration and feature flags, source diagnostics, string
-indexing, grouped project imports, filesystem operations, rest/spread,
-async/await, and OS threads.
+objects, project configuration and feature flags, source diagnostics and
+type diagnostics, string indexing, grouped project imports, filesystem
+operations, rest/spread, async/await, and OS threads.
 
 ## Feature examples
 
@@ -847,25 +1408,29 @@ leading `[`/`(` continuations should be explicitly separated.
 
 ## Access control, final classes, and error reporting
 
-Access modifiers are enforced by the interpreter, not just recorded as
-documentation. Members with no access modifier default to public. Private and
-protected reads, writes, method lookups, and static members follow the class
-rules above. `internal` is rejected because this prototype does not yet have
-isolated module boundaries.
+Access modifiers are enforced by the type checker and the interpreter, not
+just recorded as documentation. Members with no access modifier default to
+public. Private and protected reads, writes, method lookups, and static
+members follow the class rules above. `internal` is rejected because this
+prototype does not yet have isolated module boundaries.
 
 `final class` is checked when classes are registered; extending one fails
-before `main` runs. Lexer, parser, runtime, and TOML configuration errors use
-source-aware terminal diagnostics with file, line, column, the relevant source
-line, and a caret. Color is automatic for interactive terminals; use
-`--color always`, `--color never`, or `NO_COLOR` to control it.
+before `main` runs. Lexer, parser, type, runtime, and TOML configuration
+errors use source-aware terminal diagnostics with file, line, column, the
+relevant source line, and a caret, and type errors can add `= note:` and
+`= help:` lines as shown above. Color is automatic for interactive terminals;
+use `--color always`, `--color never`, or `NO_COLOR` to control it.
 
-The following examples are deliberately invalid and demonstrate failure output:
+The following examples are deliberately invalid and demonstrate failure
+output (`private_access.x`, `final_class_extension.x`, and `runtime_error.x`
+are now rejected as type errors before the program starts):
 
 ```sh
 x run examples/errors/private_access.x
 x run examples/errors/final_class_extension.x
 x run examples/errors/runtime_error.x
 x check examples/errors/syntax_error.x
+x check examples/errors/typed_array.x
 ```
 
 ## DSA examples and computational expressiveness
@@ -902,33 +1467,37 @@ indexing for some characters.
 The specification includes features beyond this prototype. These are the
 remaining implementation goals and documented constraints:
 
-- [ ] Static type checking, definite assignment, and compile-time type diagnostics.
-- [ ] Native or bytecode compilation; `build` is currently a syntax/import check.
-- [ ] Interfaces as enforceable contracts and abstract-method validation.
-- [ ] Generic type checking and type-parameter substitution.
-- [ ] Union/nullable type semantics, structural type validation, and records.
-- [ ] Independent module namespaces; imports are resolved, but declarations
-  are not isolated behind module namespace objects.
-- [ ] Thread-safe collections, locks, atomics, cancellation, and full TypeScript
-  Promise compatibility.
-- [ ] A broader standard library beyond the built-ins documented here.
+### Language / Compiler
 
-Known limitations and correctness edges (not an exhaustive bug tracker):
+- [ ] Native or bytecode compilation — `build` validates syntax, imports, and
+  types, then reports that no executable was produced
+- [ ] Generic type checking and type-parameter substitution — generic
+  annotations parse and their type names are checked, but element types are
+  not enforced (`List<string>` in a `List<integer>` slot passes `x check`)
+- [ ] Union/nullable type semantics — `integer | null` does not exist and
+  `null` is rejected for non-null types; inline `record{...}` annotations are
+  checked structurally today
+- [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects
+- [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
+- [ ] A broader standard library beyond the built-ins documented here
 
-- `/` currently performs floating-point division, so code needing an integer
-  index must ensure the calculation is integral. The DSA binary-search
-  examples use a logarithmic binary-lifting variant for that reason.
-- String indexing counts Unicode code points, not grapheme clusters or
-  JavaScript UTF-16 code units.
-- Parser recovery reports multiple recoverable lexical and syntax errors, but
-  malformed constructs can prevent discovery of later errors. Runtime
-  failures stop execution at the first failure.
-- Recursive algorithms such as flood fill can hit Python's recursion limit on
-  sufficiently large inputs.
-- The run-length codec example reserves digits for run counts and is intended
-  for letter-only input; it is an instructional example, not a general-purpose
-  escaping format.
+### Collections (see full list in [Collections Implementation Status](#collections-implementation-status))
 
-The detailed syntax proposal remains in [Draft.md](./Draft.md). Where the
-interpreter behavior is narrower than that draft, this README describes the
-features that can currently be relied upon.
+- [ ] Iterator protocol — `for (T item of collectionInstance)` without `.toArray()` first
+- [ ] True O(log n) binary heap for PriorityQueue
+- [ ] Custom comparator and max-heap for PriorityQueue
+- [ ] Set, TreeMap/TreeSet, LinkedHashMap, LRU Cache
+- [ ] Thread-safe collection wrappers
+- [ ] Serialization round-trip (`toJSON` / `fromJSON`)
+
+### Known correctness edges
+
+- `/` performs floating-point division — code needing an integer index must ensure the calculation is integral
+- String indexing counts Unicode code points, not grapheme clusters or UTF-16 code units
+- Parser recovery reports multiple recoverable errors but malformed constructs can prevent discovery of later errors; runtime failures stop at the first failure
+- Recursive algorithms (flood fill, deep trees) can hit Python's default recursion limit on large inputs
+- The run-length codec example is intended for letter-only input, not a general-purpose escaping format
+
+The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
+behavior is narrower than that draft, this README describes what can currently
+be relied upon.

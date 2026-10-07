@@ -19,7 +19,7 @@ integer function longestUniqueSubstring(string text) {
     return longest;
 }
 
-function main() {
+any function main() {
     print("Longest substring without repeats:");
     print(longestUniqueSubstring("abcabcbb"));
     print(longestUniqueSubstring("bbbbb"));

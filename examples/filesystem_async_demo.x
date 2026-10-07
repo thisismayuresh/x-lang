@@ -1,6 +1,6 @@
 import System.io.FileSystem
 
-async function main() {
+async any function main() {
     let string directory = "build/filesystem-async-demo";
     let string filePath = directory + "/notes.txt";
 

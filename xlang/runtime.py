@@ -60,6 +60,7 @@ class Environment:
         self.constants: set[str] = set()
         self.array_types: dict[str, str] = {}
         self.object_types: dict[str, str] = {}
+        self.value_types: dict[str, str] = {}
 
     def define(
         self,
@@ -68,6 +69,7 @@ class Environment:
         constant: bool = False,
         array_type: str | None = None,
         object_type: str | None = None,
+        value_type: str | None = None,
     ) -> None:
         if name in self.values:
             raise RuntimeErrorX(f"'{name}' is already declared in this scope")
@@ -78,6 +80,8 @@ class Environment:
             self.array_types[name] = array_type
         if object_type is not None:
             self.object_types[name] = object_type
+        if value_type is not None:
+            self.value_types[name] = value_type
 
     def get(self, name: str) -> Any:
         if name in self.values:
@@ -98,6 +102,13 @@ class Environment:
             return self.object_types.get(name)
         if self.parent is not None:
             return self.parent.get_object_type(name)
+        return None
+
+    def get_value_type(self, name: str) -> str | None:
+        if name in self.values:
+            return self.value_types.get(name)
+        if self.parent is not None:
+            return self.parent.get_value_type(name)
         return None
 
     def assign(self, name: str, value: Any) -> None:
@@ -209,6 +220,13 @@ class XFunction:
     def _call_sync(self, arguments: list[Any]) -> Any:
         if self.traced:
             self.interpreter.output(f"Calling {self.declaration.name}")
+        self.interpreter.function_stack.append(self)
+        try:
+            return self._invoke(arguments)
+        finally:
+            self.interpreter.function_stack.pop()
+
+    def _invoke(self, arguments: list[Any]) -> Any:
         parameters = self.declaration.parameters
         has_rest_parameter = bool(parameters and parameters[-1].is_rest)
         required_count = sum(
@@ -255,6 +273,14 @@ class XFunction:
                         argument_value,
                         f"parameter '{parameter.name}'",
                     )
+                    if self.interpreter._needs_runtime_type_check(
+                        parameter.type_name
+                    ):
+                        argument_value = self.interpreter._coerce_runtime_checked_type(
+                            parameter.type_name,
+                            argument_value,
+                            f"parameter '{parameter.name}'",
+                        )
                     argument_value = self.interpreter._coerce_typed_object(
                         parameter.type_name,
                         argument_value,
@@ -274,6 +300,14 @@ class XFunction:
                         parameter.type_name
                         if parameter.type_name is not None
                         and parameter.type_name.startswith("object<")
+                        else None
+                    ),
+                    value_type=(
+                        parameter.type_name
+                        if parameter.type_name is not None
+                        and self.interpreter._needs_runtime_type_check(
+                            parameter.type_name
+                        )
                         else None
                     ),
                 )
@@ -344,6 +378,12 @@ class XClass:
             self.interpreter.output(f"Constructing {self.name}")
         instance = XInstance(self)
         self.interpreter._initialize_fields(instance, self)
+        
+        # Check for custom constructor implementation (for Python class wrappers)
+        if hasattr(self, 'constructor_impl'):
+            self.constructor_impl(instance, arguments)
+            return instance
+        
         if self.is_exception_base:
             self.interpreter._initialize_exception_instance(instance, arguments)
             return instance
@@ -384,6 +424,22 @@ class XEnumMember:
     name: str
     value: Any
     enum_identity: object
+
+
+class XCollectionInstance:
+    """An OOP-style collection instance that supports dot-method calls.
+    
+    `students.add(x)` is sugar for `List.add(students, x)`.
+    The underlying data is a plain list or dict stored in `_data`.
+    The `_methods` dict maps method names to BuiltinFunctions that
+    already expect (instance, arguments) style — the interpreter
+    pre-binds `_data` when dispatching.
+    """
+
+    def __init__(self, collection_type: str, data: Any, methods: dict) -> None:
+        self.collection_type = collection_type  # e.g. "Stack", "List"
+        self._data = data                        # the underlying list / dict
+        self._methods = methods                  # name -> BuiltinFunction
 
 
 @dataclass

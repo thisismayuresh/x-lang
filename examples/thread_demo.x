@@ -4,7 +4,7 @@ string function formatJob(string jobName, integer jobNumber) {
     return "Finished " + jobName + " #" + jobNumber;
 }
 
-function main() {
+any function main() {
     let ThreadHandle firstWorker = Thread.start(formatJob, ["compile", 1]);
     let ThreadHandle secondWorker = Thread.start(formatJob, ["test", 2]);
 

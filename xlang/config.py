@@ -18,21 +18,44 @@ except ModuleNotFoundError:
 
 
 FEATURE_DEFAULTS = {
+    "arrow_functions": True,
     "async": True,
     "classes": True,
+    "collections": True,
+    "concurrency_primitives": True,
     "decorators": True,
     "destructuring": True,
     "enums": True,
     "equality": True,
     "exceptions": True,
     "filesystem": True,
+    "generics": True,
+    "interfaces": True,
     "loops": True,
     "namespaces": True,
     "object_literals": True,
     "pattern_matching": True,
+    "records": True,
     "spread": True,
+    "static_methods": True,
     "threads": True,
+    "type_checker": True,
+    "unions": True,
+    # Experimental features
+    "url_imports": False,
+    "package_manager": False,
+    "math_library": True,
+    "access_modifiers": True,
+    "bulk_export": True,
+    "array_push": True,
+    "command_input": True,
+    "strict_typing": False,
+    "enhanced_input": True,
+    "switch": True,
 }
+
+
+COMMAND_LINE_SOURCE = Path("<command line>")
 
 
 class ConfigError(Exception):
@@ -74,7 +97,7 @@ class XConfig:
         if profile is None:
             raise ConfigError(
                 f"Run profile '{profile_name}' is not defined",
-                self.path or Path("x.toml"),
+                self.path or COMMAND_LINE_SOURCE,
             )
         arguments = list(self.run_arguments)
         arguments.extend(profile.arguments)
@@ -123,9 +146,9 @@ def load_config(
         _apply_config_tables(config, data, config_path)
 
     for override in feature_overrides or []:
-        _apply_feature_override(config.features, override, config_path or Path("x.toml"))
+        _apply_feature_override(config.features, override, COMMAND_LINE_SOURCE)
     if color_override is not None:
-        _validate_color(color_override, config_path or Path("x.toml"))
+        _validate_color(color_override, COMMAND_LINE_SOURCE)
         config.color = color_override
     return config
 

@@ -1,5 +1,6 @@
 integer function maxSubarray(integer[] numbers) {
     if (numbers.length == 0) {
+        print(" ");
         return 0;
     }
 
@@ -14,6 +15,6 @@ integer function maxSubarray(integer[] numbers) {
     return best;
 }
 
-function main() {
+any function main() {
     print("Maximum subarray:", maxSubarray([-2, 1, -3, 4, -1, 2, 1, -5, 4]));
 }

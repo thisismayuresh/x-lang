@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     try {
         throw new Exception("planned failure")
     }

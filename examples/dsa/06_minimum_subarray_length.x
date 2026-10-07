@@ -18,6 +18,6 @@ integer function minSubarrayLength(integer target, integer[] numbers) {
     return shortest == numbers.length + 1 ? 0 : shortest;
 }
 
-function main() {
+any function main() {
     print("Minimum positive-sum window:", minSubarrayLength(7, [2, 3, 1, 2, 4, 3]));
 }

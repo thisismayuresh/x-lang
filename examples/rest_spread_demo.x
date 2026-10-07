@@ -6,7 +6,7 @@ integer function sum(integer ...numbers) {
     return total;
 }
 
-function main() {
+any function main() {
     let integer[] first = [1, 2, 3];
     let integer[] allNumbers = [0, ...first, 4];
     print("Combined sum: " + sum(...allNumbers));

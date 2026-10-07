@@ -1,5 +1,5 @@
 @trace
-function greet(string name) {
+string function greet(string name) {
     return "Hello, " + name
 }
 
@@ -12,7 +12,7 @@ class Greeter {
     }
 }
 
-function main() {
+any function main() {
     print(greet("Ada"))
     let Greeter greeter = new Greeter()
     print(greeter.greet("Lin"))
