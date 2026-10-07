@@ -1,7 +1,7 @@
-export function sayGreet() {
+export any function sayGreet() {
     return "Hello from the sibling greeting.x module";
 }
 
-export function sayHello(){
+export any function sayHello(){
     print ("Hello");
 }

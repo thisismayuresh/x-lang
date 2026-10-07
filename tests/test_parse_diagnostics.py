@@ -9,7 +9,7 @@ from xlang.ast_nodes import (
     TypeDeclaration,
     VariableDeclaration,
 )
-from xlang.lexer import Lexer
+from xlang.lexer import LexError, Lexer
 from xlang.module_loader import ModuleLoader
 from xlang.parser import ParseError, Parser
 from xlang.runtime import Interpreter
@@ -410,6 +410,110 @@ class Counter { public int n = 0; }
             self.assertEqual(
                 sorted(loader._exported_names(resolved)), ["Counter", "greet"]
             )
+
+
+def lex_errors(source, recover=True, source_name="test.x"):
+    lexer = Lexer(source, source_name, recover_errors=recover)
+    try:
+        lexer.tokenize()
+    except LexError as error:
+        return [error]
+    return list(lexer.errors)
+
+
+def lex_positions(source, recover=True, source_name="test.x"):
+    return [(error.message, error.line, error.column)
+            for error in lex_errors(source, recover, source_name)]
+
+
+class LexicalPositionTests(unittest.TestCase):
+    def test_unterminated_string_points_at_the_opening_quote(self):
+        self.assertEqual(
+            lex_positions('let s = "abc'),
+            [("Unterminated string literal", 1, 9)],
+        )
+
+    def test_string_newline_points_at_the_newline(self):
+        self.assertEqual(
+            lex_positions('let s = "abc\nlet t = 1;'),
+            [("String literal cannot contain a newline", 1, 13)],
+        )
+
+    def test_character_literal_error_points_at_the_opening_quote(self):
+        self.assertEqual(
+            lex_positions("let c = 'ab';"),
+            [("Character literals must contain exactly one character", 1, 9)],
+        )
+
+    def test_unknown_escape_points_at_the_backslash(self):
+        self.assertEqual(
+            lex_positions('let a = "\\q";'),
+            [("Unknown escape sequence \\q", 1, 10)],
+        )
+
+    def test_unterminated_template_points_at_the_opening_backtick(self):
+        self.assertEqual(
+            lex_positions("let t = `abc"),
+            [("Unterminated template literal", 1, 9)],
+        )
+
+    def test_unterminated_interpolation_is_reported_in_recovery_mode(self):
+        tokens = Lexer(
+            "let t = `abc ${1 + 2", "test.x", recover_errors=True
+        ).tokenize()
+        parser = Parser(tokens, {}, "test.x", recover_errors=True)
+        parser.parse()
+        self.assertEqual(
+            [
+                (error.message, error.line, error.column)
+                for error in parser.errors
+            ],
+            [("Unterminated template interpolation", 1, 15)],
+        )
+
+    def test_unterminated_interpolation_raises_without_recovery(self):
+        lexer = Lexer("let t = `abc ${1 + 2", "test.x", recover_errors=False)
+        with self.assertRaises(LexError) as raised:
+            lexer.tokenize()
+        self.assertEqual(
+            raised.exception.message, "Unterminated template interpolation"
+        )
+        self.assertEqual(
+            (raised.exception.line, raised.exception.column), (1, 15)
+        )
+
+    def test_throw_line_break_points_at_the_throw_keyword(self):
+        _, errors = parse("function main() {\n  throw\n  new Error();\n}")
+        self.assertEqual(messages(errors), ["A line break cannot follow 'throw'"])
+        self.assertEqual(positions(errors), [(2, 3)])
+
+    def test_byte_order_mark_is_accepted(self):
+        program, errors = parse("\ufefflet a = 1;")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(program.declarations), 1)
+
+    def test_trailing_commas_are_accepted(self):
+        for source in (
+            "let a = [1, 2, ];",
+            "function f(a, b,) {}",
+            "function main() { print(1, ); }",
+        ):
+            with self.subTest(source=source):
+                _, errors = parse(source)
+                self.assertEqual(errors, [])
+
+    def test_number_with_trailing_dot_is_a_float(self):
+        program, errors = parse("let a = 1.;")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(program.declarations), 1)
+
+    def test_nested_templates_are_accepted(self):
+        _, errors = parse("let a = `x{ `y{1}` }z`;")
+        self.assertEqual(errors, [])
+
+    def test_template_double_braces_escape_literal_braces(self):
+        _, errors = parse("let a = `escaped {{name}} and {1}`;")
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

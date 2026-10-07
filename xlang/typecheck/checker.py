@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+from collections.abc import Iterable, Sequence
 from dataclasses import fields, is_dataclass
 from typing import Any
 
@@ -49,6 +51,7 @@ from ..ast_nodes import (
     VariableDeclaration,
     WhileStatement,
 )
+from ..diagnostics import callable_kind, member_noun
 from .errors import TypeCheckError
 from .types import (
     ANY,
@@ -127,6 +130,34 @@ STRING_METHOD_NAMES = frozenset(
 _VISIBILITY_ORDER = ("private", "protected", "public")
 
 
+def _return_type_help(kind: str) -> str:
+    """Concrete ``= help:`` text for a missing return-type annotation."""
+    if kind == "Method":
+        return "add an explicit return type, e.g. `string getName()`"
+    return "add an explicit return type, e.g. `int function add(int a, int b)`"
+
+
+def _parameter_type_help(kind: str, name: str, return_type: str | None) -> str:
+    """Concrete ``= help:`` text for an untyped parameter."""
+    if kind == "Constructor":
+        return f"type the parameter, e.g. `public {name}(int x)`"
+    if kind == "Function":
+        declared = return_type or "int"
+        return f"type the parameter, e.g. `{declared} function {name}(int xp)`"
+    return f"type the parameter, e.g. `{return_type or 'void'} {name}(int xp)`"
+
+
+def _closest_match(candidate: str, options: Iterable[str]) -> str | None:
+    """Return the closest spelling to *candidate* among *options*, if any."""
+    ranked = difflib.get_close_matches(candidate, sorted(set(options)), n=1, cutoff=0.7)
+    if not ranked:
+        return None
+    match = ranked[0]
+    if match == candidate:
+        return None
+    return match
+
+
 class TypeChecker:
     """Static checker for types, interfaces, generics, and definite assignment.
 
@@ -172,10 +203,30 @@ class TypeChecker:
         self._expected_return: XType | None = None
         self._saw_value_return = False
         self._try_depth = 0
+        self._current_node: Any | None = None
+
+    def _record_depth_error(self) -> None:
+        """Turn a stack overflow into a diagnostic on the deepest known node."""
+        node = self._current_node
+        self.errors.append(
+            TypeCheckError(
+                "Program nests too deeply to type check",
+                node,
+                source_name=getattr(node, "source_name", None) or self._source_name,
+                notes=("split the expression into several statements",),
+            )
+        )
 
     def check(self, program: Program, source_name: str | None = None, config=None) -> list[TypeCheckError]:
         """Type-check ``program`` and return all diagnostics (does not raise)."""
         self._reset(source_name, config)
+        try:
+            self._check_program(program)
+        except RecursionError:
+            self._record_depth_error()
+        return self.errors
+
+    def _check_program(self, program: Program) -> None:
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -190,7 +241,6 @@ class TypeChecker:
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
             self._check_declarations(module_declarations, scope.child())
-        return self.errors
 
     def check_or_raise(self, program: Program, source_name: str | None = None, config=None) -> None:
         """Type-check and raise the first error when diagnostics exist."""
@@ -207,6 +257,13 @@ class TypeChecker:
         classes that omit interface members, without checking method bodies.
         """
         self._reset(source_name, config)
+        try:
+            self._check_program_declarations(program)
+        except RecursionError:
+            self._record_depth_error()
+        return self.errors
+
+    def _check_program_declarations(self, program: Program) -> None:
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -217,7 +274,6 @@ class TypeChecker:
         self._check_strict_typing(program.declarations)
         for module_declarations in program.modules.values():
             self._check_strict_typing(module_declarations)
-        return self.errors
 
     # ------------------------------------------------------------------
     # Scopes and collection
@@ -329,6 +385,8 @@ class TypeChecker:
             return
         if not is_dataclass(node):
             return
+        if getattr(node, "line", None):
+            self._current_node = node
         if isinstance(node, ClassDeclaration):
             if node.is_interface:
                 self._interfaces[node.name] = node
@@ -616,8 +674,12 @@ class TypeChecker:
                 and not self._saw_value_return
                 and not self._contains_throw(declaration.body)
             ):
+                kind = callable_kind(
+                    declaration.name,
+                    self._class_stack[-1] if self._class_stack else None,
+                )
                 self._error(
-                    f"Function '{declaration.name}' must return a value of type "
+                    f"{kind} '{declaration.name}' must return a value of type "
                     f"'{expected.display()}'",
                     declaration,
                 )
@@ -696,6 +758,10 @@ class TypeChecker:
                     f"Class '{declaration.name}' does not implement abstract method "
                     f"'{name}'",
                     declaration,
+                    helps=[
+                        f"implement `{self._format_signature(signature, 'Method')}` "
+                        f"on class `{declaration.name}`"
+                    ],
                 )
 
     def _inherited_abstract_methods(
@@ -777,6 +843,10 @@ class TypeChecker:
                                 f"Class '{declaration.name}' does not implement "
                                 f"'{member.name}()' from interface '{interface_name}'",
                                 declaration,
+                                helps=[
+                                    f"implement `{self._format_signature(member, 'Method')}` "
+                                    f"on class `{declaration.name}`"
+                                ],
                             )
                     elif isinstance(member, VariableDeclaration):
                         if not self._class_has_property(declaration, member.name):
@@ -785,6 +855,10 @@ class TypeChecker:
                                 f"property '{member.name}' from interface "
                                 f"'{interface_name}'",
                                 declaration,
+                                helps=[
+                                    f"add a `{member.type_name or 'any'} {member.name}` "
+                                    f"property to class `{declaration.name}`"
+                                ],
                             )
 
     def _check_strict_typing(self, declarations: list[Any]) -> None:
@@ -795,34 +869,62 @@ class TypeChecker:
         for declaration in declarations:
             self._check_strict_typing_declaration(declaration)
 
-    def _check_strict_typing_declaration(self, declaration: Any) -> None:
-        """Check a single declaration for missing type annotations."""
+    def _check_strict_typing_declaration(
+        self,
+        declaration: Any,
+        class_name: str | None = None,
+        is_interface: bool = False,
+    ) -> None:
+        """Check a single declaration for missing type annotations.
+
+        ``class_name`` is the enclosing class (or interface) when the
+        declaration is a member of one, so the diagnostic can say
+        ``Method``/``Constructor``/``property`` instead of ``Function``/
+        ``Variable``.
+        """
         if declaration is None:
             return
         
         if isinstance(declaration, FunctionDeclaration):
-            # Check return type
-            if declaration.return_type is None:
+            kind = callable_kind(declaration.name, class_name, is_interface)
+            # Check return type.  Constructors return nothing, so the
+            # strict-typing return-type rule does not apply to them.
+            if declaration.return_type is None and kind != "Constructor":
                 self._error(
-                    f"Function '{declaration.name}' must have an explicit return type (strict_typing enabled)",
+                    f"{kind} '{declaration.name}' must have an explicit return type (strict_typing enabled)",
                     declaration,
+                    helps=[_return_type_help(kind)],
                 )
             # Check parameter types
             for param in declaration.parameters:
                 if param.type_name is None:
                     self._error(
-                        f"Parameter '{param.name}' in function '{declaration.name}' must have an explicit type (strict_typing enabled)",
+                        f"Parameter '{param.name}' in {kind.lower()} '{declaration.name}' must have an explicit type (strict_typing enabled)",
                         declaration,
+                        helps=[
+                            _parameter_type_help(
+                                kind, declaration.name, declaration.return_type
+                            )
+                        ],
                     )
         elif isinstance(declaration, VariableDeclaration):
             if declaration.type_name is None and declaration.initializer is None:
+                label = (
+                    "Variable"
+                    if class_name is None
+                    else member_noun(declaration.modifiers).capitalize()
+                )
                 self._error(
-                    f"Variable '{declaration.name}' must have an explicit type (strict_typing enabled)",
+                    f"{label} '{declaration.name}' must have an explicit type (strict_typing enabled)",
                     declaration,
                 )
         elif isinstance(declaration, ClassDeclaration):
             for member in declaration.members:
-                self._check_strict_typing_declaration(member)
+                self._check_strict_typing_declaration(
+                    member,
+                    class_name=declaration.name,
+                    is_interface=declaration.is_interface,
+                )
 
     # ------------------------------------------------------------------
     # Variables
@@ -843,6 +945,9 @@ class TypeChecker:
                     f"Cannot assign '{actual.display()}' to '{declaration.name}' "
                     f"of type '{annotated.display()}'",
                     declaration,
+                    notes=[
+                        f"expected `{annotated.display()}`, found `{actual.display()}`"
+                    ],
                 )
             if (
                 annotated.is_any
@@ -971,6 +1076,8 @@ class TypeChecker:
     def _infer(self, expression: Any, scope: TypeScope) -> XType:
         if expression is None:
             return ANY
+        if getattr(expression, "line", None):
+            self._current_node = expression
         if isinstance(expression, Literal):
             return self._literal_type(expression.value)
         if isinstance(expression, UndefinedLiteral):
@@ -1228,7 +1335,12 @@ class TypeChecker:
                 target_type, assigned = found
                 if scope.is_constant(target.name) and assigned:
                     self._error(
-                        f"Cannot reassign constant '{target.name}'", expression
+                        f"Cannot reassign constant '{target.name}'",
+                        expression,
+                        helps=[
+                            f"declare '{target.name}' with `let` instead of `const` "
+                            "to allow reassignment"
+                        ],
                     )
                 elif expression.operator == "=":
                     if not is_compatible(value_type, target_type, relations=self):
@@ -1236,6 +1348,10 @@ class TypeChecker:
                             f"Cannot assign '{value_type.display()}' to "
                             f"'{target.name}' of type '{target_type.display()}'",
                             expression,
+                            notes=[
+                                f"expected `{target_type.display()}`, "
+                                f"found `{value_type.display()}`"
+                            ],
                         )
                 else:
                     self._infer(target, scope)
@@ -1263,6 +1379,10 @@ class TypeChecker:
                         f"Cannot assign '{value_type.display()}' to array element "
                         f"of type '{element.display()}'",
                         expression,
+                        notes=[
+                            f"expected `{element.display()}`, "
+                            f"found `{value_type.display()}`"
+                        ],
                     )
             return value_type
         return value_type
@@ -1281,13 +1401,17 @@ class TypeChecker:
                 return
             if isinstance(found, FunctionDeclaration):
                 return
-            self._check_visibility(found, owner, target, kind="property", verb="modify")
+            self._check_visibility(found, owner, target, kind="field", verb="modify")
             field_type = self._resolve_annotation(found.type_name)
             if not is_compatible(value_type, field_type, relations=self):
                 self._error(
                     f"Cannot assign '{value_type.display()}' to "
                     f"'{owner}.{target.name}' of type '{field_type.display()}'",
                     node,
+                    notes=[
+                        f"expected `{field_type.display()}`, "
+                        f"found `{value_type.display()}`"
+                    ],
                 )
             return
         if object_type.record_fields:
@@ -1298,6 +1422,10 @@ class TypeChecker:
                             f"Cannot assign '{value_type.display()}' to "
                             f"'{target.name}' of type '{field_type.display()}'",
                             node,
+                            notes=[
+                                f"expected `{field_type.display()}`, "
+                                f"found `{value_type.display()}`"
+                            ],
                         )
                     return
 
@@ -1319,8 +1447,16 @@ class TypeChecker:
                 and owner is None
                 and object_type.name in self._classes
             ):
+                helps: Sequence[str] = ()
+                suggestion = _closest_match(
+                    name, self._member_names(object_type.name)
+                )
+                if suggestion is not None:
+                    helps = [f"did you mean `{suggestion}`?"]
                 self._error(
-                    f"'{object_type.name}' has no member '{name}'", expression
+                    f"'{object_type.name}' has no member '{name}'",
+                    expression,
+                    helps=helps,
                 )
                 return ANY
             if found is None:
@@ -1465,6 +1601,20 @@ class TypeChecker:
             )
         return constructed
 
+    EXCEPTION_ROOTS = frozenset({"Throwable", "Exception", "Error"})
+
+    def _accepts_implicit_exception_arguments(self, declaration: Any) -> bool:
+        """Exception roots take ``(message, cause)`` without a constructor.
+
+        Mirrors ``XClass.construct``: an exception base, or a class deriving
+        directly from one, initializes its message fields from the arguments
+        instead of requiring a declared constructor.
+        """
+        if declaration.name in self.EXCEPTION_ROOTS:
+            return True
+        parent_name = (declaration.parent_name or "").split("<")[0].strip()
+        return parent_name in self.EXCEPTION_ROOTS
+
     def _check_constructor_call(
         self,
         class_name: str,
@@ -1482,11 +1632,18 @@ class TypeChecker:
         ]
         if not constructors:
             if argument_types:
-                self._error(
-                    f"No overload of '{class_name}' accepts "
-                    f"{len(argument_types)} argument(s)",
-                    node,
-                )
+                if self._accepts_implicit_exception_arguments(declaration):
+                    if len(argument_types) > 2:
+                        self._error(
+                            f"{class_name} expects a message and optional cause",
+                            node,
+                        )
+                else:
+                    self._error(
+                        f"No overload of '{class_name}' accepts "
+                        f"{len(argument_types)} argument(s)",
+                        node,
+                    )
             return parse_type(class_name)
         return self._check_overloads(
             class_name,
@@ -1496,6 +1653,7 @@ class TypeChecker:
             type_arguments=[],
             class_generics=list(declaration.generic_parameters or []),
             explicit_type_arguments=type_arguments,
+            kind="Constructor",
         )
 
     def _infer_index(self, expression: Index, scope: TypeScope) -> XType:
@@ -1558,6 +1716,7 @@ class TypeChecker:
         type_arguments: list[str],
         class_generics: list[str] | None = None,
         explicit_type_arguments: list[XType] | None = None,
+        kind: str = "Function",
     ) -> XType:
         if explicit_type_arguments is not None:
             explicit = explicit_type_arguments
@@ -1582,10 +1741,18 @@ class TypeChecker:
                     declaration.return_type, generic_parameters, explicit
                 )
         if first_arity_match is None:
+            available = ", ".join(
+                f"`{self._format_signature(declaration, kind)}`"
+                for declaration in declarations
+            )
+            helps: Sequence[str] = ()
+            if available:
+                helps = [f"available overloads: {available}"]
             self._error(
                 f"No overload of '{name}' accepts {len(argument_types)} "
                 f"argument(s)",
                 node,
+                helps=helps,
             )
             return ANY
         generic_parameters = (
@@ -1687,6 +1854,24 @@ class TypeChecker:
             current = None
         return None, None
 
+    def _member_names(self, type_name: str) -> set[str]:
+        """Every member name reachable from ``type_name``, including parents."""
+        names: set[str] = set()
+        current: str | None = type_name
+        visited: set[str] = set()
+        while current and current not in visited:
+            visited.add(current)
+            declaration = self._classes.get(current) or self._interfaces.get(current)
+            if declaration is None:
+                break
+            for member in declaration.members:
+                name = getattr(member, "name", None)
+                if name and name != declaration.name:
+                    names.add(name)
+            parent = declaration.parent_name
+            current = parent.split("<")[0].strip() if parent else None
+        return names
+
     def _find_enum(self, name: str) -> EnumDeclaration | None:
         return None
 
@@ -1719,7 +1904,7 @@ class TypeChecker:
             kind = (
                 "method"
                 if isinstance(member, FunctionDeclaration)
-                else "property"
+                else "field"
             )
         self._error(
             f"Cannot {verb} {visibility} {kind} '{owner_name}.{node.name}'",
@@ -2014,13 +2199,54 @@ class TypeChecker:
                 continue
             if any(segment in known for segment in segments[1:]):
                 continue
-            self._error(f"Unknown type '{candidate}'", anchor)
+            helps: Sequence[str] = ()
+            suggestion = _closest_match(candidate, known)
+            if suggestion is not None:
+                helps = [f"did you mean `{suggestion}`?"]
+            self._error(f"Unknown type '{candidate}'", anchor, helps=helps)
 
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
 
-    def _error(self, message: str, node: Any) -> None:
+    @staticmethod
+    def _format_parameter(parameter: Any) -> str:
+        """Render one parameter as it would be written in a signature."""
+        if parameter.is_rest:
+            return f"{parameter.type_name or 'any'} ...{parameter.name}"
+        return f"{parameter.type_name or 'any'} {parameter.name}"
+
+    def _format_signature(
+        self, declaration: Any, kind: str = "Function"
+    ) -> str:
+        """Render a copy-pasteable signature for a function-like node.
+
+        ``kind`` follows :func:`callable_kind`: a top-level ``Function`` needs
+        the ``function`` keyword, a class ``Method``/``Constructor`` does not.
+        """
+        parameters = ", ".join(
+            self._format_parameter(parameter) for parameter in declaration.parameters
+        )
+        if kind == "Constructor":
+            return f"{declaration.name}({parameters})"
+        if kind == "Function":
+            keyword = (
+                f"{declaration.return_type} function"
+                if declaration.return_type
+                else "function"
+            )
+            return f"{keyword} {declaration.name}({parameters})"
+        prefix = f"{declaration.return_type} " if declaration.return_type else ""
+        return f"{prefix}{declaration.name}({parameters})"
+
+    def _error(
+        self,
+        message: str,
+        node: Any,
+        *,
+        notes: Sequence[str] = (),
+        helps: Sequence[str] = (),
+    ) -> None:
         line = getattr(node, "line", None)
         column = getattr(node, "column", None)
         source_name = getattr(node, "source_name", None)
@@ -2034,6 +2260,11 @@ class TypeChecker:
         self._seen.add(key)
         self.errors.append(
             TypeCheckError(
-                message, source_name=source_name, line=line, column=column
+                message,
+                source_name=source_name,
+                line=line,
+                column=column,
+                notes=notes,
+                helps=helps,
             )
         )

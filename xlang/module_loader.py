@@ -106,10 +106,19 @@ class ModuleLoader:
         self.warnings: list[ModuleWarning] = []
         self.errors: list[BaseException] = []
         self._flattened_bindings: dict[str, Path] = {}  # name -> source module path
+        self._emitted_declarations: set[int] = set()
+        self._emitted_namespaces: set[tuple[str, str]] = set()
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
-        return Program(declarations)
+        unique_declarations: list[Any] = []
+        for declaration in declarations:
+            identity = id(declaration)
+            if identity in self._emitted_declarations:
+                continue
+            self._emitted_declarations.add(identity)
+            unique_declarations.append(declaration)
+        return Program(unique_declarations)
 
     def _load_file(self, source_path: Path) -> list[Any]:
         resolved_path = source_path.resolve()
@@ -126,21 +135,27 @@ class ModuleLoader:
             raise RuntimeErrorX(f"Cannot read source file '{source_path}': {error}") from error
 
         self.sources[resolved_path] = source
-        lexer = Lexer(
-            source,
-            str(resolved_path),
-            recover_errors=self.recover_errors,
-        )
-        tokens = lexer.tokenize()
-        self.errors.extend(lexer.errors)
-        parser = Parser(
-            tokens,
-            self.config.features,
-            str(resolved_path),
-            recover_errors=self.recover_errors,
-        )
-        program = parser.parse()
-        self.errors.extend(parser.errors)
+        try:
+            lexer = Lexer(
+                source,
+                str(resolved_path),
+                recover_errors=self.recover_errors,
+            )
+            tokens = lexer.tokenize()
+            self.errors.extend(lexer.errors)
+            parser = Parser(
+                tokens,
+                self.config.features,
+                str(resolved_path),
+                recover_errors=self.recover_errors,
+            )
+            program = parser.parse()
+            self.errors.extend(parser.errors)
+        except RecursionError:
+            raise RuntimeErrorX(
+                f"Maximum recursion depth exceeded while parsing "
+                f"'{source_path}'; the file nests too deeply"
+            ) from None
         direct_declarations = [
             declaration
             for declaration in program.declarations
@@ -202,11 +217,10 @@ class ModuleLoader:
                             resolved_path,
                             direct_declarations,
                         )
-                        try:
-                            self._check_flatten_collision(import_name, imported_resolved_path)
-                            self._record_flatten(import_name, imported_resolved_path)
-                        except RuntimeErrorX:
-                            raise
+                        self._check_flatten_collision(
+                            import_name, imported_resolved_path
+                        )
+                        self._record_flatten(import_name, imported_resolved_path)
                         combined_declarations.extend(imported_declarations)
                         if alias is not None:
                             combined_declarations.append(
@@ -222,37 +236,89 @@ class ModuleLoader:
                     )
                     continue
                 imported_path = self._path_for_module(module_path, resolved_path)
-                self._load_file(imported_path)  # ensure loaded
+                imported_declarations = self._load_file(imported_path)
                 imported_resolved_path = imported_path.resolve()
                 self._warn_duplicate_main(
                     imported_resolved_path,
                     resolved_path,
                     direct_declarations,
                 )
+                import_name = module_path.split(".")[-1]
                 exported_names = self._exported_names(imported_resolved_path)
-                namespace_name = alias if alias is not None else module_path.split('.')[-1]
-                # Create namespace with exported declarations
-                namespace_decls = []
+                if alias is not None:
+                    if import_name in exported_names:
+                        self._check_flatten_collision(
+                            import_name, imported_resolved_path
+                        )
+                        self._record_flatten(import_name, imported_resolved_path)
+                        combined_declarations.extend(imported_declarations)
+                        combined_declarations.append(
+                            ImportAlias(import_name, alias)
+                        )
+                    else:
+                        combined_declarations.extend(imported_declarations)
+                        combined_declarations.append(
+                            NamespaceDeclaration(
+                                alias,
+                                self._namespace_members(
+                                    imported_resolved_path, exported_names
+                                ),
+                            )
+                        )
+                    continue
                 for name in exported_names:
-                    for decl in self.direct_declarations.get(imported_resolved_path, []):
-                        if self._declaration_name(decl) == name and 'export' in getattr(decl, 'modifiers', set()):
-                            namespace_decls.append(decl)
-                combined_declarations.append(NamespaceDeclaration(namespace_name, namespace_decls))
-                # Also flatten for backward compatibility if no collision
-                for name in exported_names:
-                    try:
-                        self._check_flatten_collision(name, imported_resolved_path)
-                        self._record_flatten(name, imported_resolved_path)
-                        for decl in self.direct_declarations.get(imported_resolved_path, []):
-                            if self._declaration_name(decl) == name and 'export' in getattr(decl, 'modifiers', set()):
-                                combined_declarations.append(decl)
-                    except RuntimeErrorX:
-                        raise
+                    self._check_flatten_collision(name, imported_resolved_path)
+                    self._record_flatten(name, imported_resolved_path)
+                combined_declarations.extend(imported_declarations)
+                if exported_names and not self._declares(
+                    imported_resolved_path, import_name
+                ):
+                    self._emit_namespace(
+                        combined_declarations,
+                        import_name,
+                        imported_resolved_path,
+                        exported_names,
+                    )
 
         combined_declarations.extend(direct_declarations)
         self.loading_files.remove(resolved_path)
         self.loaded_files.add(resolved_path)
         return combined_declarations
+
+    def _emit_namespace(
+        self,
+        combined: list[Any],
+        namespace_name: str,
+        source_module: Path,
+        exported_names: list[str],
+    ) -> None:
+        key = (namespace_name, str(source_module.resolve()))
+        if key in self._emitted_namespaces:
+            return
+        self._emitted_namespaces.add(key)
+        combined.append(
+            NamespaceDeclaration(
+                namespace_name,
+                self._namespace_members(source_module, exported_names),
+            )
+        )
+
+    def _namespace_members(
+        self, source_module: Path, exported_names: list[str]
+    ) -> list[Any]:
+        declarations = self.direct_declarations.get(source_module, [])
+        return [
+            declaration
+            for name in exported_names
+            for declaration in declarations
+            if self._declaration_name(declaration) == name
+        ]
+
+    def _declares(self, source_module: Path, name: str) -> bool:
+        return any(
+            self._declaration_name(declaration) == name
+            for declaration in self.direct_declarations.get(source_module, [])
+        )
 
     def _require_standard_library_feature(self, module_path: str) -> None:
         feature_for_module = {

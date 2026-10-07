@@ -1,45 +1,14 @@
 import System.io.Console
 import System.io.FileSystem
 import System.utils.Collections.HashMap
+import System.utils.Math
 
 // Notes Application - Terminal-based note manager with file-based storage
 // Features: Add, List, View, Delete, Search notes with switch-case menu
 
 let string NOTES_FILE = "notes_db.json"
 
-    let running = true
-    while (running) {
-        showMenu()
-        let choice = Console.input("Enter your choice: ")
-        
-        switch (choice) {
-            case "1": {
-                addNote()
-            }
-            case "2": {
-                listNotes()
-            }
-            case "3": {
-                viewNote()
-            }
-            case "4": {
-                deleteNote()
-            }
-            case "5": {
-                searchNotes()
-            }
-            case "6": {
-                Console.print("Goodbye!")
-                running = false
-            }
-            default: {
-                Console.print("Invalid choice. Please try again.")
-            }
-        }
-        Console.print("")
-    }
-
-function showMenu() {
+any function showMenu() {
     Console.print("┌──────────────────────────────────────┐")
     Console.print("│           MAIN MENU                  │")
     Console.print("├──────────────────────────────────────┤")
@@ -52,7 +21,7 @@ function showMenu() {
     Console.print("└──────────────────────────────────────┘")
 }
 
-function addNote() {
+any function addNote() {
     Console.print("\n--- Add New Note ---")
     let title = Console.input("Title: ")
     if (title == "") {
@@ -109,7 +78,7 @@ function addNote() {
     Console.print("Note added successfully! ID: " + id)
 }
 
-function listNotes() {
+any function listNotes() {
     let notes = loadNotes()
     let keys = notes.keys()
     
@@ -119,8 +88,8 @@ function listNotes() {
         return
     }
     
-    Console.print(String.format("%-10s %-30s %-20s %s", "ID", "TITLE", "TAGS", "CREATED"))
-    Console.print(String.repeat("-", 80))
+    Console.print("ID".padEnd(10) + " " + "TITLE".padEnd(30) + " " + "TAGS".padEnd(20) + " " + "CREATED")
+    Console.print("-".repeat(80))
     
     for (let key of keys) {
         let note = notes.get(key)
@@ -133,11 +102,11 @@ function listNotes() {
         if (title.length > 28) {
             title = title.substring(0, 25) + "..."
         }
-        Console.print(String.format("%-10s %-30s %-20s %s", note.id, title, tagsStr, dateStr))
+        Console.print(note.id.padEnd(10) + " " + title.padEnd(30) + " " + tagsStr.padEnd(20) + " " + dateStr)
     }
 }
 
-function viewNote() {
+any function viewNote() {
     let id = Console.input("Enter note ID: ")
     let notes = loadNotes()
     
@@ -157,7 +126,7 @@ function viewNote() {
     Console.print(note.content)
 }
 
-function deleteNote() {
+any function deleteNote() {
     let id = Console.input("Enter note ID to delete: ")
     let notes = loadNotes()
     
@@ -177,7 +146,7 @@ function deleteNote() {
     Console.print("Note deleted successfully!")
 }
 
-function searchNotes() {
+any function searchNotes() {
     let query = Console.input("Search query: ")
     if (query == "") {
         Console.print("Search query cannot be empty!")
@@ -204,15 +173,15 @@ function searchNotes() {
         
         if (foundMatch) {
             if (!found) {
-                Console.print(String.format("%-10s %-30s %-20s %s", "ID", "TITLE", "TAGS", "CREATED"))
-                Console.print(String.repeat("-", 80))
+                Console.print("ID".padEnd(10) + " " + "TITLE".padEnd(30) + " " + "TAGS".padEnd(20) + " " + "CREATED")
+                Console.print("-".repeat(80))
                 found = true
             }
             let tagsStr = note.tags.join(", ")
             if (tagsStr.length > 18) tagsStr = tagsStr.substring(0, 15) + "..."
             let title = note.title
             if (title.length > 28) title = title.substring(0, 25) + "..."
-            Console.print(String.format("%-10s %-30s %-20s %s", note.id, title, tagsStr, formatDate(note.created)))
+            Console.print(note.id.padEnd(10) + " " + title.padEnd(30) + " " + tagsStr.padEnd(20) + " " + formatDate(note.created))
         }
     }
     
@@ -221,18 +190,18 @@ function searchNotes() {
     }
 }
 
-function loadNotes() {
+HashMap function loadNotes() {
     let content = FileSystem.readText(NOTES_FILE)
     if (content == "") return HashMap.create()
     return parseNotes(content)
 }
 
-function saveNotes(notes) {
+any function saveNotes(HashMap notes) {
     let json = serializeNotes(notes)
     FileSystem.writeText(NOTES_FILE, json)
 }
 
-function parseNotes(json) {
+HashMap function parseNotes(string json) {
     let notes = HashMap.create()
     if (json == "{}" || json.length < 3) return notes
     
@@ -243,7 +212,7 @@ function parseNotes(json) {
         if (entry.trim() == "") continue
         let colonIdx = entry.indexOf(":")
         if (colonIdx < 0) continue
-        let key = entry.substring(0, colonIdx).trim().replace("\"", "")
+        let key = entry.substring(0, colonIdx).trim().replaceAll("\"", "")
         let value = entry.substring(colonIdx + 1).trim()
         if (value.startsWith("{") && value.endsWith("}")) {
             notes.set(key, parseNote(value))
@@ -252,7 +221,7 @@ function parseNotes(json) {
     return notes
 }
 
-function parseNote(json) {
+object function parseNote(string json) {
     let note = {}
     let inner = json.substring(1, json.length - 1)
     let fields = splitTopLevel(inner)
@@ -260,7 +229,7 @@ function parseNote(json) {
     for (let field of fields) {
         let colonIdx = field.indexOf(":")
         if (colonIdx < 0) continue
-        let key = field.substring(0, colonIdx).trim().replace("\"", "")
+        let key = field.substring(0, colonIdx).trim().replaceAll("\"", "")
         let value = field.substring(colonIdx + 1).trim()
         
         if (key == "tags") {
@@ -269,7 +238,7 @@ function parseNote(json) {
                 if (tagsInner.trim() != "") {
                     let tags = tagsInner.split(",")
                     for (let i = 0; i < tags.length; i = i + 1) {
-                        tags[i] = tags[i].trim().replace("\"", "")
+                        tags[i] = tags[i].trim().replaceAll("\"", "")
                     }
                     note[key] = tags
                 } else {
@@ -287,15 +256,16 @@ function parseNote(json) {
     return note
 }
 
-function splitTopLevel(str) {
+string[] function splitTopLevel(string str) {
     let parts = []
     let current = ""
     let depth = 0
     let inString = false
     let escape = false
+    let char = ""
     
     for (let i = 0; i < str.length; i = i + 1) {
-        let char = str[i]
+        char = str[i]
         
         if (escape) {
             escape = false
@@ -333,7 +303,7 @@ function splitTopLevel(str) {
     return parts
 }
 
-function serializeNotes(notes) {
+string function serializeNotes(HashMap notes) {
     let parts = []
     let keys = notes.keys()
     
@@ -344,7 +314,7 @@ function serializeNotes(notes) {
     return "{" + parts.join(",") + "}"
 }
 
-function serializeNote(note) {
+string function serializeNote(object note) {
     let parts = []
     let keys = ["id", "title", "content", "tags", "created", "updated"]
     
@@ -367,23 +337,23 @@ function serializeNote(note) {
     return "{" + parts.join(",") + "}"
 }
 
-function escapeJson(str) {
-    return str.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+string function escapeJson(string str) {
+    return str.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n").replaceAll("\r", "\\r").replaceAll("\t", "\\t")
 }
 
-function generateId() {
-    return now().toString(36) + Math.random().toString(36).substring(2, 9)
+string function generateId() {
+    return now().toString() + "-" + Math.random().toString().substring(2, 11)
 }
 
-function formatDate(timestamp) {
+string function formatDate(any timestamp) {
     return timestamp.toString()
 }
 
-function now() {
+integer function now() {
     return Math.floor(Math.random() * 1000000000000)
 }
 
-function main() {
+any function main() {
     if (!FileSystem.exists(NOTES_FILE)) {
         FileSystem.writeText(NOTES_FILE, "{}")
     }
@@ -397,26 +367,37 @@ function main() {
     while (running) {
         showMenu()
         let choice = Console.input("Enter your choice: ")
+        if (choice == "") {
+            Console.print("Goodbye!")
+            running = false
+            continue
+        }
         
         switch (choice) {
             case "1": {
                 addNote()
+                continue;
             }
             case "2": {
                 listNotes()
+                continue;
             }
             case "3": {
                 viewNote()
+                continue;
             }
             case "4": {
                 deleteNote()
+                continue;
             }
             case "5": {
                 searchNotes()
+                continue;
             }
             case "6": {
                 Console.print("Goodbye!")
                 running = false
+                continue;
             }
             default: {
                 Console.print("Invalid choice. Please try again.")

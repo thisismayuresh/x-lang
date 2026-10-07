@@ -8,7 +8,7 @@ for(int entry of entries ){
     }
 }
 
-function myFunction(int i = 0) {
+any function myFunction(int i = 0) {
     if (i === 10) {
         return;
     }
@@ -29,7 +29,7 @@ integer function getarrayAtZero(){
     return 1
 }
 
-integer function getarrayAtZero(xp){
+integer function getarrayAtZero(int xp){
     return xp
 }
 
@@ -126,7 +126,7 @@ print("getgendr",classm.getGender())
 
 
 
- function foo(){
+ integer[] function foo(){
     let integer[] arrayo = [1];
     arrayo.push(2);
      return arrayo;
@@ -148,7 +148,7 @@ print("hi")
 
 let testArray = [];
 
-if(!testArray==testArray.length){
+if(testArray.length === 0){
     print("its working")
 }
 else{

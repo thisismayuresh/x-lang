@@ -6,7 +6,7 @@ class Vault {
     }
 }
 
-function main() {
+any function main() {
     let Vault vault = new Vault();
     print(vault.secret);
 }

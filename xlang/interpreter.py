@@ -77,7 +77,7 @@ from .ast_nodes import (
     WildcardPattern,
 )
 from .config import XConfig
-from .diagnostics import SourceWarning
+from .diagnostics import SourceWarning, member_noun
 from .runtime import (
     BuiltinFunction,
     Environment,
@@ -98,6 +98,10 @@ from .runtime import (
     XSuper,
     XThreadHandle,
 )
+
+
+#: Largest string a ``repeat``/``padStart``/``padEnd`` builtin may build.
+MAX_STRING_LENGTH = 10_000_000
 
 
 class ComparatorItem:
@@ -206,6 +210,16 @@ _STRING_METHODS: dict[str, str] = {
 }
 
 
+def _is_class_method(function: XFunction) -> bool:
+    """True when *function* was declared inside a class body.
+
+    Class members carry their owning class (and, once read off an instance,
+    a bound ``this``), which is what separates a method from a plain function
+    for ``typeOf`` and other diagnostics.
+    """
+    return function.parent_class is not None or function.bound_this is not None
+
+
 class Interpreter:
     EXCEPTION_PARENTS = {
         "Error": "Throwable",
@@ -264,6 +278,7 @@ class Interpreter:
         self._warning_keys: set[tuple[str, str | None, int | None, int | None]] = set()
         self.function_stack: list[XFunction] = []
         self.globals = Environment()
+        self._builtin_bindings: dict[str, Any] = {}
         self.output = output
         self._install_builtins(arguments or [])
 
@@ -283,6 +298,52 @@ class Interpreter:
         raise TypeCheckFailure(errors)
 
     def interpret(self, program: Program) -> Any:
+        """Run *program*, translating every escaped failure into ``RuntimeErrorX``.
+
+        The wrapper is the last line of defence: users must never observe a
+        Python traceback, a ``ReturnSignal``/``LoopSignal`` leaking out of a
+        top level statement, or a bare ``RecursionError``.
+        """
+        try:
+            return self._interpret_program(program)
+        except ThrownValue:
+            raise
+        except ReturnSignal as returned:
+            return returned.value
+        except LoopSignal as loop_signal:
+            name = "continue" if loop_signal.is_continue else "break"
+            error = RuntimeErrorX(f"'{name}' used outside of a loop")
+            self.annotate_error(error)
+            raise error from None
+        except RecursionError:
+            error = RuntimeErrorX(
+                "Maximum recursion depth exceeded; the program nests too deeply"
+            )
+            self.annotate_error(error)
+            raise error from None
+        except MemoryError:
+            error = RuntimeErrorX("Out of memory while running the program")
+            self.annotate_error(error)
+            raise error from None
+        except RuntimeErrorX as error:
+            self.annotate_error(error)
+            raise
+        except Exception as error:
+            message = str(error).strip()
+            if message:
+                wrapped = RuntimeErrorX(
+                    f"Unexpected runtime failure: {message}",
+                    self._native_exception_name(error),
+                )
+            else:
+                wrapped = RuntimeErrorX(
+                    f"Unexpected runtime failure ({type(error).__name__})",
+                    self._native_exception_name(error),
+                )
+            self.annotate_error(wrapped)
+            raise wrapped from None
+
+    def _interpret_program(self, program: Program) -> Any:
         if self.config.enabled("type_checker"):
             self._validate_declarations(program)
         declarations = [declaration for declaration in program.declarations if declaration]
@@ -512,6 +573,30 @@ class Interpreter:
             environment_namespace.values[name] = value
         system_namespace.define("Environment", environment_namespace)
         self.globals.define("System", system_namespace)
+        self._builtin_bindings = dict(self.globals.values)
+
+    def _is_builtin_binding(self, environment: Environment, name: str) -> bool:
+        """True when *name* in *environment* still holds its startup builtin."""
+        return (
+            environment is self.globals
+            and name in self._builtin_bindings
+            and environment.values.get(name) is self._builtin_bindings[name]
+        )
+
+    def _define_shadowing(
+        self, environment: Environment, name: str, value: Any, **options: Any
+    ) -> None:
+        """Declare *name*, letting a program shadow an installed builtin.
+
+        Short collection names such as ``Queue`` and ``Stack`` are preloaded
+        into globals, so a program declaring its own ``class Queue`` replaces
+        that builtin instead of failing with "already declared in this scope".
+        A second user declaration of the same name still errors.
+        """
+        if self._is_builtin_binding(environment, name):
+            environment.values[name] = value
+            return
+        environment.define(name, value, **options)
 
     def _environment_has(self, arguments: list[Any]) -> bool:
         if len(arguments) != 1 or not isinstance(arguments[0], str):
@@ -528,13 +613,21 @@ class Interpreter:
             raise RuntimeErrorX("input expects at most two arguments (prompt, expected_type)")
         if len(arguments) >= 1:
             prompt = str(arguments[0])
-            import sys as _sys
-            _sys.stdout.write(prompt)
-            _sys.stdout.flush()
-        try:
-            value = _sys.stdin.readline().rstrip("\n")
-        except EOFError:
+            try:
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+            except (OSError, ValueError) as error:
+                raise RuntimeErrorX(
+                    f"Cannot write input prompt: {error}", "IOException"
+                ) from None
+        stream = sys.stdin
+        if stream is None:
             return ""
+        try:
+            line = stream.readline()
+        except (EOFError, OSError, ValueError):
+            return ""
+        value = line.rstrip("\n")
         
         # If enhanced_input is enabled and a type is specified, validate
         if self.config.enabled("enhanced_input") and len(arguments) == 2:
@@ -1126,7 +1219,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot check whether '{path}' exists: {error}",
                 "FileSystemException",
-            ) from error
+            )
 
     def _filesystem_is_file(self, arguments: list[Any]) -> bool:
         path = self._filesystem_path("isFile", arguments)
@@ -1136,7 +1229,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot check whether '{path}' is a file: {error}",
                 "FileSystemException",
-            ) from error
+            )
 
     def _filesystem_is_directory(self, arguments: list[Any]) -> bool:
         path = self._filesystem_path("isDirectory", arguments)
@@ -1146,7 +1239,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot check whether '{path}' is a directory: {error}",
                 "FileSystemException",
-            ) from error
+            )
 
     def _filesystem_read_text(self, arguments: list[Any]) -> str:
         path = self._filesystem_path("readText", arguments)
@@ -1156,7 +1249,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot read text file '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
 
     def _filesystem_write_text(self, arguments: list[Any]) -> None:
         self._validate_argument_count("writeText", arguments, 2)
@@ -1176,7 +1269,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot write text file '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
         return None
 
     def _filesystem_append_text(self, arguments: list[Any]) -> None:
@@ -1198,7 +1291,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot append to text file '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
         return None
 
     def _filesystem_create_directory(self, arguments: list[Any]) -> None:
@@ -1209,7 +1302,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot create directory '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
         return None
 
     def _filesystem_list_directory(self, arguments: list[Any]) -> list[str]:
@@ -1220,7 +1313,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot list directory '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
 
     def _filesystem_delete_file(self, arguments: list[Any]) -> None:
         path = self._filesystem_path("deleteFile", arguments)
@@ -1230,7 +1323,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot delete file '{path}': {error}",
                 "FileSystemException",
-            ) from error
+            )
         return None
 
     def _filesystem_delete_directory(self, arguments: list[Any]) -> None:
@@ -1241,7 +1334,7 @@ class Interpreter:
             raise RuntimeErrorX(
                 f"Cannot delete directory '{path}'; it must be empty: {error}",
                 "FileSystemException",
-            ) from error
+            )
         return None
 
     def _hashmap_members(self) -> dict[str, BuiltinFunction]:
@@ -2049,6 +2142,12 @@ class Interpreter:
         count = arguments[1]
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise RuntimeErrorX("String.repeat count must be a non-negative integer")
+        if count > 0 and len(text) * count > MAX_STRING_LENGTH:
+            raise RuntimeErrorX(
+                f"String.repeat result of {len(text) * count} characters exceeds "
+                f"the maximum string length of {MAX_STRING_LENGTH}",
+                "ArithmeticException",
+            )
         return text * count
 
     def _pad_text(self, text: str, length: int, pad: str, left: bool) -> str:
@@ -2059,6 +2158,12 @@ class Interpreter:
         """
         if len(text) >= length or pad == "":
             return text
+        if length > MAX_STRING_LENGTH:
+            raise RuntimeErrorX(
+                f"Padding to {length} characters exceeds the maximum string "
+                f"length of {MAX_STRING_LENGTH}",
+                "ArithmeticException",
+            )
         missing = length - len(text)
         fill = (pad * (missing // len(pad) + 1))[:missing]
         return fill + text if left else text + fill
@@ -3119,7 +3224,9 @@ class Interpreter:
 
         - ``boolean`` for booleans, ``number`` for integers/floats,
           ``string`` for strings
-        - ``function`` for functions, builtins, overloads, and class objects
+        - ``method`` for methods declared inside a class body (instance or
+          static, single or overloaded)
+        - ``function`` for top-level functions, builtins, and class objects
         - ``Array`` for every array value (plain lists and typed ``XArray``)
         - the class name for instances of user classes and exceptions
           (for example ``User`` or ``CustomException``)
@@ -3139,9 +3246,15 @@ class Interpreter:
             return "number"
         if isinstance(value, str):
             return "string"
-        if isinstance(
-            value, (BuiltinFunction, OverloadedFunction, XClass, XFunction)
-        ):
+        if isinstance(value, XFunction):
+            return "method" if _is_class_method(value) else "function"
+        if isinstance(value, OverloadedFunction):
+            if value.functions and all(
+                _is_class_method(function) for function in value.functions
+            ):
+                return "method"
+            return "function"
+        if isinstance(value, (BuiltinFunction, XClass)):
             return "function"
         if isinstance(value, list):
             return "Array"
@@ -3350,7 +3463,7 @@ class Interpreter:
                     value = self._coerce_typed_array(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
                     member.type_name is not None
@@ -3360,7 +3473,7 @@ class Interpreter:
                     value = self._coerce_typed_object(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
                     member.type_name is not None
@@ -3370,7 +3483,7 @@ class Interpreter:
                     value = self._coerce_runtime_checked_type(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 xclass.static_fields[member.name] = value
 
@@ -3545,7 +3658,7 @@ class Interpreter:
                 except TypeError as error:
                     raise RuntimeErrorX(
                         "for-in requires an object or iterable value"
-                    ) from error
+                    )
         else:
             # Unwrap XCollectionInstance — PriorityQueue uses a dict with 'heap'
             if isinstance(iterable, XCollectionInstance):
@@ -3553,8 +3666,10 @@ class Interpreter:
                 iterable = inner["heap"] if isinstance(inner, dict) and "heap" in inner else inner
             try:
                 iterator = iter(iterable)
-            except TypeError as error:
-                raise RuntimeErrorX("Value in for loop is not iterable") from error
+            except TypeError:
+                raise RuntimeErrorX(
+                    "Value in for loop is not iterable", "TypeException"
+                ) from None
         for value in iterator:
             loop_environment = Environment(environment)
             if statement.binding_pattern is not None:
@@ -3585,7 +3700,9 @@ class Interpreter:
         ):
             should_break = False
             try:
-                self._execute_block(statement.body.statements, loop_environment)
+                self._execute_block(
+                    statement.body.statements, Environment(loop_environment)
+                )
             except LoopSignal as loop_signal:
                 should_break = not loop_signal.is_continue
             if should_break:
@@ -3879,10 +3996,7 @@ class Interpreter:
         if isinstance(expression, Index):
             object_value = self._evaluate(expression.object, environment)
             index = self._evaluate(expression.index, environment)
-            try:
-                return object_value[index]
-            except (IndexError, KeyError, TypeError) as error:
-                raise RuntimeErrorX(f"Cannot access index {self._stringify(index)}") from error
+            return self._read_indexed_value(object_value, index)
         raise RuntimeErrorX(f"Unsupported expression '{type(expression).__name__}'")
 
     def _evaluate_optional_chain(
@@ -3909,18 +4023,9 @@ class Interpreter:
                 )
             elif segment.kind == "index":
                 index = self._evaluate(segment.value, environment)
-                try:
-                    value = value[index]
-                except (IndexError, KeyError) as error:
-                    if segment.optional:
-                        return UNDEFINED
-                    raise RuntimeErrorX(
-                        f"Cannot access index {self._stringify(index)}"
-                    ) from error
-                except TypeError as error:
-                    raise RuntimeErrorX(
-                        f"Cannot access index {self._stringify(index)}"
-                    ) from error
+                if segment.optional and self._index_is_absent(value, index):
+                    return UNDEFINED
+                value = self._read_indexed_value(value, index)
             elif segment.kind == "call":
                 arguments = segment.value[0]
                 if segment.optional and (value is None or value is UNDEFINED):
@@ -4141,16 +4246,27 @@ class Interpreter:
     def _evaluate_unary(self, expression: Unary, environment: Environment) -> Any:
         if expression.operator in ("++", "--"):
             current = self._read_target(expression.operand, environment)
-            updated = current + (1 if expression.operator == "++" else -1)
+            delta = 1 if expression.operator == "++" else -1
+            try:
+                updated = current + delta
+            except (TypeError, ValueError, OverflowError):
+                raise RuntimeErrorX(
+                    f"Invalid operands for '{expression.operator}'", "TypeException"
+                ) from None
             self._write_target(expression.operand, updated, environment)
             return current if expression.postfix else updated
         operand = self._evaluate(expression.operand, environment)
         if expression.operator == "!":
             return not self._is_truthy(operand)
-        if expression.operator == "-":
-            return -operand
-        if expression.operator == "+":
-            return +operand
+        try:
+            if expression.operator == "-":
+                return -operand
+            if expression.operator == "+":
+                return +operand
+        except (TypeError, ValueError, OverflowError):
+            raise RuntimeErrorX(
+                f"Invalid operand for '{expression.operator}'", "TypeException"
+            ) from None
         raise RuntimeErrorX(f"Unknown unary operator '{expression.operator}'")
 
     def _evaluate_binary(self, expression: Binary, environment: Environment) -> Any:
@@ -4196,14 +4312,21 @@ class Interpreter:
                 return left >= right
             if operator == "in":
                 return left in right
-        except ZeroDivisionError as error:
+        except RuntimeErrorX:
+            raise
+        except ZeroDivisionError:
             raise RuntimeErrorX(
                 f"Division by zero for '{operator}'", "ArithmeticException"
-            ) from error
-        except TypeError as error:
+            ) from None
+        except OverflowError:
+            raise RuntimeErrorX(
+                f"Result of '{operator}' is too large to represent",
+                "ArithmeticException",
+            ) from None
+        except (TypeError, ValueError):
             raise RuntimeErrorX(
                 f"Invalid operands for '{operator}'", "TypeException"
-            ) from error
+            ) from None
         raise RuntimeErrorX(f"Unknown binary operator '{operator}'")
 
     def _strict_equal(self, left: Any, right: Any) -> bool:
@@ -4275,16 +4398,32 @@ class Interpreter:
         return value
 
     def _apply_compound_operator(self, left: Any, operator: str, right: Any) -> Any:
-        if operator == "+":
-            if isinstance(left, str) or isinstance(right, str):
-                return self._stringify(left) + self._stringify(right)
-            return left + right
-        if operator == "-":
-            return left - right
-        if operator == "*":
-            return left * right
-        if operator == "/":
-            return left / right
+        try:
+            if operator == "+":
+                if isinstance(left, str) or isinstance(right, str):
+                    return self._stringify(left) + self._stringify(right)
+                return left + right
+            if operator == "-":
+                return left - right
+            if operator == "*":
+                return left * right
+            if operator == "/":
+                return left / right
+        except RuntimeErrorX:
+            raise
+        except ZeroDivisionError:
+            raise RuntimeErrorX(
+                f"Division by zero for '{operator}'", "ArithmeticException"
+            ) from None
+        except OverflowError:
+            raise RuntimeErrorX(
+                f"Result of '{operator}=' is too large to represent",
+                "ArithmeticException",
+            ) from None
+        except (TypeError, ValueError):
+            raise RuntimeErrorX(
+                f"Invalid operands for '{operator}='", "TypeException"
+            ) from None
         raise RuntimeErrorX(f"Unknown assignment operator '{operator}='")
 
     def _read_target(self, target: Any, environment: Environment) -> Any:
@@ -4298,8 +4437,121 @@ class Interpreter:
                 access_context,
             )
         if isinstance(target, Index):
-            return self._evaluate(target.object, environment)[self._evaluate(target.index, environment)]
+            return self._read_indexed_value(
+                self._evaluate(target.object, environment),
+                self._evaluate(target.index, environment),
+            )
         raise RuntimeErrorX("Invalid assignment target")
+
+    def _index_is_absent(self, container: Any, index: Any) -> bool:
+        """Whether ``container[index]`` is a well-typed miss.
+
+        Only genuine misses (out of range or absent object key) count, so an
+        optional chain cannot swallow an ill-typed index or a value that does
+        not support indexing at all.
+        """
+        if isinstance(container, (list, tuple, str)) and isinstance(
+            index, int
+        ) and not isinstance(index, bool):
+            return not (-len(container) <= index < len(container))
+        if isinstance(container, dict) and isinstance(index, (int, str)) and not isinstance(
+            index, bool
+        ):
+            return index not in container
+        return False
+
+    def _read_indexed_value(self, container: Any, index: Any) -> Any:
+        if isinstance(container, str):
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise RuntimeErrorX(
+                    f"Cannot access index {self._stringify(index)}: "
+                    "index must be an integer",
+                    "IndexOutOfBoundsException",
+                )
+            if not (-len(container) <= index < len(container)):
+                raise RuntimeErrorX(
+                    f"Cannot access index {index}: out of range for string "
+                    f"of length {len(container)}",
+                    "IndexOutOfBoundsException",
+                )
+            return container[index]
+        if isinstance(container, (list, tuple)):
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise RuntimeErrorX(
+                    f"Cannot access index {self._stringify(index)}: "
+                    "index must be an integer",
+                    "IndexOutOfBoundsException",
+                )
+            if not (-len(container) <= index < len(container)):
+                raise RuntimeErrorX(
+                    f"Cannot access index {index}: out of range for array "
+                    f"of length {len(container)}",
+                    "IndexOutOfBoundsException",
+                )
+            return container[index]
+        if isinstance(container, dict):
+            if isinstance(index, bool) or not isinstance(index, (int, str)):
+                raise RuntimeErrorX(
+                    f"Cannot access key {self._stringify(index)}: "
+                    "object keys must be strings",
+                    "IndexOutOfBoundsException",
+                )
+            if index not in container:
+                raise RuntimeErrorX(
+                    f"Cannot access key {self._stringify(index)}: "
+                    "object has no such key",
+                    "IndexOutOfBoundsException",
+                )
+            return container[index]
+        raise RuntimeErrorX(
+            f"Cannot access index {self._stringify(index)}: "
+            f"{self._value_type_name(container)} values are not indexable",
+            "IndexOutOfBoundsException",
+        )
+
+    def _write_indexed_value(self, container: Any, index: Any, value: Any) -> None:
+        if isinstance(container, str):
+            raise RuntimeErrorX(
+                f"Cannot assign to index {self._stringify(index)}: "
+                "strings are immutable",
+                "TypeException",
+            )
+        if isinstance(container, tuple):
+            raise RuntimeErrorX(
+                f"Cannot assign to index {self._stringify(index)}: "
+                "tuples do not support index assignment",
+                "TypeException",
+            )
+        if isinstance(container, list):
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise RuntimeErrorX(
+                    f"Cannot assign to index {self._stringify(index)}: "
+                    "index must be an integer",
+                    "IndexOutOfBoundsException",
+                )
+            if not (-len(container) <= index < len(container)):
+                raise RuntimeErrorX(
+                    f"Cannot assign to index {index}: out of range for array "
+                    f"of length {len(container)}",
+                    "IndexOutOfBoundsException",
+                )
+            container[index] = value
+            return
+        if isinstance(container, dict):
+            if isinstance(index, bool) or not isinstance(index, (int, str)):
+                raise RuntimeErrorX(
+                    f"Cannot assign to key {self._stringify(index)}: "
+                    "object keys must be strings",
+                    "IndexOutOfBoundsException",
+                )
+            container[index] = value
+            return
+        raise RuntimeErrorX(
+            f"Cannot assign to index {self._stringify(index)}: "
+            f"{self._value_type_name(container)} values do not support "
+            "index assignment",
+            "TypeException",
+        )
 
     def _write_target(self, target: Any, value: Any, environment: Environment) -> None:
         if isinstance(target, Identifier):
@@ -4326,9 +4578,11 @@ class Interpreter:
             self._set_member(object_value, target.name, value, access_context)
             return
         if isinstance(target, Index):
-            object_value = self._evaluate(target.object, environment)
-            index = self._evaluate(target.index, environment)
-            object_value[index] = value
+            self._write_indexed_value(
+                self._evaluate(target.object, environment),
+                self._evaluate(target.index, environment),
+                value,
+            )
             return
         raise RuntimeErrorX("Invalid assignment target")
 
@@ -4406,9 +4660,9 @@ class Interpreter:
             if not self._can_access_member(
                 field_declaration.modifiers, field_owner, access_context
             ):
-                visibility = self._visibility(field_declaration.modifiers)
                 raise RuntimeErrorX(
-                    f"Cannot access {visibility} property '{field_owner.name}.{name}'"
+                    f"Cannot access {member_noun(field_declaration.modifiers)} "
+                    f"'{field_owner.name}.{name}'"
                 )
             return field_owner.name, field_owner.static_fields[name]
         for candidate_class in self._class_hierarchy(xclass):
@@ -4495,9 +4749,8 @@ class Interpreter:
                     if not self._can_access_member(
                         field_declaration.modifiers, field_owner, access_context
                     ):
-                        visibility = self._visibility(field_declaration.modifiers)
                         raise RuntimeErrorX(
-                            f"Cannot access {visibility} property "
+                            f"Cannot access {member_noun(field_declaration.modifiers)} "
                             f"'{object_value.xclass.name}.{name}'"
                         )
                 return object_value.fields[name]
@@ -4612,7 +4865,7 @@ class Interpreter:
         if isinstance(object_value, (int, float, bool)) and name == "toString":
             return BuiltinFunction(
                 "toString",
-                lambda arguments: self._no_argument_string(self._stringify(object_value), arguments),
+                lambda arguments: self._number_to_string(object_value, arguments),
             )
         if isinstance(object_value, dict):
             if name in object_value:
@@ -4648,9 +4901,9 @@ class Interpreter:
                 if not self._can_access_member(
                     field_declaration.modifiers, field_owner, access_context
                 ):
-                    visibility = self._visibility(field_declaration.modifiers)
                     raise RuntimeErrorX(
-                        f"Cannot access {visibility} property '{field_owner.name}.{name}'"
+                        f"Cannot access {member_noun(field_declaration.modifiers)} "
+                        f"'{field_owner.name}.{name}'"
                     )
                 return field_owner.static_fields[name]
             for candidate_class in self._class_hierarchy(object_value):
@@ -4739,9 +4992,8 @@ class Interpreter:
                 if not self._can_access_member(
                     field_declaration.modifiers, field_owner, access_context
                 ):
-                    visibility = self._visibility(field_declaration.modifiers)
                     raise RuntimeErrorX(
-                        f"Cannot modify {visibility} property "
+                        f"Cannot modify {member_noun(field_declaration.modifiers)} "
                         f"'{object_value.xclass.name}.{name}'"
                     )
                 if "final" in field_declaration.modifiers and not (
@@ -4749,7 +5001,8 @@ class Interpreter:
                 ):
                     self._set_declaration_location(field_declaration)
                     final_error = RuntimeErrorX(
-                        f"Cannot assign to final property "
+                        f"Cannot assign to final "
+                        f"{member_noun(field_declaration.modifiers)} "
                         f"'{field_owner.name}.{name}'"
                     )
                     self.annotate_error(final_error)
@@ -4761,7 +5014,7 @@ class Interpreter:
                     value = self._coerce_typed_array(
                         field_declaration.type_name,
                         value,
-                        f"property '{field_owner.name}.{name}'",
+                        f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                     )
                 if (
                     field_declaration.type_name is not None
@@ -4770,7 +5023,7 @@ class Interpreter:
                     value = self._coerce_typed_object(
                         field_declaration.type_name,
                         value,
-                        f"property '{field_owner.name}.{name}'",
+                        f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                     )
                 if (
                     field_declaration.type_name is not None
@@ -4779,7 +5032,7 @@ class Interpreter:
                     value = self._coerce_runtime_checked_type(
                         field_declaration.type_name,
                         value,
-                        f"property '{field_owner.name}.{name}'",
+                        f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                     )
             object_value.fields[name] = value
             return
@@ -4791,9 +5044,9 @@ class Interpreter:
             if not self._can_access_member(
                 field_declaration.modifiers, field_owner, access_context
             ):
-                visibility = self._visibility(field_declaration.modifiers)
                 raise RuntimeErrorX(
-                    f"Cannot modify {visibility} property '{field_owner.name}.{name}'"
+                    f"Cannot modify {member_noun(field_declaration.modifiers)} "
+                    f"'{field_owner.name}.{name}'"
                 )
             if "final" in field_declaration.modifiers:
                 self._set_declaration_location(field_declaration)
@@ -4809,7 +5062,7 @@ class Interpreter:
                 value = self._coerce_typed_array(
                     field_declaration.type_name,
                     value,
-                    f"property '{field_owner.name}.{name}'",
+                    f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                 )
             if (
                 field_declaration.type_name is not None
@@ -4818,7 +5071,7 @@ class Interpreter:
                 value = self._coerce_typed_object(
                     field_declaration.type_name,
                     value,
-                    f"property '{field_owner.name}.{name}'",
+                    f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                 )
             if (
                 field_declaration.type_name is not None
@@ -4827,7 +5080,7 @@ class Interpreter:
                 value = self._coerce_runtime_checked_type(
                     field_declaration.type_name,
                     value,
-                    f"property '{field_owner.name}.{name}'",
+                    f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                 )
             field_owner.static_fields[name] = value
             return
@@ -4859,7 +5112,7 @@ class Interpreter:
                     value = self._coerce_typed_array(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
                     member.type_name is not None
@@ -4869,7 +5122,7 @@ class Interpreter:
                     value = self._coerce_typed_object(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
                     member.type_name is not None
@@ -4879,7 +5132,7 @@ class Interpreter:
                     value = self._coerce_runtime_checked_type(
                         member.type_name,
                         value,
-                        f"property '{xclass.name}.{member.name}'",
+                        f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 instance.fields[member.name] = value
 
@@ -5044,6 +5297,8 @@ class Interpreter:
     def _type_match_score(self, type_name: str | None, value: Any) -> int | None:
         if type_name is None or type_name == "var":
             return 0
+        if type_name.casefold() == "any":
+            return 1
         if type_name.endswith("?"):
             if value is None or value is UNDEFINED:
                 return 3
@@ -5407,12 +5662,49 @@ class Interpreter:
             raise RuntimeErrorX("toString expects no arguments")
         return value
 
+    def _number_to_string(self, value: int | float | bool, arguments: list[Any]) -> str:
+        """``value.toString()`` or ``value.toString(base)`` with base 2..36."""
+        if len(arguments) > 1:
+            raise RuntimeErrorX("toString accepts at most one argument")
+        if not arguments:
+            return self._stringify(value)
+        base = arguments[0]
+        if isinstance(base, bool) or not isinstance(base, int):
+            raise RuntimeErrorX("toString base must be an integer", "TypeException")
+        if base < 2 or base > 36:
+            raise RuntimeErrorX(
+                "toString base must be between 2 and 36", "RangeException"
+            )
+        if isinstance(value, bool):
+            number = int(value)
+        elif isinstance(value, float):
+            if not value.is_integer():
+                raise RuntimeErrorX(
+                    "toString with a base requires an integer value", "TypeException"
+                )
+            number = int(value)
+        else:
+            number = value
+        sign = "-" if number < 0 else ""
+        number = abs(number)
+        if number == 0:
+            return "0"
+        alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+        digits: list[str] = []
+        while number:
+            digits.append(alphabet[number % base])
+            number //= base
+        return sign + "".join(reversed(digits))
+
     def _is_truthy(self, value: Any) -> bool:
         if value is UNDEFINED:
             return False
         return bool(value)
 
     def _stringify(self, value: Any) -> str:
+        return self._stringify_within(value, set())
+
+    def _stringify_within(self, value: Any, seen: set[int]) -> str:
         if value is UNDEFINED:
             return "undefined"
         if value is None:
@@ -5422,17 +5714,37 @@ class Interpreter:
         if value is False:
             return "false"
         if isinstance(value, XCollectionInstance):
-            return self._stringify(value._data)
-        if isinstance(value, list):
-            return "[" + ", ".join(self._stringify(item) for item in value) + "]"
-        if isinstance(value, set):
-            return "{" + ", ".join(self._stringify(item) for item in sorted(value, key=str)) + "}"
-        if isinstance(value, dict):
-            fields = ", ".join(
-                f"{name}: {self._stringify(item)}"
-                for name, item in value.items()
-            )
-            return "{" + fields + "}"
+            return self._stringify_within(value._data, seen)
+        if isinstance(value, (list, set, dict)):
+            identity = id(value)
+            if identity in seen:
+                return "[Circular]"
+            seen.add(identity)
+            try:
+                if isinstance(value, list):
+                    return (
+                        "["
+                        + ", ".join(
+                            self._stringify_within(item, seen) for item in value
+                        )
+                        + "]"
+                    )
+                if isinstance(value, set):
+                    return (
+                        "{"
+                        + ", ".join(
+                            self._stringify_within(item, seen)
+                            for item in sorted(value, key=str)
+                        )
+                        + "}"
+                    )
+                fields = ", ".join(
+                    f"{name}: {self._stringify_within(item, seen)}"
+                    for name, item in value.items()
+                )
+                return "{" + fields + "}"
+            finally:
+                seen.discard(identity)
         if isinstance(value, XInstance):
             return f"[object {value.xclass.name}]"
         if isinstance(value, XClass):

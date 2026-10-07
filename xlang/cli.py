@@ -68,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
             return error.code
         return 0
 
+    if getattr(parsed, "show_version", False):
+        print(f"X {__version__}")
+        return 0
+
     if parsed.no_config and parsed.config_path is not None:
         print("x: --config cannot be combined with --no-config", file=sys.stderr)
         return 2
@@ -90,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         return _report_config_error(error, parsed.color, show_context=not parsed.no_context)
 
     command = config.default_command if is_implicit_command else parsed.command
+    if command is None:
+        print("x: expected a command or a source file", file=sys.stderr)
+        print(USAGE, end="", file=sys.stderr)
+        return 2
     if parsed.profile is not None and command != "run":
         print("x: --profile can only be used with the run command", file=sys.stderr)
         return 2
@@ -107,6 +115,15 @@ def main(argv: list[str] | None = None) -> int:
     if source_path.suffix != ".x":
         print("x: source files must use the .x extension", file=sys.stderr)
         return 2
+    if source_path.is_dir():
+        print(f"x: '{source_path}' is a directory", file=sys.stderr)
+        return 2
+    if not source_path.exists():
+        print(f"x: source file '{source_path}' does not exist", file=sys.stderr)
+        return 2
+    if not os.access(source_path, os.R_OK):
+        print(f"x: cannot read '{source_path}': permission denied", file=sys.stderr)
+        return 2
 
     try:
         run_profile = config.selected_run(parsed.profile) if command == "run" else None
@@ -120,11 +137,6 @@ def main(argv: list[str] | None = None) -> int:
     if cli_program_arguments and cli_program_arguments[0] == "--":
         cli_program_arguments.pop(0)
     program_arguments.extend(cli_program_arguments)
-
-    source_path = Path(parsed.source)
-    if source_path.suffix != ".x":
-        print("x: source files must use the .x extension", file=sys.stderr)
-        return 2
 
     project_root = config.path.parent if config.path is not None else current_directory
     loader = ModuleLoader(project_root, config, recover_errors=True)
@@ -338,6 +350,13 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         epilog="With no command, a source file is run directly.",
         parents=[common_parser],
     )
+    parser.add_argument(
+        "-V",
+        "--version",
+        dest="show_version",
+        action="store_true",
+        help="show the interpreter version and exit",
+    )
     parser.set_defaults(
         config_path=None,
         no_config=False,
@@ -345,6 +364,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         profile=None,
         color=None,
         no_context=False,
+        show_version=False,
     )
     subparsers = parser.add_subparsers(dest="command")
     for command in ("run", "check", "build", "install"):
@@ -394,6 +414,21 @@ def _insert_implicit_run_command(
     return arguments, False
 
 
+def _display_name(source_name: str) -> str:
+    """Show a path relative to the working directory when it lives inside it.
+
+    Diagnostics read best as ``--> examples/main.x:4:3``; anything outside the
+    working directory keeps the path the user (or the loader) supplied.
+    """
+    try:
+        relative = os.path.relpath(Path(source_name).resolve(), Path.cwd())
+    except (OSError, ValueError):
+        return source_name
+    if relative.startswith(".."):
+        return source_name
+    return relative
+
+
 def _report_config_error(error: ConfigError, color_mode: str | None, show_context: bool = True) -> int:
     source_text = None
     try:
@@ -403,7 +438,7 @@ def _report_config_error(error: ConfigError, color_mode: str | None, show_contex
     diagnostic = render_diagnostic(
         error,
         source_text,
-        str(error.path),
+        _display_name(str(error.path)),
         color_mode or "auto",
         show_context=show_context,
     )
@@ -429,7 +464,7 @@ def _report_source_error(
     diagnostic = render_diagnostic(
         error,
         source_text,
-        source_name or str(entry_path),
+        _display_name(source_name) if source_name else str(entry_path),
         color_mode,
         show_context=show_context,
     )
@@ -469,7 +504,7 @@ def _report_source_errors(
         diagnostic = render_diagnostic(
             error,
             source_text,
-            source_name or str(entry_path),
+            _display_name(source_name) if source_name else str(entry_path),
             color_mode,
             show_context=show_context,
         )
@@ -493,10 +528,12 @@ def _report_warnings(
         diagnostic = render_warning(
             warning.message,
             source,
-            warning.source_name,
+            _display_name(warning.source_name),
             warning.line,
             warning.column,
             color_mode,
+            notes=warning.notes,
+            helps=warning.helps,
         )
         print(diagnostic, file=sys.stderr)
 

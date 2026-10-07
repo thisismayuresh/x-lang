@@ -7,7 +7,7 @@ integer function rangeSum(integer[] numbers, integer left, integer right) {
     return prefix[right + 1] - prefix[left];
 }
 
-function main() {
+any function main() {
     let integer[] numbers = [2, 4, 6, 8, 10];
     print("Sum from index 1 through 3:", rangeSum(numbers, 1, 3));
 }

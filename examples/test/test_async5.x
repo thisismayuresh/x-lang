@@ -1,9 +1,9 @@
-async function fetchData(name) {
+async any function fetchData(string name) {
     await sleep(50)
     return "data for " + name
 }
 
-async function main() {
+async any function main() {
     let r1 = await fetchData("item 1")
     let r2 = await fetchData("item 2")
     let r3 = await fetchData("item 3")

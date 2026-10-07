@@ -1,4 +1,4 @@
-function twoSum(integer[] numbers, integer target) {
+any function twoSum(integer[] numbers, integer target) {
     let object seen = {};
     let integer complement = 0;
     let string key = "";
@@ -16,7 +16,7 @@ function twoSum(integer[] numbers, integer target) {
     }
 }
 
-function main() {
+any function main() {
     print("Two Sum");
     twoSum([2, 7, 11, 15], 9);
 }

@@ -609,5 +609,238 @@ class TypeNameEdgeCaseTests(unittest.TestCase):
         self.assertEqual(errors, "")
 
 
+class DiagnosticHintTests(unittest.TestCase):
+    """``= note:`` and ``= help:`` follow-ups on hint-bearing diagnostics."""
+
+    def check_strict(self, source):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(dedent(source), encoding="utf-8")
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                return_code = cli_main(
+                    [
+                        "check",
+                        "--no-config",
+                        "--feature",
+                        "strict_typing=on",
+                        "--color",
+                        "never",
+                        str(source_file),
+                    ]
+                )
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def hint_lines(self, errors):
+        return [
+            line.strip()
+            for line in errors.splitlines()
+            if line.strip().startswith(("= help:", "= note:"))
+        ]
+
+    def test_missing_return_type_help(self):
+        return_code, output, errors = self.check_strict("""
+            function add(a, b) {
+                return a + b;
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Function 'add' must have an explicit return type (strict_typing enabled)",
+            errors,
+        )
+        self.assertIn(
+            "= help: add an explicit return type, e.g. `int function add(int a, int b)`",
+            errors,
+        )
+
+    def test_untyped_parameter_help(self):
+        return_code, output, errors = self.check_strict("""
+            function add(a, b) {
+                return a + b;
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Parameter 'a' in function 'add' must have an explicit type", errors
+        )
+        self.assertIn(
+            "= help: type the parameter, e.g. `int function add(int xp)`", errors
+        )
+
+    def test_constructor_parameter_help_names_the_constructor(self):
+        return_code, output, errors = self.check_strict("""
+            class Point {
+                public integer x;
+                public Point(x) { this.x = x; }
+            }
+            any function main() {
+                let Point p = new Point(1);
+                print(p.x);
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Parameter 'x' in constructor 'Point' must have an explicit type", errors
+        )
+        self.assertIn(
+            "= help: type the parameter, e.g. `public Point(int x)`", errors
+        )
+        self.assertNotIn("in function 'Point'", errors)
+
+    def test_method_parameter_help_names_the_method(self):
+        return_code, output, errors = self.check_strict("""
+            class Point {
+                public integer x;
+                public Point(integer x) { this.x = x; }
+                public string describe(seperator) { return ""; }
+            }
+            any function main() {
+                print(new Point(1).describe(","));
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Parameter 'seperator' in method 'describe' must have an explicit type",
+            errors,
+        )
+        self.assertIn(
+            "= help: type the parameter, e.g. `string describe(int xp)`", errors
+        )
+        self.assertNotIn("in function 'describe'", errors)
+
+    def test_unknown_type_help_suggests_the_closest_known_type(self):
+        return_code, output, errors = self.check_strict("""
+            any function main() {
+                let intger bad = 1;
+                print(bad);
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Unknown type 'intger'", errors)
+        self.assertIn("= help: did you mean `integer`?", errors)
+
+    def test_unknown_member_help_suggests_the_closest_member(self):
+        return_code, output, errors = self.check_strict("""
+            class Point {
+                public integer x;
+                public Point(integer x) { this.x = x; }
+                public integer valu() { return this.x; }
+            }
+            any function main() {
+                let Point p = new Point(1);
+                return "" + p.valu2();
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("'Point' has no member 'valu2'", errors)
+        self.assertIn("= help: did you mean `valu`?", errors)
+
+    def test_assignment_mismatch_note_reports_expected_and_found(self):
+        return_code, output, errors = self.check_strict("""
+            any function main() {
+                let integer n = "text";
+                print(n);
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot assign 'string' to 'n' of type 'integer'", errors)
+        self.assertIn("= note: expected `integer`, found `string`", errors)
+
+    def test_constant_reassignment_help_suggests_let(self):
+        return_code, output, errors = self.check_strict("""
+            any function main() {
+                const integer k = 1;
+                k = 2;
+                print(k);
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot reassign constant 'k'", errors)
+        self.assertIn(
+            "= help: declare 'k' with `let` instead of `const` to allow reassignment",
+            errors,
+        )
+
+    def test_wrong_arity_help_lists_every_overload(self):
+        return_code, output, errors = self.check_strict("""
+            any function overloaded(integer a) { return ""; }
+            any function overloaded(integer a, integer b) { return ""; }
+            any function main() {
+                overloaded(1, 2, 3);
+                return "";
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("No overload of 'overloaded' accepts 3 argument(s)", errors)
+        self.assertIn(
+            "= help: available overloads: `any function overloaded(integer a)`, "
+            "`any function overloaded(integer a, integer b)`",
+            errors,
+        )
+
+    def test_missing_interface_method_help(self):
+        return_code, output, errors = self.check_strict("""
+            interface Shape {
+                string name();
+            }
+            class Ball implements Shape {
+                public integer r;
+                public Ball(integer r) { this.r = r; }
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Class 'Ball' does not implement 'name()' from interface 'Shape'", errors
+        )
+        self.assertIn("= help: implement `string name()` on class `Ball`", errors)
+
+    def test_missing_interface_property_help(self):
+        return_code, output, errors = self.check_strict("""
+            interface Configurable {
+                string label;
+            }
+            class Broken implements Configurable {
+                public integer n;
+                public Broken() { this.n = 1; }
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(
+            "Class 'Broken' does not implement property 'label' from interface "
+            "'Configurable'",
+            errors,
+        )
+        self.assertIn(
+            "= help: add a `string label` property to class `Broken`", errors
+        )
+
+    def test_hint_blocks_align_for_two_digit_line_numbers(self):
+        source = "\n".join(
+            ["// filler"] * 9 + ["function add(a, b) {", "    return a + b;", "}"]
+        )
+        return_code, output, errors = self.check_strict(source)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn(":10:1", errors)
+        lines = errors.splitlines()
+        excerpt_index = next(
+            index for index, line in enumerate(lines) if "| ^" in line
+        )
+        hint_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("= help:")
+        )
+        caret_bar = lines[excerpt_index].index("|")
+        hint_equals = lines[hint_index].index("=")
+        self.assertEqual(caret_bar, hint_equals)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,20 +12,20 @@ import System.utils.Collections.Queue
 
 // The @trace decorator is built-in
 @trace
-function add(a, b) {
+int function add(int a, int b) {
     return a + b;
 }
 
 // Using @trace for caching
 @trace
-function fibonacci(n) {
+int function fibonacci(int n) {
     if (n <= 1) return n;
     return fibonacci(n - 1) + fibonacci(n - 2);
 }
 
 // Using @trace for measuring execution
 @trace
-function slowOp(n) {
+int function slowOp(int n) {
     let sum = 0;
     for (let i = 0; i < n; i = i + 1) {
         sum = sum + i;
@@ -35,14 +35,14 @@ function slowOp(n) {
 
 // Using @trace for argument validation
 @trace
-function divide(a, b) {
+float function divide(float a, float b) {
     if (b == 0) throw "Division by zero";
     return a / b;
 }
 
 // Using @trace for retry logic
 @trace
-function flaky(shouldFail) {
+string function flaky(boolean shouldFail) {
     if (shouldFail) throw "Random failure";
     return "Success";
 }
@@ -86,15 +86,15 @@ let object person = {
 // FUNCTION TESTS
 // ============================================
 
-function calculateArea(int width, int height) {
+int function calculateArea(int width, int height) {
     return width * height;
 }
 
-function greet(string name, string greeting = "Hello") {
+string function greet(string name, string greeting = "Hello") {
     return greeting + ", " + name + "!";
 }
 
-function sum(int... numbers) {
+int function sum(int... numbers) {
     let total = 0;
     for (let n of numbers) {
         total = total + n;
@@ -105,7 +105,7 @@ function sum(int... numbers) {
 // Arrow functions (using regular function instead)
 
 // Higher-order functions (simplified)
-function applyOperation(int a, int b, int opType) {
+float function applyOperation(int a, int b, int opType) {
     if (opType == 0) return a + b;
     if (opType == 1) return a - b;
     if (opType == 2) return a * b;
@@ -113,12 +113,12 @@ function applyOperation(int a, int b, int opType) {
 }
 
 // Async functions
-async function fetchData(string url) {
+async string function fetchData(string url) {
     await sleep(10);
     return "Data from " + url;
 }
 
-async function processData() {
+async string function processData() {
     let result = await fetchData("https://api.example.com");
     return "Processed: " + result;
 }
@@ -317,8 +317,8 @@ stringQueue.enqueue("third");
 // PATTERN MATCHING TESTS
 // ============================================
 
-function describeValue(value) {
-    match (value) {
+string function describeValue(object value) {
+    return match (value) {
         null => "Null",
         undefined => "Undefined",
         42 => "Integer: 42",
@@ -343,7 +343,7 @@ let object user = { "name": "John", "age": 30, "city": "NYC" };
 let string userName = user.name;
 let int userAge = user.age;
 
-function getUser() {
+object function getUser() {
     return { "name": "Jane", "age": 25, "email": "jane@example.com" };
 }
 
@@ -361,7 +361,7 @@ let int[] arr2 = [...arr1, 4, 5, 6];
 let object obj1 = { "a": 1, "b": 2 };
 let object obj2 = { ...obj1, "c": 3 };
 
-function combineArrays(int[][] arrays) {
+int[] function combineArrays(int[][] arrays) {
     let result = [];
     for (let arr of arrays) {
         result = [...result, ...arr];
@@ -379,14 +379,14 @@ class CustomException extends Exception {
     }
 }
 
-function riskyOperation(boolean shouldFail) {
+string function riskyOperation(boolean shouldFail) {
     if (shouldFail) {
         throw new CustomException("Operation failed!");
     }
     return "Success";
 }
 
-function handleErrors() {
+any function handleErrors() {
     try {
         let result = riskyOperation(true);
         Console.print("Result: " + result);
@@ -403,7 +403,7 @@ function handleErrors() {
 // FILE SYSTEM TESTS
 // ============================================
 
-function fileSystemTests() {
+any function fileSystemTests() {
     let testFile = "test_output.txt";
     let content = "Hello, World!\nThis is a test file.\nLine 3.";
 
@@ -431,7 +431,7 @@ function fileSystemTests() {
 // MATH TESTS
 // ============================================
 
-function mathTests() {
+any function mathTests() {
     Console.print("PI: " + Math.pi);
     Console.print("E: " + Math.e);
     Console.print("sqrt(16): " + Math.sqrt(16));
@@ -452,7 +452,7 @@ function mathTests() {
 // SWITCH TESTS
 // ============================================
 
-function testSwitch(value) {
+any function testSwitch(int value) {
     switch (value) {
         case 1: {
             Console.print("One")
@@ -469,7 +469,7 @@ function testSwitch(value) {
     }
 }
 
-function testNestedSwitch(x, y) {
+any function testNestedSwitch(int x, int y) {
     switch (x) {
         case 1: {
             Console.print("x is 1")
@@ -498,7 +498,7 @@ function testNestedSwitch(x, y) {
 // MAIN TEST RUNNER
 // ============================================
 
-function runAllTests() {
+any function runAllTests() {
     Console.print("============================================");
     Console.print("RUNNING COMPREHENSIVE TESTS");
     Console.print("============================================\n");
@@ -634,34 +634,13 @@ function runAllTests() {
 // Strict typing demo - uncomment and run with strict_typing=true to see errors:
 // function badAdd(a, b) { return a + b; }  // Missing return type and parameter types
 
-function multiply(int a, int b) {
+int function multiply(int a, int b) {
     return a * b;
 }
 
-function square(int x) {
+int function square(int x) {
     return x * x;
 }
-
-function riskyOperation(boolean shouldFail) {
-    if (shouldFail) {
-        throw new CustomException("Operation failed!");
-    }
-    return "Success";
-}
-
-
-            switch (y) {
-                case 10: {
-                    Console.print("  y is 10")
-                }
-                case 20: {
-                    Console.print("  y is 20")
-                }
-                default: {
-                    Console.print("  y is other: " + y)
-                }
-       
-        }
 
 
 // ============================================

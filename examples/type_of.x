@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     let object profile = {
         "name": "Maya",
         age: 21

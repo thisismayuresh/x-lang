@@ -1,8 +1,8 @@
-function getName(string name) {
+string function getName(string name) {
     return name;
 }
 
-function main() {
+any function main() {
     let users = ["Alice", "Bob"];
     let profile = [{name: "Maya"}];
     let missing = null;

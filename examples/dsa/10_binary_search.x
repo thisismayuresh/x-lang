@@ -22,7 +22,7 @@ integer function binarySearch(integer[] numbers, integer target) {
     return found < numbers.length && numbers[found] == target ? found : -1;
 }
 
-function main() {
+any function main() {
     print("Binary search index:", binarySearch([-1, 0, 3, 5, 9, 12], 9));
     print("Missing target:", binarySearch([-1, 0, 3, 5, 9, 12], 2));
 }

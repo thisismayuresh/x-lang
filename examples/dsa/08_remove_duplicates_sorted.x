@@ -14,7 +14,7 @@ integer function removeDuplicates(integer[] numbers) {
     return write;
 }
 
-function main() {
+any function main() {
     let integer[] numbers = [0, 0, 1, 1, 1, 2, 2, 3, 3, 4];
     let integer uniqueCount = removeDuplicates(numbers);
     print("Unique count:", uniqueCount);

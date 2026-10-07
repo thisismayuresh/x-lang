@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     print("=== HashMap Tests ===")
     
     // Test 1: Create and basic operations

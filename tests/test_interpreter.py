@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
 
+from xlang.config import XConfig
 from xlang.lexer import LexError
 from xlang.module_loader import ModuleLoader
 from xlang.parser import ParseError
@@ -10,7 +11,13 @@ from xlang.runtime import Interpreter, RuntimeErrorX
 
 
 class InterpreterTests(unittest.TestCase):
-    def run_x(self, source, arguments=None, environment=None):
+    @staticmethod
+    def runtime_only_config() -> XConfig:
+        config = XConfig()
+        config.features["type_checker"] = False
+        return config
+
+    def run_x(self, source, arguments=None, environment=None, config=None):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
             source_file = project_root / "main.x"
@@ -18,7 +25,10 @@ class InterpreterTests(unittest.TestCase):
             program = ModuleLoader(project_root).load_program(source_file)
             output = []
             result = Interpreter(
-                arguments, output.append, environment=environment
+                arguments,
+                output.append,
+                config=config,
+                environment=environment,
             ).interpret(program)
         return result, output
 
@@ -70,6 +80,52 @@ class InterpreterTests(unittest.TestCase):
                 "function",
                 "function",
                 "object",
+            ],
+        )
+
+    def test_type_of_distinguishes_functions_from_methods(self):
+        result, output = self.run_x("""
+            function topFunction() {}
+            interface Shape {
+                string describe();
+            }
+            class Widget {
+                public string greet() { return "hi"; }
+                public static string build() { return "built"; }
+                public string overload() { return "one"; }
+                public string overload(integer count) { return "two"; }
+            }
+            class Gadget extends Widget {}
+            function main() {
+                let Widget widget = new Widget();
+                let Gadget gadget = new Gadget();
+                let callback = (value) => value;
+                print(typeOf(topFunction));
+                print(typeOf(Widget));
+                print(typeOf(Shape));
+                print(typeOf(print));
+                print(typeOf([1, 2].push));
+                print(typeOf(callback));
+                print(typeOf(widget.greet));
+                print(typeOf(Widget.build));
+                print(typeOf(gadget.greet));
+                print(typeOf(widget.overload));
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "function",
+                "function",
+                "function",
+                "function",
+                "function",
+                "function",
+                "method",
+                "method",
+                "method",
+                "method",
             ],
         )
 
@@ -194,22 +250,33 @@ class InterpreterTests(unittest.TestCase):
         )
 
     def test_function_and_interface_types_reject_mismatched_values(self):
+        function_mismatch = """
+            function main() {
+                let Function callback = 42;
+            }
+            """
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot assign 'integer' to 'callback' of type 'function'"
+        ):
+            self.run_x(function_mismatch)
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Function'"):
-            self.run_x("""
-                function main() {
-                    let Function callback = 42;
-                }
-                """)
+            self.run_x(function_mismatch, config=self.runtime_only_config())
 
+        profile_mismatch = """
+            interface Profile {
+                string name,
+            }
+            function main() {
+                let Profile user = {name: 21};
+            }
+            """
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            "Cannot assign 'record\\{integer name\\}' to 'user' of type 'Profile'",
+        ):
+            self.run_x(profile_mismatch)
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Profile'"):
-            self.run_x("""
-                interface Profile {
-                    string name,
-                }
-                function main() {
-                    let Profile user = {name: 21};
-                }
-                """)
+            self.run_x(profile_mismatch, config=self.runtime_only_config())
 
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'IMyInterface'"):
             self.run_x("""
@@ -228,15 +295,24 @@ class InterpreterTests(unittest.TestCase):
                 }
                 """)
 
+        profile_array_mismatch = """
+            interface Profile {
+                string name,
+            }
+            function main() {
+                let Profile[] users = [{name: 21}];
+            }
+            """
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            "Cannot assign 'record\\{integer name\\}\\[\\]' to 'users' "
+            "of type 'Profile\\[\\]'",
+        ):
+            self.run_x(profile_array_mismatch)
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Profile'"):
-            self.run_x("""
-                interface Profile {
-                    string name,
-                }
-                function main() {
-                    let Profile[] users = [{name: 21}];
-                }
-                """)
+            self.run_x(
+                profile_array_mismatch, config=self.runtime_only_config()
+            )
 
     def test_type_of_requires_exactly_one_argument(self):
         with self.assertRaisesRegex(RuntimeErrorX, "typeOf expects one argument"):
@@ -674,7 +750,9 @@ line three`);
                 }
 
                 try {
-                    let int[] invalidValues = [1, "bad"];
+                    let integer[] invalidValues = [1, 2];
+                    let any badValue = "bad";
+                    invalidValues.add(badValue);
                 }
                 catch (TypeException error) {
                     print(error.name);
@@ -758,6 +836,26 @@ line three`);
                 "SimpleException: simple custom error",
             ],
         )
+
+    def test_exception_subclass_without_constructor_accepts_a_message(self):
+        result, output = self.run_x(
+            """
+            class SimpleException extends Exception {}
+
+            function main() {
+                try {
+                    throw new SimpleException("simple custom error");
+                }
+                catch (Exception error) {
+                    print(error.name + ": " + error.message);
+                }
+            }
+            """,
+            config=self.runtime_only_config(),
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(output, ["SimpleException: simple custom error"])
 
     def test_file_system_failures_are_catchable_as_io_or_file_system_errors(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1411,14 +1509,21 @@ line three`);
                 """)
 
     def test_typed_arrays_reject_wrong_elements_and_invalid_mutations(self):
+        literal_source = """
+            function main() {
+                let integer[] values = [1, 2, "name"];
+            }
+            """
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            r"Cannot assign '\(integer\|string\)\[\]' to 'values' "
+            r"of type 'integer\[\]'",
+        ):
+            self.run_x(literal_source)
         with self.assertRaisesRegex(
             RuntimeErrorX, "Expected 'integer'.*index 2.*got 'string'"
         ):
-            self.run_x("""
-                function main() {
-                    let integer[] values = [1, 2, "name"];
-                }
-                """)
+            self.run_x(literal_source, config=self.runtime_only_config())
 
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'integer' for array item"):
             self.run_x("""
@@ -1428,13 +1533,20 @@ line three`);
                 }
                 """)
 
-        with self.assertRaisesRegex(RuntimeErrorX, "Expected 'integer' for array item"):
-            self.run_x("""
-                function main() {
-                    let integer[] values = [1, 2];
-                    values[0] = "name";
-                }
-                """)
+        mutation_source = """
+            function main() {
+                let integer[] values = [1, 2];
+                values[0] = "name";
+            }
+            """
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot assign 'string' to array element of type 'integer'"
+        ):
+            self.run_x(mutation_source)
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Expected 'integer' for array item"
+        ):
+            self.run_x(mutation_source, config=self.runtime_only_config())
 
     def test_typed_array_parameters_validate_each_element(self):
         result, output = self.run_x("""
@@ -1448,13 +1560,26 @@ line three`);
         self.assertIsNone(result)
         self.assertEqual(output, ["2"])
 
-        with self.assertRaisesRegex(RuntimeErrorX, "No overload of 'accept' matches"):
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            r"Argument 1 of 'accept' has type '\(integer\|string\)\[\]', "
+            r"expected 'integer\[\]'",
+        ):
             self.run_x("""
                 function accept(integer[] values) {}
                 function main() {
                     accept([1, "name"]);
                 }
                 """)
+
+        with self.assertRaisesRegex(RuntimeErrorX, "No overload of 'accept' matches"):
+            self.run_x("""
+                function accept(integer[] values) {}
+                function buildValues() { return [1, "name"]; }
+                function main() {
+                    accept(buildValues());
+                }
+                """, config=self.runtime_only_config())
 
     def test_typed_array_metadata_does_not_leak_into_shadowed_variables(self):
         result, output = self.run_x("""
@@ -1526,10 +1651,10 @@ line three`);
 
     def test_private_and_protected_members_cannot_be_accessed_externally(self):
         for access_expression, expected_access in (
-            ("value.secret", "private property"),
-            ('value.secret = "public"', "private property"),
+            ("value.secret", "private field"),
+            ('value.secret = "public"', "private field"),
             ("value.hidden()", "private method"),
-            ("value.protectedValue", "protected property"),
+            ("value.protectedValue", "protected field"),
         ):
             with self.subTest(access_expression=access_expression):
                 with self.assertRaisesRegex(RuntimeErrorX, expected_access):
@@ -1589,13 +1714,67 @@ line three`);
             """)
         self.assertIsNone(result)
         self.assertEqual(output, ["hidden"])
-        with self.assertRaisesRegex(RuntimeErrorX, "private property"):
+        with self.assertRaisesRegex(RuntimeErrorX, "private field"):
             self.run_x("""
                 class Credentials {
                     private static string secret = "hidden";
                 }
                 function main() { print(Credentials.secret); }
                 """)
+
+    def test_member_diagnostics_use_documented_member_nouns(self):
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot access protected method 'Base.reveal'"
+        ):
+            self.run_x("""
+                class Base {
+                    protected string reveal() { return "hidden"; }
+                }
+                function main() {
+                    let Base base = new Base();
+                    print(base.reveal());
+                }
+                """)
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot assign to final property 'Counter.value'"
+        ):
+            self.run_x("""
+                class Counter {
+                    final integer value = 0;
+                    public Counter() { this.value = 1; }
+                }
+                function main() {
+                    let Counter counter = new Counter();
+                    counter.value = 5;
+                }
+                """)
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot assign to final static field 'Counter.limit'"
+        ):
+            self.run_x("""
+                class Counter {
+                    final static integer limit = 3;
+                }
+                function main() { Counter.limit = 4; }
+                """)
+
+    def test_static_field_element_mismatch_names_the_static_field(self):
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            r"Expected 'integer' for static field 'Counter\.values' "
+            r"at index 1, got 'string'",
+        ):
+            self.run_x(
+                """
+                class Counter {
+                    static integer[] values = [1, "bad"];
+                }
+                function main() { print(Counter.values[1]); }
+                """,
+                config=self.runtime_only_config(),
+            )
 
     def test_string_index_errors_include_runtime_failure(self):
         with self.assertRaisesRegex(RuntimeErrorX, "Cannot access index 4"):

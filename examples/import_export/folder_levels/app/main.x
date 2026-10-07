@@ -1,6 +1,6 @@
 import examples.import_export.folder_levels.lib.messages.greeting
 
-function main() {
+any function main() {
     print(greeting());
 }
 

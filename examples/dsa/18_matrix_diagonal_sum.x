@@ -14,7 +14,7 @@ integer function diagonalSum(integer[][] matrix) {
     return total;
 }
 
-function main() {
+any function main() {
     let integer[][] matrix = [
         [1, 2, 3],
         [4, 5, 6],

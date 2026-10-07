@@ -26,7 +26,7 @@ string function myX(Function myfunc) {
     return "Hello " + myfunc();
 }
 
-function main() {
+any function main() {
     let IMyInterface service = {
         getMessage: getMessage,
         getData: getData,

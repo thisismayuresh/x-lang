@@ -66,7 +66,7 @@ string function decodeRuns(string encoded) {
     return decoded;
 }
 
-function main() {
+any function main() {
     let string original = "aaab";
     let string encoded = encodeRuns(original);
     print("Run-length encode:", original, "->", encoded);

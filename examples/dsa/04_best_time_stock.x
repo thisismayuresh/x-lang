@@ -16,6 +16,6 @@ integer function maxProfit(integer[] prices) {
     return bestProfit;
 }
 
-function main() {
+any function main() {
     print("Best stock profit:", maxProfit([7, 1, 5, 3, 6, 4]));
 }

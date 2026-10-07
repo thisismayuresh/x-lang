@@ -1,9 +1,9 @@
-async function fetchData() {
+async any function fetchData() {
     await sleep(100)
     return "data"
 }
 
-async function main() {
+async any function main() {
     let result = await fetchData()
     print(result)
 }

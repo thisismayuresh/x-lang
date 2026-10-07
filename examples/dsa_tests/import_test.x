@@ -1,6 +1,6 @@
 import System.utils.Collections
 
-function main() {
+any function main() {
     print("=== Testing Import Syntax ===")
     
     // Test with import

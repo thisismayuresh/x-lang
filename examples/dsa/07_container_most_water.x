@@ -22,6 +22,6 @@ integer function maxWater(integer[] heights) {
     return best;
 }
 
-function main() {
+any function main() {
     print("Container with most water:", maxWater([1, 8, 6, 2, 5, 4, 8, 3, 7]));
 }

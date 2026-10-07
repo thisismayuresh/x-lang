@@ -15,7 +15,7 @@ class BadRequestException extends CustomException {
     }
 }
 
-function main(string[] args) {
+any function main(string[] args) {
     try {
         let integer result = 10 / 0;
     }
@@ -46,7 +46,7 @@ function main(string[] args) {
     }
 
     try {
-        FileSystem.readText(args[0]);
+        FileSystem.readText("missing_file.txt");
     }
     catch (IOException error) {
         print(error.name + ": " + error.message);

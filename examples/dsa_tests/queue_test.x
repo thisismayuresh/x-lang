@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     print("=== Queue Tests ===")
     
     // Test 1: Create and basic operations

@@ -1,6 +1,6 @@
 import System.io.Console
 
-function testNestedSwitch(x, y) {
+any function testNestedSwitch(any x, any y) {
     switch (x) {
         case 1: {
             Console.print("x is 1")

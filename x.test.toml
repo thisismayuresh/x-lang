@@ -6,7 +6,6 @@ color = "auto"
 # --feature NAME=off) to disable that syntax or runtime capability.
 # 
 # WARNING: All features are enabled by default!
-# If you explicitly set a feature to true in this file, you'll see a warning.
 # Run 'x --help' for documentation on available features and configuration.
 # 
 # strict_typing: When true, requires explicit type annotations on all functions,

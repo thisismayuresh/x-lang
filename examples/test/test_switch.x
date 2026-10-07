@@ -1,6 +1,6 @@
 import System.io.Console
 
-function testSwitch(value) {
+any function testSwitch(int value) {
     switch (value) {
         case 1: {
             Console.print("One")

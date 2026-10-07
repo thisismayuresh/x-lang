@@ -1,6 +1,6 @@
 import System.utils.Collections.Trie
 
-function main() {
+any function main() {
     print("=== Trie Tests ===")
     
     // Test 1: Create and basic insert/search

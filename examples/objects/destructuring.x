@@ -1,4 +1,4 @@
-function main() {
+any function main() {
     const [first, second = 2, ...remaining] = [1]
     const profile = {
         name: "Ada",

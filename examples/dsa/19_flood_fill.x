@@ -1,4 +1,4 @@
-function fillRegion(integer[][] image, integer row, integer column, integer original, integer replacement) {
+any function fillRegion(integer[][] image, integer row, integer column, integer original, integer replacement) {
     if (
         row < 0 ||
         row >= image.length ||
@@ -16,14 +16,14 @@ function fillRegion(integer[][] image, integer row, integer column, integer orig
     fillRegion(image, row, column + 1, original, replacement);
 }
 
-function floodFill(integer[][] image, integer startRow, integer startColumn, integer color) {
+any function floodFill(integer[][] image, integer startRow, integer startColumn, integer color) {
     let integer original = image[startRow][startColumn];
     if (original != color) {
         fillRegion(image, startRow, startColumn, original, color);
     }
 }
 
-function main() {
+any function main() {
     let integer[][] image = [
         [1, 1, 1],
         [1, 1, 0],

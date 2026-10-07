@@ -55,6 +55,9 @@ FEATURE_DEFAULTS = {
 }
 
 
+COMMAND_LINE_SOURCE = Path("<command line>")
+
+
 class ConfigError(Exception):
     def __init__(
         self, message: str, path: Path, line: int | None = None, column: int | None = None
@@ -94,7 +97,7 @@ class XConfig:
         if profile is None:
             raise ConfigError(
                 f"Run profile '{profile_name}' is not defined",
-                self.path or Path("x.toml"),
+                self.path or COMMAND_LINE_SOURCE,
             )
         arguments = list(self.run_arguments)
         arguments.extend(profile.arguments)
@@ -143,9 +146,9 @@ def load_config(
         _apply_config_tables(config, data, config_path)
 
     for override in feature_overrides or []:
-        _apply_feature_override(config.features, override, config_path or Path("x.toml"))
+        _apply_feature_override(config.features, override, COMMAND_LINE_SOURCE)
     if color_override is not None:
-        _validate_color(color_override, config_path or Path("x.toml"))
+        _validate_color(color_override, COMMAND_LINE_SOURCE)
         config.color = color_override
     return config
 
@@ -221,30 +224,6 @@ def _apply_config_tables(
                 f"Feature '{feature_name}' must be true or false", config_path
             )
         config.features[feature_name] = enabled
-
-    # Check for explicit true values (warn that they're default)
-    for feature_name, enabled in feature_values.items():
-        if enabled and FEATURE_DEFAULTS.get(feature_name, False):
-            import sys
-            print(
-                f"\x1b[33m[WARNING] Feature '{feature_name}' is explicitly set to true, but it's already enabled by default.\x1b[0m",
-                file=sys.stderr,
-            )
-
-    # Warn about strict_typing being false
-    if config.features.get("strict_typing") is False:
-        import sys
-        print(
-            "\x1b[33m[WARNING] strict_typing is DISABLED (false).\n"
-            "  With strict_typing = false, type annotations are NOT required on:\n"
-            "  - Function parameters and return types\n"
-            "  - Variable declarations\n"
-            "  - Class fields and methods\n"
-            "  This means type errors will ONLY be caught at RUNTIME, not compile time.\n"
-            "  Enable strict_typing = true for compile-time type safety and better IDE support.\n"
-            "  Run 'x --help' for more information on configuration.\x1b[0m",
-            file=sys.stderr,
-        )
 
     cli_values = data.get("cli", {})
     if not isinstance(cli_values, dict):

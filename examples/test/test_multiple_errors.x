@@ -1,8 +1,8 @@
-function foo(intsssssx a) {
+any function foo(intsssssx a) {
     return a;
 }
 
-function bar(invalidtype b) {
+any function bar(invalidtype b) {
     return b;
 }
 

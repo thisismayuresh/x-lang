@@ -345,7 +345,7 @@ class TypeCheckCliTests(unittest.TestCase):
                 peek(new Vault());
             }
             """,
-            "Cannot access protected property 'Vault.secret'",
+            "Cannot access protected field 'Vault.secret'",
         )
 
     def test_check_rejects_final_class_extension(self):
@@ -464,20 +464,94 @@ class TypeCheckCliTests(unittest.TestCase):
         self.assertNotIn("types are valid", output)
         self.assertEqual(errors, "")
 
-    def test_run_command_does_not_type_check(self):
+    def test_run_command_reports_type_errors_like_check(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source_file = Path(temporary_directory) / "main.x"
             source_file.write_text(
                 'function main() {\n    let integer x = "text";\n    print(x);\n}\n',
                 encoding="utf-8",
             )
-            return_code, output, errors = self.run_cli(
+            run_code, run_output, run_errors = self.run_cli(
                 ["run", "--no-config", "--color", "never", str(source_file)]
             )
+            check_code, check_output, check_errors = self.run_cli(
+                ["check", "--no-config", "--color", "never", str(source_file)]
+            )
 
-        self.assertEqual(return_code, 0, errors)
-        self.assertEqual(output.splitlines(), ["text"])
-        self.assertEqual(errors, "")
+        self.assertEqual(run_code, 1, run_errors)
+        self.assertEqual(run_output, "")
+        self.assertIn(
+            "Cannot assign 'string' to 'x' of type 'integer'", run_errors
+        )
+        self.assertIn(":2:5", run_errors)
+        self.assertIn("x: found 1 type error(s)", run_errors)
+        self.assertEqual(
+            (run_code, run_output, run_errors),
+            (check_code, check_output, check_errors),
+        )
+
+    def test_run_renders_every_type_error_with_its_own_source_line(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "function add(a, b) {\n"
+                "    return a + b;\n"
+                "}\n"
+                "function main() {\n"
+                "    print(add(1, 2));\n"
+                "}\n"
+                "main();\n",
+                encoding="utf-8",
+            )
+            return_code, output, errors = self.run_cli(
+                [
+                    "run",
+                    "--no-config",
+                    "--feature",
+                    "strict_typing=on",
+                    "--color",
+                    "never",
+                    str(source_file),
+                ]
+            )
+
+        self.assertEqual(return_code, 1, errors)
+        self.assertEqual(output, "")
+        self.assertIn("x: found 4 type error(s)", errors)
+        self.assertNotIn("(at ", errors)
+        self.assertEqual(errors.count("-->"), 4)
+        self.assertEqual(errors.count("function add(a, b) {"), 3)
+        self.assertEqual(errors.count("function main() {"), 1)
+        for message in (
+            "Function 'add' must have an explicit return type",
+            "Parameter 'a' in function 'add' must have an explicit type",
+            "Parameter 'b' in function 'add' must have an explicit type",
+            "Function 'main' must have an explicit return type",
+        ):
+            self.assertIn(message, errors)
+
+    def test_run_reports_type_errors_from_imported_modules(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        source_path = repository_root / "examples" / "test_import_strict.x"
+        imported_path = repository_root / "examples" / "imported_func.x"
+        return_code, output, errors = self.run_cli(
+            [
+                "run",
+                "--no-config",
+                "--feature",
+                "strict_typing=on",
+                "--color",
+                "never",
+                str(source_path),
+            ]
+        )
+
+        self.assertEqual(return_code, 1, errors)
+        self.assertEqual(output, "")
+        self.assertIn("x: found 6 type error(s)", errors)
+        self.assertIn("examples/imported_func.x:6:1", errors)
+        self.assertIn("export function untypedImported(a, b) {", errors)
+        self.assertIn("examples/test_import_strict.x:8:1", errors)
 
     def test_check_of_syntax_error_stays_a_syntax_diagnostic(self):
         repository_root = Path(__file__).resolve().parents[1]
@@ -637,6 +711,162 @@ class TypeCheckerApiTests(unittest.TestCase):
             caught.exception.message,
             "Cannot assign 'string' to 'x' of type 'integer'",
         )
+
+
+class StrictTypingCliTests(unittest.TestCase):
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def check_strict(self, source, command="check"):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(dedent(source), encoding="utf-8")
+            return self.run_cli(
+                [
+                    command,
+                    "--no-config",
+                    "--feature",
+                    "strict_typing=on",
+                    "--color",
+                    "never",
+                    str(source_file),
+                ]
+            )
+
+    def test_constructor_without_return_type_passes_strict_typing(self):
+        return_code, output, errors = self.check_strict(
+            """
+            class Point {
+                public integer x;
+                public Point(integer x) { this.x = x; }
+                public integer getX() { return this.x; }
+            }
+            any function main() {
+                let Point p = new Point(3);
+                print(p.getX());
+                return "";
+            }
+            """
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("syntax is valid", output)
+        self.assertIn("types are valid", output)
+        self.assertEqual(errors, "")
+
+    def test_constructor_parameters_still_require_types_under_strict_typing(self):
+        return_code, output, errors = self.check_strict(
+            """
+            class Point {
+                public integer x;
+                public Point(x) { this.x = x; }
+            }
+            any function main() {
+                let Point p = new Point(1);
+                print(p.x);
+                return "";
+            }
+            """
+        )
+        self.assertEqual(return_code, 1, output)
+        self.assertEqual(output, "")
+        self.assertIn(
+            "Parameter 'x' in constructor 'Point' must have an explicit type", errors
+        )
+        self.assertNotIn("must have an explicit return type", errors)
+        self.assertIn("x: found 1 type error(s)", errors)
+
+    def test_void_constructor_passes_strict_typing(self):
+        return_code, output, errors = self.check_strict(
+            """
+            class Counter {
+                public integer value;
+                public void Counter(integer value) { this.value = value; }
+            }
+            any function main() {
+                let Counter c = new Counter(0);
+                print(c.value);
+                return "";
+            }
+            """
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+        self.assertEqual(errors, "")
+
+    def test_annotated_program_is_clean_under_strict_typing(self):
+        return_code, output, errors = self.check_strict(
+            """
+            class Greeter {
+                public string name;
+                public Greeter(string name) { this.name = name; }
+                public string greet() { return "hi " + this.name; }
+            }
+            integer function add(integer a, integer b) {
+                return a + b;
+            }
+            any function main() {
+                let Greeter g = new Greeter("ada");
+                print(g.greet());
+                print(add(1, 2));
+                return "";
+            }
+            """
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+        self.assertEqual(errors, "")
+
+    def test_run_and_check_render_identically_under_strict_typing(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "function add(a, b) {\n    return a + b;\n}\n"
+                "function main() {\n    print(add(1, 2));\n}\n"
+                "main();\n",
+                encoding="utf-8",
+            )
+            command = [
+                "--no-config",
+                "--feature",
+                "strict_typing=on",
+                "--color",
+                "never",
+                str(source_file),
+            ]
+            run_code, run_output, run_errors = self.run_cli(["run", *command])
+            check_code, check_output, check_errors = self.run_cli(["check", *command])
+
+        self.assertEqual(run_code, 1, run_errors)
+        self.assertEqual(run_output, "")
+        self.assertIn("x: found 4 type error(s)", run_errors)
+        self.assertEqual(
+            (run_code, run_output, run_errors),
+            (check_code, check_output, check_errors),
+        )
+
+    def test_showcase_example_is_clean_under_strict_typing(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        source_path = repository_root / "examples" / "main.x"
+        return_code, output, errors = self.run_cli(
+            [
+                "check",
+                "--no-config",
+                "--feature",
+                "strict_typing=on",
+                "--color",
+                "never",
+                str(source_path),
+            ]
+        )
+
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn(f"{source_path}: syntax is valid", output)
+        self.assertIn(f"{source_path}: types are valid", output)
+        self.assertEqual(errors, "")
 
 
 if __name__ == "__main__":

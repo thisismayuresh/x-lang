@@ -9,7 +9,7 @@ integer function fibonacci(integer number, object memo) {
     return result;
 }
 
-function main() {
+any function main() {
     let object memo = {"0": 0, "1": 1};
     print("Fibonacci:", fibonacci(10, memo));
 }

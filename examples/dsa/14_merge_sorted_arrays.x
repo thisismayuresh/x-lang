@@ -25,6 +25,6 @@ integer[] function mergeSorted(integer[] left, integer[] right) {
     return merged;
 }
 
-function main() {
+any function main() {
     print("Merged arrays:", mergeSorted([1, 3, 5], [2, 4, 6]));
 }

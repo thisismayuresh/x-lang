@@ -1,16 +1,16 @@
-function foo1() {
+any function foo1() {
     print("foo1")
 }
 
-function foo2() {
+any function foo2() {
     print("foo2")
 }
 
-function bar1() {
+any function bar1() {
     print("bar1")
 }
 
-function bar2() {
+any function bar2() {
     print("bar2")
 }
 

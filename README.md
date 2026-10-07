@@ -132,9 +132,10 @@ Implemented and currently demonstrated features:
 - [x] `Function`/`function` callback annotations validate function values.
   `interface` declarations support comma- or semicolon-separated fields and
   method signatures, including nested interface types and typed arrays.
-  Interface-typed values are checked structurally at runtime; a method must
-  exist with a compatible signature and fields must satisfy their declared
-  types. This is runtime validation, not a static type checker.
+  Interface-typed values are checked structurally: `x check` rejects a value
+  whose type lacks a compatible method or fields, and the interpreter applies
+  the same conformance rules again at runtime. A method must exist with a
+  compatible signature and fields must satisfy their declared types.
 - [x] Nested named functions in blocks; their declarations bind functions without
   executing their bodies, and the functions can capture surrounding locals.
 - [x] Typed rest parameters (`integer ...values`), array/call-argument spread, and
@@ -176,35 +177,75 @@ Implemented and currently demonstrated features:
 - [x] The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
   modules described below.
 
-The interpreter executes code dynamically. It does **not** yet provide the
-specification's promised static type checker; declared types are primarily
-syntax and overload-resolution hints at runtime.
+The interpreter executes code dynamically, and `x check`, `x build`, and
+`x run` all run the static type checker first: declared types, interface
+conformance, definite assignment, and `strict_typing` rules become
+compile-time diagnostics printed before any statement executes. Runtime
+failures still stop execution at the point of failure.
 
-### Source diagnostics
+### Diagnostics
 
 Lexical errors identify invalid characters (for example,
 `Unexpected character '$'`). Syntax errors identify tokens that cannot appear
 in the current grammar position (for example,
 `Unexpected token ')'; expected an expression`). The CLI prints each
 recoverable source diagnostic with its own file location and excerpt, then
-exits unsuccessfully without running the program. Runtime failures still stop
-execution at the point of failure.
+exits unsuccessfully without running the program.
 
 Run `x check examples/errors/syntax_error.x` to see an unexpected-token
 diagnostic. The invalid `;` after `=` is a valid character, but it is not a
 valid expression token; by contrast, a character such as `$` is reported by
 the lexer as an unexpected character.
 
+Type errors use the same rustc-style block, with optional `= note:` and
+`= help:` follow-up lines. Run `x check examples/errors/typed_array.x` to
+see a note:
+
+```text
+error: Cannot assign '(integer|string)[]' to 'values' of type 'integer[]'
+ --> examples/errors/typed_array.x:2:5
+  |
+2 |     let integer[] values = [1, 2, "name"];
+  |     ^ Cannot assign '(integer|string)[]' to 'values' of type 'integer[]'
+  = note: expected `integer[]`, found `(integer|string)[]`
+x: found 1 type error(s)
+```
+
+and `x check examples/test/test_interface.x` to see a help:
+
+```text
+error: Class 'Animal' does not implement 'getGender()' from interface 'Person'
+ --> examples/test/test_interface.x:5:1
+  |
+5 | class Animal implements Person{
+  | ^ Class 'Animal' does not implement 'getGender()' from interface 'Person'
+  = help: implement `string getGender()` on class `Animal`
+x: found 1 type error(s)
+```
+
+`x check` and `x run` report a type error identically, block for block, and
+one run can report several errors at once:
+`x check examples/test/test_multiple_errors.x` prints two independent
+blocks — each with its own header, location, excerpt, and caret — followed
+by the single line `x: found 2 type error(s)`. The excerpt is dropped by
+`--no-context` (the location and hints stay), and `--color always`,
+`--color never`, or `NO_COLOR` control whether the block carries ANSI
+colours.
+
 ## Runtime types and typed objects
 
 `typeOf(value)` is a built-in and needs no import. It returns JavaScript-style
 runtime type names: `"string"`, `"number"` for both integers and floats,
-`"boolean"`, `"function"` for X functions and classes, and `"object"` for
-object literals, arrays, class instances, enums, `null`, and `undefined`.
-Both `null`/`Null` and `undefined`/`Undefined` are accepted literal spellings.
-Optional access that finds no value produces `undefined`, so
-`typeOf(profile[0]?.x)` returns `"object"` while printing that value displays
-`undefined`. `typeOf` requires exactly one argument.
+`"boolean"`, `"Array"` for every array, `"object"` for object literals, enum
+members, `null`, and `undefined`, and the class name for instances of a user
+class (for example `"User"`). Callable values are labelled by where they are
+declared: class methods — instance or static, single or overloaded — report
+`"method"`, while functions, lambdas, class objects, and builtins report
+`"function"`. Collections report their collection name (`"HashMap"`,
+`"Stack"`, `"Queue"`, ...). Both `null`/`Null` and `undefined`/`Undefined`
+are accepted literal spellings. Optional access that finds no value produces
+`undefined`, so `typeOf(profile[0]?.x)` returns `"object"` while printing that
+value displays `undefined`. `typeOf` requires exactly one argument.
 
 ```x
 let object profile = {
@@ -220,16 +261,15 @@ print(typeOf(profile.age)); // number
 X's existing type annotation syntax puts the type before the variable name.
 For example, `let object profile = ...` declares a variable named `profile`
 with the broad `object` type, while `let profile object = ...` means a
-variable named `object` annotated with type `profile`. Unknown non-generic
-annotations are not yet consistently validated because X does not have its
-static type checker yet; use the type-before-name order shown here.
+variable named `object` annotated with type `profile`. The type checker
+reports an unknown annotation in either order (`Unknown type 'profile'`), so
+use the type-before-name order shown here.
 For a dictionary whose keys and values are both strings, write
 `let object<string, string> user = ...`; the key and value types are checked
 when the value is created or assigned, passed to a typed parameter, or
 mutated. This generic object type describes key/value types, not a fixed set
 of named properties. X does not currently support TypeScript's
-`let user: object<string, string>` annotation syntax or compile-time type
-checking.
+`let user: object<string, string>` annotation syntax.
 
 Run the complete sample with:
 
@@ -589,7 +629,10 @@ let Stack<integer> ints    = new Stack<integer>()
 let Queue<string>  names   = new Queue<string>()
 ```
 
-The type parameter is not statically enforced (X has no static type checker yet), but it makes intent clear and will be checked once the type checker lands.
+The type parameter documents intent but is not enforced yet: `x check`
+accepts a `List<string>` value in a `List<integer>` variable, so treat the
+element type as a promise the code keeps, not a guarantee the toolchain
+checks.
 
 ### Available Data Structures
 
@@ -1315,9 +1358,9 @@ python -m unittest discover -s tests -v
 The tests cover parsing and execution of core syntax, functions, classes,
 access control, final classes, decorators, nested types, namespaces,
 exceptions, all loop forms, pattern matching, destructuring, ASI, equality,
-objects, project configuration and feature flags, source diagnostics, string
-indexing, grouped project imports, filesystem operations, rest/spread,
-async/await, and OS threads.
+objects, project configuration and feature flags, source diagnostics and
+type diagnostics, string indexing, grouped project imports, filesystem
+operations, rest/spread, async/await, and OS threads.
 
 ## Feature examples
 
@@ -1365,25 +1408,29 @@ leading `[`/`(` continuations should be explicitly separated.
 
 ## Access control, final classes, and error reporting
 
-Access modifiers are enforced by the interpreter, not just recorded as
-documentation. Members with no access modifier default to public. Private and
-protected reads, writes, method lookups, and static members follow the class
-rules above. `internal` is rejected because this prototype does not yet have
-isolated module boundaries.
+Access modifiers are enforced by the type checker and the interpreter, not
+just recorded as documentation. Members with no access modifier default to
+public. Private and protected reads, writes, method lookups, and static
+members follow the class rules above. `internal` is rejected because this
+prototype does not yet have isolated module boundaries.
 
 `final class` is checked when classes are registered; extending one fails
-before `main` runs. Lexer, parser, runtime, and TOML configuration errors use
-source-aware terminal diagnostics with file, line, column, the relevant source
-line, and a caret. Color is automatic for interactive terminals; use
-`--color always`, `--color never`, or `NO_COLOR` to control it.
+before `main` runs. Lexer, parser, type, runtime, and TOML configuration
+errors use source-aware terminal diagnostics with file, line, column, the
+relevant source line, and a caret, and type errors can add `= note:` and
+`= help:` lines as shown above. Color is automatic for interactive terminals;
+use `--color always`, `--color never`, or `NO_COLOR` to control it.
 
-The following examples are deliberately invalid and demonstrate failure output:
+The following examples are deliberately invalid and demonstrate failure
+output (`private_access.x`, `final_class_extension.x`, and `runtime_error.x`
+are now rejected as type errors before the program starts):
 
 ```sh
 x run examples/errors/private_access.x
 x run examples/errors/final_class_extension.x
 x run examples/errors/runtime_error.x
 x check examples/errors/syntax_error.x
+x check examples/errors/typed_array.x
 ```
 
 ## DSA examples and computational expressiveness
@@ -1422,11 +1469,14 @@ remaining implementation goals and documented constraints:
 
 ### Language / Compiler
 
-- [ ] Static type checking, definite assignment, and compile-time type diagnostics
-- [ ] Native or bytecode compilation — `build` is currently a syntax/import check only
-- [ ] Interfaces as enforceable contracts and abstract-method validation (currently structural/runtime only)
-- [ ] Generic type checking and type-parameter substitution (currently annotation-only, no enforcement)
-- [ ] Union/nullable type semantics, structural type validation, and record types
+- [ ] Native or bytecode compilation — `build` validates syntax, imports, and
+  types, then reports that no executable was produced
+- [ ] Generic type checking and type-parameter substitution — generic
+  annotations parse and their type names are checked, but element types are
+  not enforced (`List<string>` in a `List<integer>` slot passes `x check`)
+- [ ] Union/nullable type semantics — `integer | null` does not exist and
+  `null` is rejected for non-null types; inline `record{...}` annotations are
+  checked structurally today
 - [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects
 - [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
 - [ ] A broader standard library beyond the built-ins documented here

@@ -4,3 +4,15 @@ color = "auto"
 
 [features]
 strict_typing = true
+
+[run]
+args = []
+
+[run.environment]
+X_PROJECT = "x-language"
+
+[run.profiles.feature-tour]
+args = ["argument from x.toml", "an argument with spaces"]
+
+[run.profiles.feature-tour.environment]
+X_MODE = "feature-tour"

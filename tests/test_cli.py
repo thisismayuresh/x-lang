@@ -331,7 +331,7 @@ class CommandLineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source_file = Path(temporary_directory) / "broken.x"
             source_file.write_text(
-                "function main() { let integer result = 1 / 0; }\n",
+                "function main() { let int zero = 0; let float result = 1 / zero; }\n",
                 encoding="utf-8",
             )
             return_code, output, errors = self.run_cli(
@@ -627,7 +627,7 @@ class CommandLineTests(unittest.TestCase):
                     print(vault.secret);
                 }
                 """,
-                "private property",
+                "private field",
                 ":7:",
             ),
             "final.x": (
@@ -659,6 +659,111 @@ class CommandLineTests(unittest.TestCase):
                     self.assertIn(expected_message, errors)
                     self.assertIn(expected_location, errors)
                     self.assertIn("^", errors)
+
+
+class CliRobustnessTests(unittest.TestCase):
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def test_options_without_a_command_report_usage_instead_of_crashing(self):
+        for arguments in (
+            ["--no-config"],
+            ["--color", "never"],
+            ["--feature", "loops=on"],
+            ["--"],
+        ):
+            with self.subTest(arguments=arguments):
+                return_code, _, errors = self.run_cli(arguments)
+                self.assertEqual(return_code, 2)
+                self.assertNotIn("Traceback", errors)
+                self.assertNotIn("AttributeError", errors)
+
+    def test_options_without_a_command_mention_the_missing_command(self):
+        return_code, _, errors = self.run_cli(["--no-config"])
+        self.assertEqual(return_code, 2)
+        self.assertIn("x: expected a command or a source file", errors)
+        self.assertIn("Usage:", errors)
+
+    def test_version_flag_is_accepted_after_other_options(self):
+        for arguments in (["-V"], ["--version"], ["--color", "never", "--version"]):
+            with self.subTest(arguments=arguments):
+                return_code, output, errors = self.run_cli(arguments)
+                self.assertEqual(return_code, 0)
+                self.assertTrue(output.startswith("X "))
+                self.assertEqual(errors, "")
+
+    def test_missing_source_file_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "missing.x"
+            return_code, output, errors = self.run_cli(
+                ["check", "--no-config", str(missing)]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertEqual(output, "")
+        self.assertIn(f"x: source file '{missing}' does not exist", errors)
+        self.assertNotIn("Imported source file", errors)
+        self.assertNotIn("Traceback", errors)
+
+    def test_directory_as_a_source_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory) / "folder.x"
+            directory.mkdir()
+            return_code, _, errors = self.run_cli(
+                ["check", "--no-config", str(directory)]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn(f"x: '{directory}' is a directory", errors)
+        self.assertNotIn("Traceback", errors)
+
+    def test_unreadable_source_file_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "locked.x"
+            source_file.write_text("function main() {}\n", encoding="utf-8")
+            source_file.chmod(0)
+            if os.access(source_file, os.R_OK):
+                self.skipTest("the current user can read every file")
+            return_code, _, errors = self.run_cli(
+                ["check", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn(f"x: cannot read '{source_file}'", errors)
+        self.assertNotIn("Traceback", errors)
+
+    def test_unknown_feature_override_points_at_the_command_line(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text("function main() {}\n", encoding="utf-8")
+            return_code, _, errors = self.run_cli(
+                ["check", "--feature", "bogus=on", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("Unknown feature 'bogus'", errors)
+        self.assertIn("--> <command line>", errors)
+
+    def test_deeply_nested_source_is_reported_without_a_python_traceback(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "deep.x"
+            source_file.write_text(
+                "let a = " + "(" * 500 + "1" + ")" * 500 + ";\n",
+                encoding="utf-8",
+            )
+            return_code, _, errors = self.run_cli(
+                ["check", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertIn("Program is nested too deeply to parse", errors)
+        self.assertIn(f"{source_file}:1:", errors)
+        self.assertNotIn("Traceback", errors)
+        self.assertNotIn("RecursionError", errors)
 
 
 if __name__ == "__main__":

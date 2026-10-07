@@ -1,13 +1,12 @@
-async function fetchData(name) {
+async any function fetchData(string name) {
     await sleep(50)
     return "data for " + name
 }
 
-async function main() {
+async any function main() {
     let results = []
     for (let i = 0; i < 3; i = i + 1) {
-        let r = await fetchData("item " + i)
-        results.push(r)
+        results.push(await fetchData("item " + i))
     }
     print(results)
 }

@@ -1,6 +1,6 @@
 import System.io.FileSystem
 
-function main() {
+any function main() {
     let string directory = "build/filesystem-demo";
     let string filePath = directory + "/notes.txt";
 

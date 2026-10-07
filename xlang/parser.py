@@ -55,7 +55,12 @@ from .ast_nodes import (
     WhileStatement,
     WildcardPattern,
 )
-from .lexer import Lexer, Token
+from .lexer import (
+    INTERPOLATION_CLOSED,
+    Lexer,
+    Token,
+    scan_template_interpolation,
+)
 
 
 class ParseError(Exception):
@@ -108,15 +113,24 @@ class Parser:
 
     def parse(self) -> Program:
         declarations: list[Any] = []
-        while not self._check("EOF"):
-            start_position = self.position
-            try:
-                declarations.append(self._declaration())
-            except ParseError as error:
-                self._record_error(error)
-                self._synchronize(start_position, stop_at_block_end=False)
-        if self._pending_exports:
-            self._apply_export_specifiers(declarations)
+        try:
+            while not self._check("EOF"):
+                start_position = self.position
+                try:
+                    declarations.append(self._declaration())
+                except ParseError as error:
+                    self._record_error(error)
+                    self._synchronize(start_position, stop_at_block_end=False)
+            if self._pending_exports:
+                self._apply_export_specifiers(declarations)
+        except RecursionError:
+            self._record_error(
+                ParseError(
+                    "Program is nested too deeply to parse",
+                    self._peek(),
+                    self.source_name,
+                )
+            )
         return Program(declarations)
 
     def _record_error(self, error: ParseError) -> None:
@@ -652,7 +666,7 @@ class Parser:
                 )
                 if is_rest and not self._check(")"):
                     raise ParseError("Rest parameter must be last", self._peek())
-                if not self._match(","):
+                if not self._match(",") or self._check(")"):
                     break
         return parameters
 
@@ -705,6 +719,8 @@ class Parser:
         if self._match("<"):
             type_arguments = [self._parse_type()]
             while self._match(","):
+                if self._check(">"):
+                    break
                 type_arguments.append(self._parse_type())
             self._consume(">", "Expected '>' after generic type arguments")
             type_suffix = "<" + ",".join(type_arguments) + ">"
@@ -903,7 +919,11 @@ class Parser:
         if self._match("throw"):
             self._require_feature("exceptions", self._previous())
             if self._line_terminator_before_current():
-                raise ParseError("A line break cannot follow 'throw'", self._peek())
+                raise ParseError(
+                    "A line break cannot follow 'throw'",
+                    self._previous(),
+                    self.source_name,
+                )
             value = self._expression()
             self._consume_statement_terminator("Expected ';' after throw")
             return ThrowStatement(value)
@@ -1304,6 +1324,8 @@ class Parser:
                 self._advance()
                 type_arguments = [self._parse_type()]
                 while self._match(","):
+                    if self._check(">"):
+                        break
                     type_arguments.append(self._parse_type())
                 self._consume(">", "Expected '>' after generic call types")
                 self._consume("(", "Expected '(' after generic call types")
@@ -1474,7 +1496,7 @@ class Parser:
                         items.append(Spread(self._expression()))
                     else:
                         items.append(self._expression())
-                    if not self._match(","):
+                    if not self._match(",") or self._check("]"):
                         break
             self._consume("]", "Expected ']' after array literal")
             return ArrayLiteral(items)
@@ -1592,45 +1614,9 @@ class Parser:
     def _template_expression_end(
         self, raw: str, start: int, token: Token
     ) -> int:
-        depth = 1
-        quote: str | None = None
-        escaped = False
-        line_comment = False
-        block_comment = False
-        position = start
-        while position < len(raw):
-            character = raw[position]
-            following = raw[position + 1] if position + 1 < len(raw) else ""
-            if line_comment:
-                if character == "\n":
-                    line_comment = False
-            elif block_comment:
-                if character == "*" and following == "/":
-                    block_comment = False
-                    position += 1
-            elif quote is not None:
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == quote:
-                    quote = None
-            elif character in ("'", '"', "`"):
-                quote = character
-            elif character == "/" and following == "/":
-                line_comment = True
-                position += 1
-            elif character == "/" and following == "*":
-                block_comment = True
-                position += 1
-            elif character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-                if depth == 0:
-                    return position
-            position += 1
-
+        status, index = scan_template_interpolation(raw, start)
+        if status == INTERPOLATION_CLOSED:
+            return index
         line, column = self._template_source_position(raw, start - 1, token)
         raise ParseError(
             "Unterminated template interpolation",
@@ -1660,7 +1646,7 @@ class Parser:
                     arguments.append(Spread(self._expression()))
                 else:
                     arguments.append(self._expression())
-                if not self._match(","):
+                if not self._match(",") or self._check(")"):
                     break
         self._consume(")", "Expected ')' after arguments")
         return arguments
@@ -1678,7 +1664,7 @@ class Parser:
                 arguments: list[str] = []
                 while True:
                     arguments.append(self._parse_type())
-                    if not self._match(","):
+                    if not self._match(",") or self._check(">"):
                         break
                 self._consume(">", "Expected '>' after generic types")
                 type_name += "<" + ",".join(arguments) + ">"
@@ -1738,6 +1724,8 @@ class Parser:
     def _parse_type_list(self) -> list[str]:
         type_names = [self._parse_type()]
         while self._match(","):
+            if self._check("{"):
+                break
             type_names.append(self._parse_type())
         return type_names
 
@@ -1777,6 +1765,8 @@ class Parser:
         offset = 0
         if not self._check("IDENTIFIER") and not self._check("void"):
             return False
+        if self._check("void"):
+            offset = 1
         while self._peek(offset).kind == "IDENTIFIER":
             offset += 1
             while self._peek(offset).kind == ".":
