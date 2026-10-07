@@ -32,6 +32,7 @@ Usage:
   x [OPTIONS] run <file>.x [-- <program arguments...>]
   x [OPTIONS] check <file>.x
   x [OPTIONS] build <file>.x
+  x [OPTIONS] install <package>...
   x <file>.x [program arguments...]
 
 Options:
@@ -88,14 +89,23 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         return _report_config_error(error, parsed.color)
 
-    source_path = Path(parsed.source)
-    if source_path.suffix != ".x":
-        print("x: source files must use the .x extension", file=sys.stderr)
-        return 2
-
     command = config.default_command if is_implicit_command else parsed.command
     if parsed.profile is not None and command != "run":
         print("x: --profile can only be used with the run command", file=sys.stderr)
+        return 2
+
+    if command == "install":
+        if not config.enabled("package_manager"):
+            print("x: package manager is experimental; enable with --feature package_manager=on", file=sys.stderr)
+            return 2
+        packages = getattr(parsed, "packages", [])
+        print("x: package manager is not yet implemented")
+        print(f"x: would install: {', '.join(packages)}")
+        return 0
+
+    source_path = Path(parsed.source)
+    if source_path.suffix != ".x":
+        print("x: source files must use the .x extension", file=sys.stderr)
         return 2
 
     try:
@@ -110,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     if cli_program_arguments and cli_program_arguments[0] == "--":
         cli_program_arguments.pop(0)
     program_arguments.extend(cli_program_arguments)
+
+    source_path = Path(parsed.source)
+    if source_path.suffix != ".x":
+        print("x: source files must use the .x extension", file=sys.stderr)
+        return 2
 
     project_root = config.path.parent if config.path is not None else current_directory
     loader = ModuleLoader(project_root, config, recover_errors=True)
@@ -126,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if command in ("check", "build"):
             if config.enabled("type_checker"):
-                type_errors = TypeChecker().check(program, source_name=str(source_path))
+                type_errors = TypeChecker().check(program, source_name=str(source_path), config=config)
                 if type_errors:
                     return _report_source_errors(
                         type_errors,
@@ -316,17 +331,20 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         color=None,
     )
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("run", "check", "build"):
+    for command in ("run", "check", "build", "install"):
         command_parser = subparsers.add_parser(
             command,
             parents=[common_parser],
             add_help=True,
         )
-        command_parser.add_argument("source")
-        if command == "run":
-            command_parser.add_argument(
-                "program_arguments", nargs=argparse.REMAINDER
-            )
+        if command == "install":
+            command_parser.add_argument("packages", nargs="+")
+        else:
+            command_parser.add_argument("source")
+            if command == "run":
+                command_parser.add_argument(
+                    "program_arguments", nargs=argparse.REMAINDER
+                )
     return parser
 
 

@@ -348,6 +348,8 @@ class Parser:
                 self._require_feature("static_methods", token)
             if token.kind == "abstract":
                 self._require_feature("classes", token)
+            if token.kind in {"public", "private", "protected"}:
+                self._require_feature("access_modifiers", token)
         return modifiers
 
     def _decorators(self) -> list[Any]:

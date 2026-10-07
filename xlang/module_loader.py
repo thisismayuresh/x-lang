@@ -86,6 +86,7 @@ class ModuleLoader:
         "System.utils.Collections.PriorityQueue",
         "System.utils.Collections.Trie",
         "System.utils.Collections.Set",
+        "System.utils.Math",
     }
 
     def __init__(
@@ -262,6 +263,8 @@ class ModuleLoader:
             "System.utils.Collections."
         ):
             feature_name = "collections"
+        elif module_path == "System.utils.Math":
+            feature_name = "math_library"
         else:
             feature_name = feature_for_module.get(module_path)
         if feature_name is not None and not self.config.enabled(feature_name):

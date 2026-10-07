@@ -41,6 +41,16 @@ FEATURE_DEFAULTS = {
     "threads": True,
     "type_checker": True,
     "unions": True,
+    # Experimental features
+    "url_imports": False,
+    "package_manager": False,
+    "math_library": True,
+    "access_modifiers": True,
+    "bulk_export": True,
+    "array_push": True,
+    "command_input": True,
+    "strict_typing": False,
+    "enhanced_input": True,
 }
 
 

@@ -109,7 +109,7 @@ protected class ANimal implements Person{
  }
 
  string getGender(){
-    return 1
+    return "female"+" 1+1"
  }
 }
 
@@ -188,5 +188,22 @@ print(typeOf(1))
 print(typeOf(print))
 
 
-System.process.kill()
 
+let sampleArray = [[1],1,2,3, "Hi"]
+ sampleArray.pop()
+  sampleArray.pop()
+   //sampleArray.pop()
+    //sampleArray.pop()
+     //sampleArray.pop()
+
+print(typeOf(sampleArray[0]))
+for( let i in range(1,sampleArray.length)) {
+  //  sampleArray.pop()
+  print(sampleArray[1])
+
+print("typeOf",typeOf(i))
+}
+
+let int age = input(" enter age")
+
+print("age is",age)

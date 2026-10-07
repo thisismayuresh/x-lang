@@ -28,6 +28,7 @@ static_methods = true
 threads = true
 type_checker = true
 unions = true
+access_modifiers = true
 
 [run]
 args = []
