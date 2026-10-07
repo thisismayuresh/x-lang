@@ -340,7 +340,7 @@ class Task implements Runnable, Stoppable, Pausable {
     public Task(string name) {
         this.name = name;
 
-        return "x"
+     
     }
     
     public void run() { print(this.name + " running"); }
