@@ -76,6 +76,7 @@ class ModuleLoader:
         "System.concurrent.Async",
         "System.concurrent.Thread",
         "System.io.FileSystem",
+        "System.io.Console",
         "System.Environment",
         "System.utils.Collections",
         "System.utils.Collections.HashMap",
@@ -265,6 +266,8 @@ class ModuleLoader:
             feature_name = "collections"
         elif module_path == "System.utils.Math":
             feature_name = "math_library"
+        elif module_path == "System.io.Console":
+            feature_name = "command_input"
         else:
             feature_name = feature_for_module.get(module_path)
         if feature_name is not None and not self.config.enabled(feature_name):

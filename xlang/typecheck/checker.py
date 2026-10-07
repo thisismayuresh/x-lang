@@ -130,16 +130,16 @@ class TypeChecker:
 
     The public API is:
 
-    ``check(program, source_name=None) -> list[TypeCheckError]``
+    ``check(program, source_name=None, config=None) -> list[TypeCheckError]``
         Type-check ``program`` and return every diagnostic.  This method never
         raises; parseable programs with type errors simply yield a non-empty
         list.  Diagnostics carry ``message``, ``line``, ``column`` and
         ``source_name`` so they can be rendered by ``render_diagnostic``.
 
-    ``check_or_raise(program, source_name=None) -> None``
+    ``check_or_raise(program, source_name=None, config=None) -> None``
         Convenience wrapper that raises the first diagnostic when any exist.
 
-    ``check_declarations(program, source_name=None) -> list[TypeCheckError]``
+    ``check_declarations(program, source_name=None, config=None) -> list[TypeCheckError]``
         Lightweight declaration-level validation: unknown type names and
         concrete classes that do not implement every interface member.
         Used by the interpreter as a pre-execution gate; it skips body
@@ -148,10 +148,12 @@ class TypeChecker:
 
     def __init__(self) -> None:
         self._reset(None)
+        self._config = None
 
-    def _reset(self, source_name: str | None) -> None:
+    def _reset(self, source_name: str | None, config=None) -> None:
         self.errors: list[TypeCheckError] = []
         self._seen: set[tuple[Any, ...]] = set()
+        self._config = config
         self._classes: dict[str, ClassDeclaration] = {}
         self._interfaces: dict[str, ClassDeclaration] = {}
         self._enums: set[str] = set()
@@ -169,9 +171,9 @@ class TypeChecker:
         self._saw_value_return = False
         self._try_depth = 0
 
-    def check(self, program: Program, source_name: str | None = None) -> list[TypeCheckError]:
+    def check(self, program: Program, source_name: str | None = None, config=None) -> list[TypeCheckError]:
         """Type-check ``program`` and return all diagnostics (does not raise)."""
-        self._reset(source_name)
+        self._reset(source_name, config)
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -179,27 +181,30 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
+        self._check_strict_typing(program.declarations)
+        for module_declarations in program.modules.values():
+            self._check_strict_typing(module_declarations)
         scope = self._builtin_scope()
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
             self._check_declarations(module_declarations, scope.child())
         return self.errors
 
-    def check_or_raise(self, program: Program, source_name: str | None = None) -> None:
+    def check_or_raise(self, program: Program, source_name: str | None = None, config=None) -> None:
         """Type-check and raise the first error when diagnostics exist."""
-        errors = self.check(program, source_name)
+        errors = self.check(program, source_name, config)
         if errors:
             raise errors[0]
 
     def check_declarations(
-        self, program: Program, source_name: str | None = None
+        self, program: Program, source_name: str | None = None, config=None
     ) -> list[TypeCheckError]:
         """Validate declaration-level type names and interface conformance only.
 
         Reports unknown type names in annotations/``new`` targets and concrete
         classes that omit interface members, without checking method bodies.
         """
-        self._reset(source_name)
+        self._reset(source_name, config)
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -207,6 +212,9 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
+        self._check_strict_typing(program.declarations)
+        for module_declarations in program.modules.values():
+            self._check_strict_typing(module_declarations)
         return self.errors
 
     # ------------------------------------------------------------------
@@ -709,6 +717,12 @@ class TypeChecker:
                     and member.name == signature.name
                     and "abstract" not in member.modifiers
                 ):
+                    # Check return type compatibility
+                    expected_return = self._resolve_return_type(signature.return_type)
+                    actual_return = self._resolve_return_type(member.return_type)
+                    if expected_return is not None and actual_return is not None:
+                        if not is_compatible(actual_return, expected_return, relations=self):
+                            return False
                     return True
             if current.parent_name is None:
                 break
@@ -761,6 +775,43 @@ class TypeChecker:
                                 f"'{interface_name}'",
                                 declaration,
                             )
+
+    def _check_strict_typing(self, declarations: list[Any]) -> None:
+        """Check that all types are explicitly specified when strict_typing is enabled."""
+        if not self._config or not self._config.enabled("strict_typing"):
+            return
+        
+        for declaration in declarations:
+            self._check_strict_typing_declaration(declaration)
+
+    def _check_strict_typing_declaration(self, declaration: Any) -> None:
+        """Check a single declaration for missing type annotations."""
+        if declaration is None:
+            return
+        
+        if isinstance(declaration, FunctionDeclaration):
+            # Check return type
+            if declaration.return_type is None:
+                self._error(
+                    f"Function '{declaration.name}' must have an explicit return type (strict_typing enabled)",
+                    declaration,
+                )
+            # Check parameter types
+            for param in declaration.parameters:
+                if param.type_name is None:
+                    self._error(
+                        f"Parameter '{param.name}' in function '{declaration.name}' must have an explicit type (strict_typing enabled)",
+                        declaration,
+                    )
+        elif isinstance(declaration, VariableDeclaration):
+            if declaration.type_name is None and declaration.initializer is None:
+                self._error(
+                    f"Variable '{declaration.name}' must have an explicit type (strict_typing enabled)",
+                    declaration,
+                )
+        elif isinstance(declaration, ClassDeclaration):
+            for member in declaration.members:
+                self._check_strict_typing_declaration(member)
 
     # ------------------------------------------------------------------
     # Variables

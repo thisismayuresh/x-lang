@@ -445,6 +445,7 @@ class Interpreter:
         io_namespace = Environment(system_namespace)
         if self.config.enabled("filesystem"):
             io_namespace.define("FileSystem", self._filesystem_members())
+        io_namespace.define("Console", self._console_members())
         system_namespace.define("io", io_namespace)
         concurrent_namespace = Environment(system_namespace)
         if self.config.enabled("threads"):
@@ -1082,6 +1083,12 @@ class Interpreter:
                 ),
             )
         return members
+
+    def _console_members(self) -> dict[str, BuiltinFunction]:
+        return {
+            "print": BuiltinFunction("Console.print", lambda args: self._builtin_print(args)),
+            "input": BuiltinFunction("Console.input", lambda args: self._builtin_input(args)),
+        }
 
     async def _filesystem_async_call(
         self,
