@@ -202,6 +202,7 @@ class TypeChecker:
         self._class_stack: list[str] = []
         self._expected_return: XType | None = None
         self._saw_value_return = False
+        self._in_constructor = False
         self._try_depth = 0
         self._current_node: Any | None = None
 
@@ -595,6 +596,12 @@ class TypeChecker:
 
     def _check_return(self, declaration: ReturnStatement, scope: TypeScope) -> None:
         if declaration.value is not None:
+            if self._in_constructor:
+                self._error(
+                    "Constructors cannot return a value",
+                    declaration,
+                )
+                return
             actual = self._infer(declaration.value, scope)
             self._saw_value_return = True
             expected = self._expected_return
@@ -664,8 +671,15 @@ class TypeChecker:
         expected = self._resolve_return_type(declaration.return_type)
         previous_expected = self._expected_return
         previous_saw = self._saw_value_return
+        previous_in_constructor = self._in_constructor
+        is_constructor = (
+            self._class_stack
+            and declaration.name == self._class_stack[-1]
+            and declaration.return_type is None
+        )
         self._expected_return = expected
         self._saw_value_return = False
+        self._in_constructor = is_constructor
         if declaration.body:
             self._collect_local_functions(declaration.body)
             self._check_statements(declaration.body, body_scope)
@@ -685,6 +699,7 @@ class TypeChecker:
                 )
         self._expected_return = previous_expected
         self._saw_value_return = previous_saw
+        self._in_constructor = previous_in_constructor
         self._active_generics = previous_generics
 
     def _resolve_return_type(self, type_name: str | None) -> XType | None:
