@@ -9,17 +9,27 @@ Public API:
 Use ``check_or_raise`` to fail fast with the first error. ``TypeDiagnostic`` is
 an alias of ``TypeCheckError`` for callers that prefer diagnostic terminology.
 
+``TypeCheckFailure`` is the exception raised when a program is rejected before
+execution.  It carries every diagnostic so callers can render each one with its
+own source snippet instead of a single concatenated blob.
+
 ``TypeChecker.check_declarations`` runs only declaration-level validation
 (unknown type names, interface conformance) and is used by the interpreter
 as a pre-execution gate.
 """
 
 from .checker import TypeChecker
-from .errors import TypeCheckError
+from .errors import TypeCheckError, TypeCheckFailure
 
 TypeDiagnostic = TypeCheckError
 
-__all__ = ["TypeChecker", "TypeCheckError", "TypeDiagnostic", "check_declarations"]
+__all__ = [
+    "TypeChecker",
+    "TypeCheckError",
+    "TypeCheckFailure",
+    "TypeDiagnostic",
+    "check_declarations",
+]
 
 
 def check_declarations(program, source_name=None):

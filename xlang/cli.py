@@ -23,7 +23,7 @@ from .runtime import (
     XExceptionValue,
     XInstance,
 )
-from .typecheck import TypeChecker
+from .typecheck import TypeCheckFailure, TypeChecker
 
 
 USAGE = """X language interpreter
@@ -194,6 +194,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except ConfigError as error:
         return _report_config_error(error, config.color, show_context=not parsed.no_context)
+    except TypeCheckFailure as failure:
+        return _report_source_errors(
+            failure.errors,
+            loader.sources,
+            source_path,
+            config.color,
+            label="type error",
+            show_context=not parsed.no_context,
+        )
     except (LexError, ParseError, RuntimeErrorX) as error:
         if (
             isinstance(error, RuntimeErrorX)

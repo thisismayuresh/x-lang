@@ -270,24 +270,17 @@ class Interpreter:
     def _validate_declarations(self, program: Program) -> None:
         """Pre-execution gate: full type checking including method bodies.
 
-        Runs the checker's full type check and re-raises all
-        diagnostics as ``RuntimeErrorX`` carrying ``line``/``column``/
-        ``source_name`` so the CLI renders them like any other runtime error.
+        Raises ``TypeCheckFailure``, which carries every diagnostic so the CLI
+        renders each one with its own source snippet — the same way lex and
+        parse errors are rendered — instead of concatenating them into a
+        single unreadable message.
         """
-        from .typecheck import TypeChecker
+        from .typecheck import TypeChecker, TypeCheckFailure
 
         errors = TypeChecker().check(program, config=self.config)
         if not errors:
             return
-        # Collect all errors into a single exception with multiple messages
-        messages = []
-        for error in errors:
-            messages.append(f"{error.message} (at {error.source_name or '<unknown>'}:{error.line or '?'}:{error.column or '?'})")
-        failure = RuntimeErrorX("\n".join(messages))
-        failure.line = errors[0].line
-        failure.column = errors[0].column
-        failure.source_name = errors[0].source_name
-        raise failure
+        raise TypeCheckFailure(errors)
 
     def interpret(self, program: Program) -> Any:
         if self.config.enabled("type_checker"):
