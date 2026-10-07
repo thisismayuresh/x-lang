@@ -305,7 +305,7 @@ interface C extends B {
     void methodC();
 }
 
-interface Dogge extends C {
+interface Dogge extends C{
     void methodD();
 }
 

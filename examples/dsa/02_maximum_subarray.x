@@ -1,5 +1,6 @@
 integer function maxSubarray(integer[] numbers) {
     if (numbers.length == 0) {
+        print(" ");
         return 0;
     }
 

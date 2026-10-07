@@ -1,0 +1,19 @@
+[project]
+name = "xlang-lsp"
+version = "0.1.0"
+description = "Language Server Protocol implementation for X language"
+authors = [{name = "X Language Team"}]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "lsprotocol>=2024.0.0",
+    "pygls>=1.2.0",
+    "watchdog>=4.0.0",
+]
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+pytest-asyncio = "^0.21.0"
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

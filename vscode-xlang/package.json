@@ -1,0 +1,93 @@
+{
+  "name": "xlang",
+  "displayName": "X Language",
+  "description": "VS Code support for the X programming language",
+  "version": "0.1.0",
+  "publisher": "xlang",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:x"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "x",
+        "aliases": [
+          "X",
+          "x"
+        ],
+        "extensions": [
+          ".x"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "x",
+        "scopeName": "source.x",
+        "path": "./syntaxes/x.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "X Language",
+      "properties": {
+        "xlang.enableTypeChecking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time type checking"
+        },
+        "xlang.strictTyping": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable strict typing mode"
+        },
+        "xlang.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to custom LSP server (optional)"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "xlang.restartServer",
+        "title": "Restart X Language Server"
+      },
+      {
+        "command": "xlang.checkFile",
+        "title": "Type Check Current File"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "xlang.restartServer",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus && editorLangId == x"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.2"
+  }
+}
