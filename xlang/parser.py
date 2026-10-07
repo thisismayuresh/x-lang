@@ -483,6 +483,19 @@ class Parser:
             declaration.decorators = decorators
             return declaration
 
+        if self._is_typed_constructor(class_name):
+            type_token = self._peek()
+            self._parse_type()
+            name = self._consume("IDENTIFIER", "Expected a member name").value
+            parameters = self._parameters()
+            body = self._function_body(is_async=False)
+            if is_async:
+                raise ParseError("Constructors cannot be async", self._previous())
+            raise ParseError(
+                f"Constructor '{class_name}' must not have a return type (not even 'void')",
+                type_token,
+            )
+
         type_name = self._parse_type()
         name = self._consume("IDENTIFIER", "Expected a member name").value
         if self._check("("):
@@ -1039,6 +1052,28 @@ class Parser:
         return self._peek(1).kind == "IDENTIFIER" or (
             self._peek(1).kind == "[" and self._peek(2).kind == "]"
         )
+
+    def _looks_like_typed_constructor(self, class_name: str) -> bool:
+        if not self._check("IDENTIFIER"):
+            return False
+        if self._peek().value != class_name:
+            return False
+        if self._peek(1).kind != "(":
+            return False
+        return True
+
+    def _is_typed_constructor(self, class_name: str) -> bool:
+        """Check if we have: <type> <class_name> (  - i.e., a constructor with invalid return type."""
+        if not self._check("IDENTIFIER"):
+            return False
+        # Current token is a potential type name, check if next is class_name followed by (
+        if self._peek(1).kind != "IDENTIFIER":
+            return False
+        if self._peek(1).value != class_name:
+            return False
+        if self._peek(2).kind != "(":
+            return False
+        return True
 
     def _switch_statement(self) -> SwitchStatement:
         self._consume("(", "Expected '(' after 'switch'")

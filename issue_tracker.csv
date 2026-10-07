@@ -1,0 +1,17 @@
+bug_id,description,severity,status,test_case,fix_reference
+"1","Constructor with return type 'string' rejected by parser but example main.x expects it to work","high","resolved","examples/main.x:46 - public string Address(...)","parser.py:474-484, checker.py:598-615"
+"2","Constructor returning 'hello' without return type annotation correctly errors","medium","resolved","Constructor with return value in body without type annotation","checker.py:598-615"
+"3","User input typed bugs - wrong types in constructor arguments caught by type checker","low","resolved","new Address(123, \"new york\") - expects string","typecheck/checker.py handles this"
+"4","main.x test fails because constructor return type error","high","resolved","test_typecheck.py:573 - known good example","parser.py:490-494 removed, checker.py special-casing removed, main.x:73 return removed"
+"5","Allow constructors to have return type annotations with type-checked return values","high","resolved","public string Address(...) with return \"hello\"","parser.py, checker.py updated"
+"6","Built-in input() function not recognized by type checker - missing from _builtin_scope","high","resolved","let int age = input(\"Enter age: \", \"int\")","checker.py:_register_builtin_functions added input with overloads"
+"7","Built-in print() function variadic arguments not handled by type checker","high","resolved","print(\"age is\", age)","checker.py:_register_builtin_functions made print variadic"
+"8","Built-in range() function 3-argument overload missing","high","resolved","range(0, 10, 2)","checker.py:_register_builtin_functions added range 3-arg overload"
+"9","Built-in typeOf() function missing from type checker builtin scope","high","resolved","typeOf(value)","checker.py:_register_builtin_functions added typeOf"
+"10","input() return type not inferred from type argument (int/float/bool/string)","high","resolved","input(\"prompt\", \"int\") should return integer","checker.py:_infer_call added special handling for input with literal type arg"
+"11","test_input_age.x example had incorrect usage - missing type argument for input()","medium","resolved","examples/test/test_input_age.x","Updated to use input(\"prompt\", \"int\")"
+"12","main.x example had incorrect usage - missing type argument for input()","medium","resolved","examples/main.x:210","Updated to use input(\"Enter age: \", \"int\")"
+"13","Constructor with return type annotation incorrectly allowed return value","high","resolved","public string Address(...) with return \"hello\" should error","checker.py:_check_return now rejects any return in constructor"
+"14","type_checker feature off didn't report any type issues","high","resolved","run --feature type_checker=off should show warnings","checker.py:check_with_warnings, cli.py:_report_type_warnings"
+"15","main.x example had missing interface implementations","medium","resolved","class D implements Foo missing P() and stringP()","examples/main.x added method implementations"
+"16","strict_typing warnings not shown when type_checker disabled","high","resolved","warnings for strict_typing should appear","checker.py:_check_strict_typing always runs, warnings converted to SourceWarning"]

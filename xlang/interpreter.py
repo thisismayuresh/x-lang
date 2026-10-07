@@ -3254,8 +3254,12 @@ class Interpreter:
             ):
                 return "method"
             return "function"
-        if isinstance(value, (BuiltinFunction, XClass)):
+        if isinstance(value, BuiltinFunction):
             return "function"
+        if isinstance(value, XClass):
+            if value.declaration.is_interface:
+                return "interface"
+            return "class"
         if isinstance(value, list):
             return "Array"
         if isinstance(value, XCollectionInstance):
