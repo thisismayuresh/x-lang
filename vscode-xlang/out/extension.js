@@ -38,71 +38,165 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const child_process_1 = require("child_process");
 const node_1 = require("vscode-languageclient/node");
 let client;
+let outputChannel;
+function log(message) {
+    outputChannel?.appendLine(message);
+    console.log(`[xlang] ${message}`);
+}
+function canImport(python, module) {
+    try {
+        const result = (0, child_process_1.spawnSync)(python, ['-c', `import ${module}`], {
+            timeout: 5000,
+            windowsHide: true
+        });
+        return result.status === 0;
+    }
+    catch {
+        return false;
+    }
+}
+function isExecutable(candidate) {
+    if (candidate.includes(path.sep) || path.isAbsolute(candidate)) {
+        return fs.existsSync(candidate);
+    }
+    return true;
+}
+function resolvePython(workspaceFolders) {
+    const configured = (vscode.workspace.getConfiguration('xlang').get('pythonPath') ?? '').trim();
+    if (configured) {
+        return configured;
+    }
+    const candidates = [];
+    for (const folder of workspaceFolders ?? []) {
+        const root = folder.uri.fsPath;
+        candidates.push(path.join(root, '.venv', 'bin', 'python'));
+        candidates.push(path.join(root, 'venv', 'bin', 'python'));
+        candidates.push(path.join(root, '.venv', 'Scripts', 'python.exe'));
+        candidates.push(path.join(root, 'venv', 'Scripts', 'python.exe'));
+    }
+    candidates.push('python3', 'python');
+    for (const candidate of candidates) {
+        if (!isExecutable(candidate)) {
+            continue;
+        }
+        if (canImport(candidate, 'pygls')) {
+            return candidate;
+        }
+    }
+    const firstExisting = candidates.find(c => c.includes(path.sep) && fs.existsSync(c));
+    return firstExisting ?? 'python3';
+}
+function resolveServerModule(context) {
+    const configured = (vscode.workspace.getConfiguration('xlang').get('serverPath') ?? '').trim();
+    if (configured) {
+        return configured;
+    }
+    return context.asAbsolutePath(path.join('server', 'server.py'));
+}
+function readSettings() {
+    const config = vscode.workspace.getConfiguration('xlang');
+    return {
+        enableTypeChecking: config.get('enableTypeChecking', true),
+        strictTyping: config.get('strictTyping', false)
+    };
+}
+function buildServerEnv(workspaceFolders) {
+    const env = { ...process.env };
+    const roots = (workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    if (roots.length > 0) {
+        env.PYTHONPATH = env.PYTHONPATH
+            ? [...roots, env.PYTHONPATH].join(path.delimiter)
+            : roots.join(path.delimiter);
+    }
+    return env;
+}
 function activate(context) {
-    console.log('X Language extension is now active');
-    // The server is implemented in Python
-    const serverModule = context.asAbsolutePath(path.join('server', 'server.py'));
-    // Check if server exists
+    outputChannel = vscode.window.createOutputChannel('X Language', { log: true });
+    log('X Language extension activated');
+    const serverModule = resolveServerModule(context);
     if (!fs.existsSync(serverModule)) {
-        vscode.window.showErrorMessage('X Language server not found. Please run "npm install" in the server directory.');
+        vscode.window.showErrorMessage(`X Language server not found at ${serverModule}`);
         return;
     }
-    // The debug options for the server
-    const debugOptions = { execArgv: ['--nolazy', '--inspect=6009'] };
-    // If the extension is launched in debug mode then the debug server options are used
-    // Otherwise the run options are used
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const python = resolvePython(workspaceFolders);
+    log(`Using interpreter: ${python}`);
+    log(`Using server: ${serverModule}`);
+    if (!canImport(python, 'pygls')) {
+        const message = `The Python interpreter used by X Language (${python}) is missing pygls. ` +
+            'Install it (pip install pygls lsprotocol) or set "xlang.pythonPath".';
+        log(message);
+        vscode.window.showWarningMessage(message);
+    }
+    const env = buildServerEnv(workspaceFolders);
+    const cwd = workspaceFolders?.[0]?.uri.fsPath;
     const serverOptions = {
-        run: { command: 'python', args: [serverModule], transport: node_1.TransportKind.stdio, options: {} },
-        debug: { command: 'python', args: [serverModule], transport: node_1.TransportKind.stdio, options: debugOptions }
-    };
-    // Options to control the language client
-    const clientOptions = {
-        // Register the server for X documents
-        documentSelector: [{ scheme: 'file', language: 'x' }],
-        synchronize: {
-            // Notify the server about file changes to .x files contained in the workspace
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.x'),
-            // Synchronize the setting section 'xlang' to the server
-            configurationSection: 'xlang'
+        run: {
+            command: python,
+            args: [serverModule],
+            transport: node_1.TransportKind.stdio,
+            options: { env, cwd }
         },
-        initializationOptions: {
-        // Send initial config to server
-        },
-        middleware: {
-        // Optional: Add middleware for custom handling
+        debug: {
+            command: python,
+            args: [serverModule],
+            transport: node_1.TransportKind.stdio,
+            options: { env, cwd }
         }
     };
-    // Create the language client and start the client
+    const clientOptions = {
+        documentSelector: [{ scheme: 'file', language: 'x' }],
+        synchronize: {
+            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{x,toml}')
+        },
+        initializationOptions: readSettings(),
+        outputChannel
+    };
     client = new node_1.LanguageClient('xlang', 'X Language Server', serverOptions, clientOptions);
-    // Start the client. This will also launch the server
-    client.start();
-    // Register commands
-    context.subscriptions.push(vscode.commands.registerCommand('xlang.restartServer', () => {
-        client.stop().then(() => {
-            client.start();
+    client.start().then(() => log('X Language Server started'), (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`X Language Server failed to start: ${message}`);
+        vscode.window.showErrorMessage(`X Language Server failed to start. See the "X Language" output channel for details.`);
+    });
+    context.subscriptions.push(vscode.commands.registerCommand('xlang.restartServer', async () => {
+        if (!client) {
+            return;
+        }
+        try {
+            await client.stop();
+            await client.start();
             vscode.window.showInformationMessage('X Language Server restarted');
-        });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            log(`Restart failed: ${message}`);
+            vscode.window.showErrorMessage('X Language Server restart failed');
+        }
     }));
     context.subscriptions.push(vscode.commands.registerCommand('xlang.checkFile', async () => {
         const editor = vscode.window.activeTextEditor;
         if (editor && editor.document.languageId === 'x') {
-            // Force a re-check by sending a didSave notification
-            await client.sendNotification('textDocument/didSave', {
+            await client?.sendNotification('textDocument/didSave', {
                 textDocument: { uri: editor.document.uri.toString() }
             });
             vscode.window.showInformationMessage('Type check triggered');
         }
     }));
-    // Watch for configuration changes
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('xlang')) {
-            client.sendNotification('workspace/didChangeConfiguration', {
-                settings: vscode.workspace.getConfiguration('xlang')
+            if (e.affectsConfiguration('xlang.pythonPath') || e.affectsConfiguration('xlang.serverPath')) {
+                void vscode.window.showInformationMessage('Restart the X Language Server to apply the new path.');
+                return;
+            }
+            void client?.sendNotification('workspace/didChangeConfiguration', {
+                settings: readSettings()
             });
         }
     }));
+    context.subscriptions.push(outputChannel);
 }
 function deactivate() {
     if (!client) {

@@ -49,10 +49,15 @@
           "default": false,
           "description": "Enable strict typing mode"
         },
+        "xlang.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter used to run the language server. Leave empty to auto-detect (.venv, then python3)."
+        },
         "xlang.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to custom LSP server (optional)"
+          "description": "Path to a custom language server script. Leave empty to use the bundled server."
         }
       }
     },

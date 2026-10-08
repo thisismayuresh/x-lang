@@ -3,7 +3,6 @@
   "name": "X",
   "scopeName": "source.x",
   "fileTypes": ["x"],
-  "injectionSelector": "L:text.html -source -meta.tag",
   "patterns": [
     { "include": "#comments" },
     { "include": "#keywords" },
@@ -85,15 +84,15 @@
     "functions": {
       "patterns": [
         {
+          "name": "support.function.builtin.x",
+          "match": "\\b(print|range|typeOf|sleep|input|args|parseInt|parseFloat|toString|length|push|pop|map|filter|reduce|forEach|find|some|every|includes|indexOf|slice|splice|sort|reverse|keys|values|entries|hasOwnProperty|toFixed|toPrecision|charAt|charCodeAt|substring|substr|split|join|trim|toUpperCase|toLowerCase|replace|match|search)\\b"
+        },
+        {
           "name": "entity.name.function.x",
           "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
           "captures": {
             "1": { "name": "entity.name.function.x" }
           }
-        },
-        {
-          "name": "support.function.builtin.x",
-          "match": "\\b(print|range|typeOf|sleep|input|args|parseInt|parseFloat|toString|length|push|pop|map|filter|reduce|forEach|find|some|every|includes|indexOf|slice|splice|sort|reverse|keys|values|entries|hasOwnProperty|toFixed|toPrecision|charAt|charCodeAt|substring|substr|split|join|trim|toUpperCase|toLowerCase|replace|match|search)\\b"
         }
       ]
     },
@@ -148,7 +147,6 @@
       "patterns": [
         {
           "name": "template.expression.begin.x",
-          "match": "\\$\\{",
           "begin": "\\$\\{",
           "end": "\\}",
           "patterns": [
