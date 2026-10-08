@@ -48,10 +48,16 @@ x help
 The CLI discovers `x.toml` in the current directory by default. Pass
 `--config path/to/file.toml` to select another file, or `--no-config` to
 disable discovery. Command-line `--feature NAME=on|off` settings override
-feature values in TOML. The supported features are `async`, `classes`, `collections`,
-`decorators`, `destructuring`, `enums`, `equality`, `exceptions`, `filesystem`,
-`loops`, `namespaces`, `object_literals`, `pattern_matching`, `spread`, and
-`threads`. All default to enabled.
+feature values in TOML. The supported features are `access_modifiers`,
+`array_push`, `arrow_functions`, `async`, `bulk_export`, `classes`,
+`collections`, `command_input`, `concurrency_primitives`, `decorators`,
+`destructuring`, `enhanced_input`, `enums`, `equality`, `exceptions`,
+`filesystem`, `generics`, `interfaces`, `loops`, `math_library`,
+`namespaces`, `network`, `object_literals`, `pattern_matching`, `records`,
+`spread`, `static_methods`, `switch`, `threads`, `type_checker`, and
+`unions`. They all default to enabled. The experimental `url_imports`,
+`package_manager`, and `strict_typing` features are also supported but
+default to disabled.
 
 The repository's [x.toml](./x.toml) demonstrates the schema:
 
@@ -161,6 +167,10 @@ Implemented and currently demonstrated features:
   of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
 - [x] Rust-inspired `match` expressions with wildcard, binding, literal, enum,
   array/object destructuring, alternatives, guards, and rest patterns.
+- [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
+  statements, record type aliases (`type Point = record { int x; int y; };`),
+  array `.push(...)`, bulk `export { ... };` lists, and typed `input()`
+  validation when `enhanced_input` is enabled.
 - [x] `try`/`catch`/`finally` and `throw`.
 - [x] Automatic statement terminators at line breaks, closing braces, and EOF.
 - [x] JavaScript-like `==` coercion for supported primitive values and strict
@@ -174,8 +184,11 @@ Implemented and currently demonstrated features:
   built-ins, and the `typeOf` runtime type helper.
 - [x] Project-relative named imports, grouped imports, wildcard imports, and
   import aliases.
-- [x] The `System.io.FileSystem`, `System.Environment`, and `System.concurrent`
-  modules described below.
+- [x] The `System.io` modules (Console, FileSystem, and the awaitable
+  `Network.http` `fetch`), `System.Environment`, `System.concurrent`, and
+  `System.utils` described below.
+- [x] Fully-qualified catch types over importable `System.Throwable...`
+  exception paths, and `JSON.stringify`-style `System.utils.JSON.toJSON`.
 
 The interpreter executes code dynamically, and `x check`, `x build`, and
 `x run` all run the static type checker first: declared types, interface
@@ -426,6 +439,72 @@ The import loader currently combines project declarations into a shared runtime
 namespace. Aliased wildcard imports provide a namespace-like object containing
 the file's exports; they do not create an isolated module runtime.
 
+## The System namespace
+
+The built-in `System` tree is available without an import — importing a
+standard-library module only brings its short name into scope
+(`import System.io.FileSystem` binds `FileSystem`, so you can drop the
+`System.io` prefix). Everything that ships with the runtime:
+
+```text
+System/
+├── Environment                    # process environment (no import needed)
+│   ├── has(key)                   # true when the variable exists
+│   ├── all()                      # snapshot of every variable
+│   └── X_MODE, PATH, HOME, ...    # each process variable as a value
+├── io/
+│   ├── Console                    # print(message), input(prompt)
+│   ├── FileSystem                 # file operations, plus every *Async twin
+│   │   ├── exists, isFile, isDirectory
+│   │   ├── readText, writeText, appendText
+│   │   ├── createDirectory, listDirectory
+│   │   ├── deleteFile, deleteDirectory
+│   │   └── existsAsync, readTextAsync, writeTextAsync, ...
+│   └── Network/
+│       └── http                   # fetch(url, options) — see HTTP client
+├── concurrent/
+│   ├── Async                      # Async.all for concurrent results
+│   └── Thread                     # Thread.start and Thread.join
+├── Throwable/                     # the exception hierarchy, node for node
+│   ├── Error/                     #   DatabaseError
+│   └── Exception/
+│       ├── RuntimeException/      #   ArithmeticException, TypeException,
+│       │                          #   IllegalArgumentException,
+│       │                          #   IndexOutOfBoundsException
+│       ├── IOException/           #   FileSystemException, HttpException
+│       └── DatabaseException
+└── utils/
+    ├── Collections/
+    │   ├── HashMap, LinkedList, List (alias of LinkedList)
+    │   ├── Stack, Queue, PriorityQueue, Trie, Set
+    │   ├── TreeMap, TreeSet, LinkedHashMap, LRUCache
+    │   └── ThreadSafeMap, ThreadSafeSet
+    ├── Math                       # abs, sqrt, pow, sin, cos, log, max, ...
+    └── JSON                       # toJSON(value, indent?) — JSON.stringify
+```
+
+Top-level globals that need no namespace and no import: `print`, `range`,
+`typeOf`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
+`command_input` is enabled), `trace` (when `decorators` is enabled), `Object`
+(when `object_literals` is enabled), and the short collection names (`Stack`,
+`HashMap`, `Queue`, ...) when `collections` is enabled.
+
+The four import forms for the same module:
+
+```x
+import System.io.FileSystem              # binds FileSystem
+import System.io.Network.http.fetch      # binds fetch
+import System.io.Network.http            # binds http  -> http.fetch(...)
+import System.io.Network.http.fetch as httpGet  # binds httpGet
+import System.Throwable.Exception.IOException.HttpException  # binds HttpException
+import System.utils.JSON.toJSON          # binds toJSON
+```
+
+The `network` feature (enabled by default) gates `System.io.Network`; with it
+disabled, importing the module fails with
+`feature 'network' is disabled`. The `exceptions` feature gates
+`System.Throwable` the same way. `System.utils.JSON` is always available.
+
 ## Error and exception handling
 
 All built-in thrown errors derive from `Throwable`:
@@ -441,7 +520,8 @@ Throwable
     │   ├── IllegalArgumentException
     │   └── IndexOutOfBoundsException
     ├── IOException
-    │   └── FileSystemException
+    │   ├── FileSystemException
+    │   └── HttpException
     └── DatabaseException
 ```
 
@@ -449,7 +529,31 @@ Catch a specific type first, then a parent type. `catch (Throwable error)` is
 the broad fallback; `catch (Exception error)` catches checked and runtime
 exceptions, while `Error` is a separate branch. Catch variables provide
 `name`, `message`, `cause`, and `stack` properties. `stack` currently reports
-the source location where the error was raised. Errors can preserve a cause:
+the source location where the error was raised.
+
+Every node of the hierarchy is also importable as a `System.Throwable` path,
+and a catch clause may spell the full path inline — no cast or wrapper:
+
+```x
+import System.Throwable.Exception.IOException.HttpException
+
+any function main() {
+    try {
+        throw HttpException("boom");
+    } catch (System.Throwable.Exception.IOException.HttpException error) {
+        print(error.message);   // boom
+    }
+}
+```
+
+Short and long catch types are interchangeable: a leaf path matches exactly,
+a parent path (`System.Throwable.Exception.IOException`) matches its
+subclasses, and `System.Throwable` matches every exception. Prefixes bind too —
+`import System.Throwable.Exception.IOException` still gives you the ordinary
+`IOException` constructor — while an alias (`import System.Throwable.Exception
+as Errors`) exposes the subtree for `Errors.IOException.HttpException(...)`.
+
+Errors can preserve a cause:
 
 ```x
 try {
@@ -503,7 +607,8 @@ Custom exception instances are catchable by their own class, any custom parent,
 
 Arithmetic failures use `ArithmeticException`; file-system operation failures
 use `FileSystemException`, which can also be caught as `IOException`,
-`Exception`, or `Throwable`. See the runnable
+`Exception`, or `Throwable`. HTTP failures from `fetch` use `HttpException`,
+which likewise extends `IOException`. See the runnable
 [exception hierarchy example](./examples/exceptions/exception_hierarchy.x).
 
 ## File system standard library
@@ -571,6 +676,159 @@ File-system errors are reported as X runtime errors with the attempted
 operation and path. File access is **not sandboxed**: X programs run with the
 operating-system permissions of the process. Only run programs whose source you
 trust.
+
+## HTTP client: System.io.Network.http
+
+`fetch` performs HTTP requests from X. It is asynchronous: call it inside an
+`async function` and `await` the result. Every failure — refused connections,
+DNS lookup failures, TLS errors, timeouts, bad URLs, bad options, invalid
+JSON — raises `HttpException`, so `try` / `catch` / `finally` covers the
+whole request lifecycle:
+
+```x
+import System.io.Network.http.fetch
+
+async function main() {
+    try {
+        let response = await fetch("https://api.example.com/users", {
+            method: "GET",
+            // headers pass through verbatim; User-Agent here wins over
+            // the userAgent option and the library default
+            headers: {
+                "Accept": "application/json",
+                "User-Agent": "MyApp/1.0 (contact@example.com)"
+            },
+            timeout: 10
+        });
+        print(response.status);          // 200
+        print(response.ok);              // true
+        let users = response.json();
+        print(users.length);
+    } catch (HttpException error) {
+        print("request failed: " + error.message);
+    } finally {
+        print("done");
+    }
+}
+```
+
+### Request options
+
+All options are validated at the call site — a typo fails immediately with
+the source location and the list of valid names, before any network traffic:
+
+| Option           | Type                     | Default   | Meaning |
+| ---------------- | ------------------------ | --------- | ------- |
+| `method`         | string                   | `"GET"`   | `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` |
+| `headers`        | object                   | `{}`      | Extra headers; number/boolean values are stringified |
+| `body`           | string / object / array  | none      | Objects and arrays are JSON-encoded with `Content-Type: application/json` |
+| `userAgent`      | string                   | `"X/0.1.0"` | curl-style `User-Agent`; an explicit `headers` entry wins |
+| `timeout`        | number (seconds)         | `30`      | `0` or `null` disables the limit (JS `fetch` can hang forever) |
+| `followRedirects`| boolean                  | `true`    | Set `false` to receive `3xx` responses directly |
+| `throwOnError`   | boolean                  | `false`   | Raise `HttpException` for `>= 400` responses, with a body excerpt |
+| `verifySsl`      | boolean                  | `true`    | Set `false` to accept unverified TLS certificates |
+| `query`          | object                   | none      | Appended as URL query parameters; array values repeat the key |
+
+```x
+let response = await fetch("https://api.example.com/search", {
+    method: "POST",
+    userAgent: "curl-like client",
+    headers: {"Authorization": "Bearer token"},
+    body: {query: "x language", limit: 10},
+    query: {"pretty": true},
+    timeout: 5,
+    throwOnError: true
+});
+```
+
+### Response
+
+Every `await fetch(...)` resolves to a response object:
+
+| Member               | Meaning |
+| -------------------- | ------- |
+| `status`, `statusText`, `ok` | e.g. `200`, `"OK"`, `true` for `2xx` |
+| `url`                | final URL after redirects |
+| `headers`            | object of lowercased header names to values |
+| `body`, `bodyBytes`  | decoded text, and the raw bytes as an array of integers |
+| `text()`             | the body text |
+| `json()`             | the body parsed as JSON; raises `HttpException` when invalid |
+| `header(name)`       | case-insensitive single-header lookup, `null` when absent |
+
+### Errors
+
+```x
+try {
+    await fetch("http://127.0.0.1:9/api", {timeout: 2});
+} catch (HttpException error) {
+    print(error.message);
+    // Cannot reach '127.0.0.1:9': connection refused (while fetching ...)
+} finally {
+    print("always runs");
+}
+```
+
+- Connection, DNS, TLS, timeout, URL, option, and JSON failures raise
+  `HttpException`, catchable also as `IOException`, `Exception`, or
+  `Throwable`.
+- HTTP error statuses return a normal response (`status` `404`, `ok` `false`)
+  unless `throwOnError: true` — closer to `curl --fail` with the status and a
+  body excerpt in the message.
+- Forgetting `await` is reported explicitly:
+  `did you forget 'await'?` instead of silently handing back a promise-like
+  value.
+
+Compared with JavaScript's built-in `fetch`: no promise ceremony, a default
+timeout, first-class `userAgent`, redirect control, `throwOnError`,
+`bodyBytes`, case-insensitive `header(name)`, and call-site validation of
+every option — all backed by `HttpException` rather than a grab bag of
+`TypeError`/`NetworkError` values.
+
+The `network` feature gates the module; the runnable
+[fetch demo](./examples/fetch_demo.x) parses its body with `response.json()`,
+prints the first post through `toJSON`, catches `HttpException` by its full
+hierarchy path, and degrades into its `catch` clause cleanly when the network
+is unavailable:
+
+```sh
+x run examples/fetch_demo.x
+```
+
+## JSON output: System.utils.JSON.toJSON
+
+`toJSON(value)` stringifies a value with JavaScript's `JSON.stringify`
+semantics: compact by default, pretty-printed when given an indent
+(`toJSON(value, 2)` spaces per level, or a literal string). Object keys are
+quoted, functions and `undefined` members are omitted from objects, `undefined`
+inside arrays renders as `null`, and circular structures are rejected with
+`Converting circular structure to JSON`. Indent validation matches the
+spec too: negative indents and boolean indents raise.
+
+```x
+import System.utils.JSON.toJSON
+
+class Point {
+    int x;
+    public Point(int x) { this.x = x; }
+}
+
+any function main() {
+    print(toJSON({ok: true, tags: ["http"], n: 200}));
+    // {"ok":true,"tags":["http"],"n":200}
+    print(toJSON({a: {b: 1}}, 2));
+    // {
+    //   "a": {
+    //     "b": 1
+    //   }
+    // }
+    print(toJSON(new Point(5)));
+    // {"x":5}
+}
+```
+
+Import forms: `import System.utils.JSON.toJSON` binds `toJSON`,
+`import System.utils.JSON` binds `JSON` for `JSON.toJSON(...)`, and the
+function needs no import at all as `System.utils.JSON.toJSON(...)`.
 
 ## Data Structures and Algorithms (DSA) Library
 
@@ -1293,6 +1551,17 @@ x run examples/filesystem_demo.x
 The demo creates `build/filesystem-demo/notes.txt`, writes and appends text,
 reads and lists it, then removes the file and its now-empty directory. The
 `build/` directory is ignored by Git.
+
+### HTTP fetch demo
+
+```sh
+x run examples/fetch_demo.x
+```
+
+The demo awaits `fetch("https://example.com/")` with a custom `userAgent`
+and prints the status, content type, and body size. When the network is
+unavailable the same program reports the `HttpException` and still runs its
+`finally` block — see [HTTP client](#http-client-systemionetworkhttp).
 
 ### Object-oriented, rest/spread, async, and threading demos
 

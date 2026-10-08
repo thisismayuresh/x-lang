@@ -32,7 +32,7 @@ from .ast_nodes import (
 from .diagnostics import SourceWarning as ModuleWarning
 from .lexer import Lexer
 from .parser import Parser
-from .runtime import RuntimeErrorX
+from .runtime import RuntimeErrorX, qualified_exception_paths
 
 """
 Module loader for X language programs.
@@ -77,6 +77,9 @@ class ModuleLoader:
         "System.concurrent.Thread",
         "System.io.FileSystem",
         "System.io.Console",
+        "System.io.Network",
+        "System.io.Network.http",
+        "System.io.Network.http.fetch",
         "System.Environment",
         "System.utils.Collections",
         "System.utils.Collections.HashMap",
@@ -88,7 +91,12 @@ class ModuleLoader:
         "System.utils.Collections.Trie",
         "System.utils.Collections.Set",
         "System.utils.Math",
-    }
+        "System.utils.JSON",
+        "System.utils.JSON.toJSON",
+        # Every System.Throwable... path mirrors the builtin exception
+        # hierarchy: Throwable, Exception, IOException, HttpException, ...
+        # The set is generated so it can never drift from the hierarchy.
+    } | set(qualified_exception_paths())
 
     def __init__(
         self,
@@ -334,6 +342,14 @@ class ModuleLoader:
             feature_name = "math_library"
         elif module_path == "System.io.Console":
             feature_name = "command_input"
+        elif module_path == "System.io.Network" or module_path.startswith(
+            "System.io.Network."
+        ):
+            feature_name = "network"
+        elif module_path == "System.Throwable" or module_path.startswith(
+            "System.Throwable."
+        ):
+            feature_name = "exceptions"
         else:
             feature_name = feature_for_module.get(module_path)
         if feature_name is not None and not self.config.enabled(feature_name):
