@@ -309,37 +309,212 @@ def hover(ls: XLanguageServer, params: HoverParams):
     return None
 
 
+DECL_KEYWORDS = (
+    r"(?:return|if|else|while|for|switch|match|case|default|break|continue|"
+    r"throw|catch|new|print)\b"
+)
+TYPE_TOKEN = r"[A-Za-z_][A-Za-z0-9_]*(?:\[\])*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+MODIFIERS = (
+    r"(?:(?:public|private|protected|static|final|abstract|async|override|"
+    r"internal)\s+)*"
+)
+
+
+def definition_patterns(word: str, enum_member: bool = True) -> list[re.Pattern]:
+    """Ordered patterns that match where ``word`` is *declared*.
+
+    Every pattern captures the declared name in group ``n``.  Patterns are
+    ordered by confidence (type before function before method before field
+    before parameter before enum member); callers decide how much of the
+    buffer each pattern is allowed to see.
+    """
+    w = re.escape(word)
+    guard = rf"^\s*(?!{DECL_KEYWORDS})"
+    patterns = [
+        # class / interface / enum / type alias
+        re.compile(rf"\b(?:class|interface|enum|type)\s+(?P<n>{w})\b"),
+        # free function: "int function add(a, b) {"
+        re.compile(rf"\bfunction\s+(?P<n>{w})\s*\("),
+        # method or constructor: "public void greet() {"
+        re.compile(
+            rf"{guard}{MODIFIERS}(?:{TYPE_TOKEN}\s+){{1,2}}"
+            rf"(?P<n>{w})\s*\([^()]*\)\s*(?::[^{{]*)?\{{"
+        ),
+        # interface / abstract signature: "void serialize();"
+        re.compile(
+            rf"{guard}{MODIFIERS}{TYPE_TOKEN}\s+(?P<n>{w})\s*\([^()]*\)\s*;"
+        ),
+        # field or local declaration: "string name;", "int x = 5;"
+        re.compile(
+            rf"{guard}{MODIFIERS}{TYPE_TOKEN}\s+(?P<n>{w})"
+            rf"\s*(?::[^=;]*)?(?:=[^;]*)?;"
+        ),
+        # let / const / var binding (also matches loop variables); the
+        # delimiter guard stops the optional type token being taken as the name
+        re.compile(
+            rf"\b(?:let|const|var)\s+(?:{TYPE_TOKEN}\s+)?(?P<n>{w})"
+            rf"(?=\s*(?:=|;|,|:|$))"
+        ),
+        # parameter of a declaration: >=1 token, no "=" and no nested "("
+        # before the parameter list (keeps calls such as `print(x)` out); the
+        # name must sit where a parameter name sits (followed by , = : or ))
+        # and the list must be followed by , ; : or { (never end-of-line)
+        re.compile(
+            rf"{guard}{MODIFIERS}(?P<pre>(?:[^\s()={{}}]+\s+)+)"
+            rf"(?P<fn>[A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\b(?P<n>{w})\b"
+            rf"(?=\s*(?:,|=|:|\)))[^()]*\)\s*(?:,|;|:|\{{)"
+        ),
+        # bare indented member (enum entries): "ACTIVE,"
+    ]
+    if enum_member:
+        patterns.append(re.compile(rf"^\s+(?P<n>{w})\s*,?\s*(?://.*)?$"))
+    return patterns
+
+
+def code_lines(source: str) -> list[str]:
+    """Split `source` into lines with comments and literals blanked out.
+
+    Blanked characters become spaces, so every line keeps its original length
+    and all columns still line up with the editor.  Nothing that looks like a
+    declaration inside a comment or a string can then be resolved.
+    """
+    out: list[str] = []
+    index = 0
+    total = len(source)
+    while index < total:
+        character = source[index]
+        following = source[index + 1] if index + 1 < total else ""
+        if character == "/" and following == "/":
+            while index < total and source[index] != "\n":
+                out.append(" ")
+                index += 1
+        elif character == "/" and following == "*":
+            out.append("  ")
+            index += 2
+            while index < total and not (
+                source[index] == "*"
+                and index + 1 < total
+                and source[index + 1] == "/"
+            ):
+                out.append("\n" if source[index] == "\n" else " ")
+                index += 1
+            if index < total:
+                out.append("  ")
+                index += 2
+        elif character in ('"', "'", "`"):
+            quote = character
+            out.append(" ")
+            index += 1
+            while index < total and source[index] != "\n":
+                if source[index] == "\\":
+                    out.append(" ")
+                    if index + 1 < total and source[index + 1] != "\n":
+                        out.append(" ")
+                        index += 2
+                    else:
+                        index += 1
+                    continue
+                if source[index] == quote:
+                    out.append(" ")
+                    index += 1
+                    break
+                out.append(" ")
+                index += 1
+        else:
+            out.append(character)
+            index += 1
+    return "".join(out).split("\n")
+
+
+CALLABLE_LINE = re.compile(
+    rf"^\s*(?!{DECL_KEYWORDS}){MODIFIERS}(?:{TYPE_TOKEN}\s+){{1,2}}"
+    rf"[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\)\s*(?::[^{{]*)?\{{\s*$"
+)
+
+
+def block_end(lines: list[str], opener: int) -> int:
+    """Line index of the `}` matching the `{` on line `opener`."""
+    depth = 0
+    opened = False
+    for scan in range(opener, len(lines)):
+        for character in lines[scan]:
+            if character == "{":
+                depth += 1
+                opened = True
+            elif character == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    return scan
+    return len(lines) - 1
+
+
+def enclosing_callable(lines: list[str], line0: int) -> tuple[int, int] | None:
+    """Innermost function/method/constructor body that contains `line0`."""
+    for index in range(line0, -1, -1):
+        if not CALLABLE_LINE.match(lines[index]):
+            continue
+        end = block_end(lines, index)
+        if index <= line0 <= end:
+            return index, end
+    return None
+
+
 @server.feature(TEXT_DOCUMENT_DEFINITION)
 def definition(ls: XLanguageServer, params: DefinitionParams):
     uri = str(params.text_document.uri)
-    source = ls._source(uri)
-    lines = source.split("\n")
+    lines = code_lines(ls._source(uri))
     line0 = params.position.line
     char0 = params.position.character
     if line0 >= len(lines) or char0 > len(lines[line0]):
         return None
 
     word = None
+    word_start = -1
     for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", lines[line0]):
         start, end = match.span()
         if start <= char0 < end:
             word = match.group(0)
+            word_start = start
             break
     if word is None:
         return None
 
-    pattern = re.compile(rf"\b(class|interface|enum|type)\s+{re.escape(word)}\b")
-    for index, text in enumerate(lines):
-        match = pattern.search(text)
-        if match:
-            column = match.start(2)
-            return Location(
-                uri=uri,
-                range=Range(
-                    start=Position(line=index, character=column),
-                    end=Position(line=index, character=column + len(word)),
-                ),
-            )
+    patterns = definition_patterns(
+        word, enum_member=any(re.search(r"\benum\b", text) for text in lines)
+    )
+
+    def located(line: int, column: int) -> Location:
+        return Location(
+            uri=uri,
+            range=Range(
+                start=Position(line=line, character=column),
+                end=Position(line=line, character=column + len(word)),
+            ),
+        )
+
+    # Clicking a name inside its own declaration must stay there, otherwise a
+    # same-named field elsewhere in the file wins the file-wide search.
+    for pattern in patterns:
+        for match in pattern.finditer(lines[line0]):
+            if match.start("n") == word_start:
+                return located(line0, match.start("n"))
+
+    # Inside a function body, prefer a declaration from that function (this is
+    # what makes parameter usages land on the parameter list).
+    block = enclosing_callable(lines, line0)
+    if block is not None:
+        start, end = block
+        for pattern in patterns:
+            for index in range(start, end + 1):
+                match = pattern.search(lines[index])
+                if match:
+                    return located(index, match.start("n"))
+
+    for pattern in patterns:
+        for index, text in enumerate(lines):
+            match = pattern.search(text)
+            if match:
+                return located(index, match.start("n"))
     return None
 
 

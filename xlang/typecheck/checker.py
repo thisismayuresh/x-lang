@@ -202,6 +202,9 @@ class TypeChecker:
         self._class_stack: list[str] = []
         self._expected_return: XType | None = None
         self._saw_value_return = False
+        self._returns_void = False
+        self._callable_kind: str | None = None
+        self._callable_name: str | None = None
         self._in_constructor = False
         self._try_depth = 0
         self._current_node: Any | None = None
@@ -604,6 +607,9 @@ class TypeChecker:
                 return
             actual = self._infer(declaration.value, scope)
             self._saw_value_return = True
+            if self._returns_void:
+                self._error(self._void_return_message(), declaration)
+                return
             expected = self._expected_return
             if expected is not None and not is_compatible(
                 actual, expected, relations=self
@@ -672,6 +678,9 @@ class TypeChecker:
         previous_expected = self._expected_return
         previous_saw = self._saw_value_return
         previous_in_constructor = self._in_constructor
+        previous_void = self._returns_void
+        previous_kind = self._callable_kind
+        previous_name = self._callable_name
         is_constructor = (
             self._class_stack
             and declaration.name == self._class_stack[-1]
@@ -680,6 +689,12 @@ class TypeChecker:
         self._expected_return = expected
         self._saw_value_return = False
         self._in_constructor = is_constructor
+        self._returns_void = self._is_void_annotation(declaration.return_type)
+        self._callable_kind = callable_kind(
+            declaration.name,
+            self._class_stack[-1] if self._class_stack else None,
+        )
+        self._callable_name = declaration.name
         if declaration.body:
             self._collect_local_functions(declaration.body)
             self._check_statements(declaration.body, body_scope)
@@ -688,18 +703,17 @@ class TypeChecker:
                 and not self._saw_value_return
                 and not self._contains_throw(declaration.body)
             ):
-                kind = callable_kind(
-                    declaration.name,
-                    self._class_stack[-1] if self._class_stack else None,
-                )
                 self._error(
-                    f"{kind} '{declaration.name}' must return a value of type "
+                    f"{self._callable_kind} '{declaration.name}' must return a value of type "
                     f"'{expected.display()}'",
                     declaration,
                 )
         self._expected_return = previous_expected
         self._saw_value_return = previous_saw
         self._in_constructor = previous_in_constructor
+        self._returns_void = previous_void
+        self._callable_kind = previous_kind
+        self._callable_name = previous_name
         self._active_generics = previous_generics
 
     def _resolve_return_type(self, type_name: str | None) -> XType | None:
@@ -709,6 +723,22 @@ class TypeChecker:
         if resolved.is_any or resolved.name == "void":
             return None
         return resolved
+
+    def _is_void_annotation(self, type_name: str | None) -> bool:
+        """True when a declared return type is exactly ``void`` (unlike ``any``)."""
+        if type_name is None:
+            return False
+        resolved = self._resolve_annotation(type_name)
+        return resolved.name == "void" and not resolved.is_any
+
+    def _void_return_message(self) -> str:
+        kind = self._callable_kind or "Function"
+        if self._callable_name:
+            return (
+                f"{kind} '{self._callable_name}' is declared 'void' "
+                "and cannot return a value"
+            )
+        return f"A 'void' {kind.lower()} cannot return a value"
 
     # ------------------------------------------------------------------
     # Classes
@@ -1221,8 +1251,14 @@ class TypeChecker:
         expected = self._resolve_return_type(expression.return_type)
         previous_expected = self._expected_return
         previous_saw = self._saw_value_return
+        previous_void = self._returns_void
+        previous_kind = self._callable_kind
+        previous_name = self._callable_name
         self._expected_return = expected
         self._saw_value_return = False
+        self._returns_void = self._is_void_annotation(expression.return_type)
+        self._callable_kind = "Function expression"
+        self._callable_name = None
         if expression.body:
             self._collect_local_functions(expression.body)
             self._check_statements(expression.body, lambda_scope)
@@ -1238,6 +1274,9 @@ class TypeChecker:
                 )
         self._expected_return = previous_expected
         self._saw_value_return = previous_saw
+        self._returns_void = previous_void
+        self._callable_kind = previous_kind
+        self._callable_name = previous_name
         return FUNCTION
 
     def _infer_unary(self, expression: Unary, scope: TypeScope) -> XType:
