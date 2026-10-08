@@ -1,367 +1,525 @@
 """X Language LSP Server entry point."""
 
-import sys
 import os
+import re
+import sys
+from pathlib import Path
 
-# Add the xlang package to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'xlang'))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if os.path.isdir(os.path.join(_REPO_ROOT, "xlang")) and _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from pygls.server import JsonRPCServer
-from pygls.protocol import LanguageServerProtocol
-from lsprotocol.converters import get_converter
 from lsprotocol.types import (
-    TEXT_DOCUMENT_DID_OPEN,
+    INITIALIZE,
+    TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_CHANGE,
     TEXT_DOCUMENT_DID_CLOSE,
+    TEXT_DOCUMENT_DID_OPEN,
     TEXT_DOCUMENT_DID_SAVE,
-    TEXT_DOCUMENT_COMPLETION,
-    TEXT_DOCUMENT_HOVER,
     TEXT_DOCUMENT_DEFINITION,
+    TEXT_DOCUMENT_HOVER,
     TEXT_DOCUMENT_REFERENCES,
-    CompletionParams,
-    HoverParams,
-    DefinitionParams,
-    ReferenceParams,
-    DidOpenTextDocumentParams,
-    DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams,
-    DidSaveTextDocumentParams,
+    WORKSPACE_DID_CHANGE_CONFIGURATION,
+    WORKSPACE_DID_CHANGE_WATCHED_FILES,
     CompletionItem,
     CompletionItemKind,
-    Hover,
-    MarkupContent,
-    MarkupKind,
-    Location,
-    Range,
-    Position,
+    CompletionParams,
+    DefinitionParams,
     Diagnostic,
     DiagnosticSeverity,
+    DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams,
+    DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams,
+    Hover,
+    HoverParams,
+    InitializeParams,
+    Location,
+    MarkupContent,
+    MarkupKind,
+    Position,
     PublishDiagnosticsParams,
+    Range,
+    ReferenceParams,
+    TextDocumentSyncKind,
 )
 
+from pygls.lsp.server import LanguageServer
+from pygls.uris import to_fs_path
+
+from xlang.config import XConfig, discover_config, load_config
 from xlang.lexer import Lexer
 from xlang.parser import Parser
 from xlang.typecheck.checker import TypeChecker
 
+WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[^ \t]")
 
-class XLanguageServer(JsonRPCServer):
-    """LSP Server for X language."""
-    
-    def __init__(self):
-        self.name = "xlang-server"
-        self.version = "v0.1.0"
-        super().__init__(LanguageServerProtocol, lambda: get_converter())
-        self.documents = {}
-        self.diagnostics_cache = {}
-        self.config = {
-            'enable_type_checking': True,
-            'strict_typing': False,
+
+class XLanguageServer(LanguageServer):
+    """LSP Server for the X language."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="xlang-server",
+            version="v0.1.0",
+            text_document_sync_kind=TextDocumentSyncKind.Full,
+        )
+        self.documents: dict[str, str] = {}
+        self.diagnostics_cache: dict[str, list[Diagnostic]] = {}
+        self.settings: dict[str, object] = {
+            "enableTypeChecking": True,
+            "strictTyping": False,
         }
-    
-    def _get_document(self, uri: str) -> str:
-        """Get document source from URI."""
-        return self.documents.get(uri, '')
-    
-    def _update_diagnostics(self, uri: str):
-        """Update diagnostics for a document."""
-        if not self.config.get('enable_type_checking', True):
-            self.publish_diagnostics(uri, [])
-            return
-        
-        source = self._get_document(uri)
-        if not source:
-            self.publish_diagnostics(uri, [])
-            return
-        
+        self._config_cache: dict[str, XConfig] = {}
+
+    def apply_settings(self, settings: object) -> None:
+        if isinstance(settings, dict):
+            self.settings.update(settings)
+
+    def project_config(self, uri: str) -> XConfig:
+        """Load the nearest ``x.toml`` for a document, mirroring the CLI."""
+        directory = os.path.dirname(to_fs_path(uri)) or os.getcwd()
+        cached = self._config_cache.get(directory)
+        if cached is not None:
+            return cached
         try:
-            lexer = Lexer(source, uri)
+            config = load_config(discover_config(Path(directory)))
+        except Exception as error:
+            print(f"Cannot read x.toml for {directory}: {error}", file=sys.stderr, flush=True)
+            config = load_config(None)
+        if self.settings.get("strictTyping") is True:
+            config.features["strict_typing"] = True
+        self._config_cache[directory] = config
+        return config
+
+    def _source(self, uri: str) -> str:
+        if uri in self.documents:
+            return self.documents[uri]
+        try:
+            return self.workspace.get_text_document(uri).source
+        except Exception:
+            return ""
+
+    def _publish(self, uri: str, diagnostics: list[Diagnostic]) -> None:
+        self.text_document_publish_diagnostics(
+            PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
+        )
+
+    @staticmethod
+    def _position(line: int | None, column: int | None) -> Position:
+        return Position(
+            line=max(0, (line or 1) - 1),
+            character=max(0, (column or 1) - 1),
+        )
+
+    @staticmethod
+    def _length(source: str, line0: int, column0: int, token_value: str | None) -> int:
+        if token_value:
+            return max(1, len(token_value))
+        lines = source.split("\n")
+        if 0 <= line0 < len(lines) and column0 < len(lines[line0]):
+            match = WORD_RE.match(lines[line0], column0)
+            if match:
+                return max(1, match.end() - match.start())
+        return 1
+
+    @classmethod
+    def _diagnostic(
+        cls,
+        error,
+        severity: DiagnosticSeverity,
+        source: str,
+        source_name: str,
+    ) -> Diagnostic:
+        start = cls._position(getattr(error, "line", None), getattr(error, "column", None))
+        token = getattr(error, "token", None)
+        token_value = getattr(token, "value", None) if token is not None else None
+        length = cls._length(source, start.line, start.character, token_value)
+        end = Position(line=start.line, character=start.character + length)
+        return Diagnostic(
+            range=Range(start=start, end=end),
+            severity=severity,
+            message=getattr(error, "message", str(error)),
+            source=source_name,
+        )
+
+    def _update_diagnostics(self, uri: str) -> None:
+        """Lex, parse and type-check a document, then publish the diagnostics."""
+        source = self._source(uri)
+        if not source:
+            self.diagnostics_cache[uri] = []
+            self._publish(uri, [])
+            return
+
+        diagnostics: list[Diagnostic] = []
+        try:
+            config = self.project_config(uri)
+            lexer = Lexer(source, uri, recover_errors=True)
             tokens = lexer.tokenize()
-            parser = Parser(tokens)
+            for error in lexer.errors:
+                diagnostics.append(self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang"))
+
+            parser = Parser(
+                tokens,
+                config.features,
+                uri,
+                recover_errors=True,
+            )
             program = parser.parse()
-            
-            checker = TypeChecker()
-            errors = checker.check(program, source_name=uri)
-            
-            diagnostics = []
-            for error in errors:
-                line = max(0, (error.line or 1) - 1)
-                column = max(0, (error.column or 1) - 1)
-                
-                # Calculate end position (approximate)
-                end_column = column + 10
-                
-                diagnostics.append(Diagnostic(
-                    range=Range(
-                        start=Position(line=line, character=column),
-                        end=Position(line=line, character=end_column)
-                    ),
-                    severity=DiagnosticSeverity.Error,
-                    message=error.message,
-                    source="xlang",
-                    code=error.code if hasattr(error, 'code') else None
-                ))
-            
-            # Send diagnostics notification
-            from lsprotocol.types import PublishDiagnosticsParams
-            self.protocol.notify(
-                "textDocument/publishDiagnostics",
-                PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
-            )
-            self.diagnostics_cache[uri] = diagnostics
-            
-        except Exception as e:
-            # Don't crash on parse errors, just log
-            print(f"Error checking {uri}: {e}", file=sys.stderr)
-            from lsprotocol.types import PublishDiagnosticsParams
-            self.protocol.notify(
-                "textDocument/publishDiagnostics",
-                PublishDiagnosticsParams(uri=uri, diagnostics=[])
-            )
+            for error in parser.errors:
+                diagnostics.append(self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang"))
+
+            if (
+                not diagnostics
+                and self.settings.get("enableTypeChecking", True)
+                and config.enabled("type_checker")
+            ):
+                for error in TypeChecker().check(program, source_name=uri, config=config):
+                    diagnostics.append(
+                        self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang")
+                    )
+        except Exception as error:
+            print(f"Error checking {uri}: {error}", file=sys.stderr, flush=True)
+
+        self.diagnostics_cache[uri] = diagnostics
+        self._publish(uri, diagnostics)
 
 
-# Create server instance
 server = XLanguageServer()
 
 
+@server.feature(INITIALIZE)
+def initialize(ls: XLanguageServer, params: InitializeParams) -> None:
+    ls.apply_settings(params.initialization_options)
+
+
+@server.feature(WORKSPACE_DID_CHANGE_CONFIGURATION)
+def did_change_configuration(ls: XLanguageServer, params) -> None:
+    ls.apply_settings(params.settings)
+    ls._config_cache.clear()
+
+
+@server.feature(WORKSPACE_DID_CHANGE_WATCHED_FILES)
+def did_change_watched_files(ls: XLanguageServer, params: DidChangeWatchedFilesParams) -> None:
+    ls._config_cache.clear()
+    for change in params.changes:
+        uri = str(change.uri)
+        if uri in ls.documents:
+            ls._update_diagnostics(uri)
+
+
 @server.feature(TEXT_DOCUMENT_DID_OPEN)
-def did_open(ls, params: DidOpenTextDocumentParams):
-    """Handle document open."""
-    uri = params.text_document.uri
+def did_open(ls: XLanguageServer, params: DidOpenTextDocumentParams) -> None:
+    uri = str(params.text_document.uri)
     ls.documents[uri] = params.text_document.text
     ls._update_diagnostics(uri)
 
 
 @server.feature(TEXT_DOCUMENT_DID_CHANGE)
-def did_change(ls, params: DidChangeTextDocumentParams):
-    """Handle document change."""
-    uri = params.text_document.uri
-    for change in params.contentChanges:
-        if 'range' in change:
-            # Incremental update (not fully implemented)
-            ls.documents[uri] = params.text_document.text
-        else:
-            # Full update
-            ls.documents[uri] = change.text
+def did_change(ls: XLanguageServer, params: DidChangeTextDocumentParams) -> None:
+    uri = str(params.text_document.uri)
+    if params.content_changes:
+        ls.documents[uri] = params.content_changes[-1].text
     ls._update_diagnostics(uri)
 
 
 @server.feature(TEXT_DOCUMENT_DID_CLOSE)
-def did_close(ls, params: DidCloseTextDocumentParams):
-    """Handle document close."""
-    uri = params.text_document.uri
+def did_close(ls: XLanguageServer, params: DidCloseTextDocumentParams) -> None:
+    uri = str(params.text_document.uri)
     ls.documents.pop(uri, None)
     ls.diagnostics_cache.pop(uri, None)
-    from lsprotocol.types import PublishDiagnosticsParams
-    ls.protocol.notify(
-        "textDocument/publishDiagnostics",
-        PublishDiagnosticsParams(uri=uri, diagnostics=[])
-    )
+    ls._publish(uri, [])
 
 
 @server.feature(TEXT_DOCUMENT_DID_SAVE)
-def did_save(ls, params: DidSaveTextDocumentParams):
-    """Handle document save."""
-    # Re-check on save
-    uri = params.text_document.uri
-    ls._update_diagnostics(uri)
+def did_save(ls: XLanguageServer, params: DidSaveTextDocumentParams) -> None:
+    ls._update_diagnostics(str(params.text_document.uri))
+
+
+KEYWORDS = [
+    "class", "interface", "enum", "type", "function", "let", "const", "var",
+    "if", "else", "while", "for", "switch", "case", "default", "return",
+    "break", "continue", "new", "import", "export", "extends", "implements",
+    "public", "private", "protected", "static", "final", "abstract", "async",
+    "await", "try", "catch", "finally", "throw", "match", "this", "super",
+    "constructor",
+]
+
+TYPES = ["int", "string", "float", "boolean", "void", "any", "null", "undefined"]
+
+BUILTINS = ["print", "range", "typeOf", "sleep", "input", "parseInt", "parseFloat"]
 
 
 @server.feature(TEXT_DOCUMENT_COMPLETION)
-def completions(ls, params: CompletionParams):
-    """Provide completions."""
-    uri = params.text_document.uri
-    source = ls._get_document(uri)
-    position = params.position
-    
-    items = []
-    
-    # Basic keyword completions
-    keywords = [
-        ("class", CompletionItemKind.Keyword),
-        ("interface", CompletionItemKind.Keyword),
-        ("function", CompletionItemKind.Keyword),
-        ("let", CompletionItemKind.Keyword),
-        ("const", CompletionItemKind.Keyword),
-        ("if", CompletionItemKind.Keyword),
-        ("else", CompletionItemKind.Keyword),
-        ("while", CompletionItemKind.Keyword),
-        ("for", CompletionItemKind.Keyword),
-        ("return", CompletionItemKind.Keyword),
-        ("new", CompletionItemKind.Keyword),
-        ("import", CompletionItemKind.Keyword),
-        ("export", CompletionItemKind.Keyword),
-        ("extends", CompletionItemKind.Keyword),
-        ("implements", CompletionItemKind.Keyword),
-        ("public", CompletionItemKind.Keyword),
-        ("private", CompletionItemKind.Keyword),
-        ("protected", CompletionItemKind.Keyword),
-        ("static", CompletionItemKind.Keyword),
-        ("final", CompletionItemKind.Keyword),
-        ("abstract", CompletionItemKind.Keyword),
-        ("async", CompletionItemKind.Keyword),
-        ("await", CompletionItemKind.Keyword),
-        ("try", CompletionItemKind.Keyword),
-        ("catch", CompletionItemKind.Keyword),
-        ("finally", CompletionItemKind.Keyword),
-        ("throw", CompletionItemKind.Keyword),
-        ("switch", CompletionItemKind.Keyword),
-        ("case", CompletionItemKind.Keyword),
-        ("default", CompletionItemKind.Keyword),
-        ("match", CompletionItemKind.Keyword),
-        ("this", CompletionItemKind.Keyword),
-        ("super", CompletionItemKind.Keyword),
-        ("constructor", CompletionItemKind.Keyword),
-    ]
-    
-    for kw, kind in keywords:
-        items.append(CompletionItem(label=kw, kind=kind))
-    
-    # Type completions
-    types = [
-        ("int", CompletionItemKind.Class),
-        ("string", CompletionItemKind.Class),
-        ("float", CompletionItemKind.Class),
-        ("boolean", CompletionItemKind.Class),
-        ("void", CompletionItemKind.Class),
-        ("any", CompletionItemKind.Class),
-        ("null", CompletionItemKind.Value),
-        ("undefined", CompletionItemKind.Value),
-    ]
-    
-    for typ, kind in types:
-        items.append(CompletionItem(label=typ, kind=kind))
-    
-    # Built-in function completions
-    builtins = [
-        ("print", CompletionItemKind.Function),
-        ("range", CompletionItemKind.Function),
-        ("typeOf", CompletionItemKind.Function),
-        ("sleep", CompletionItemKind.Function),
-        ("input", CompletionItemKind.Function),
-        ("parseInt", CompletionItemKind.Function),
-        ("parseFloat", CompletionItemKind.Function),
-    ]
-    
-    for fn, kind in builtins:
-        items.append(CompletionItem(label=fn, kind=kind))
-    
-    # Extract class names from current document
-    import re
-    class_matches = re.finditer(r'\bclass\s+([A-Z][a-zA-Z0-9_]*)', source)
-    for match in class_matches:
+def completions(ls: XLanguageServer, params: CompletionParams):
+    source = ls._source(str(params.text_document.uri))
+    items = [CompletionItem(label=kw, kind=CompletionItemKind.Keyword) for kw in KEYWORDS]
+    items += [CompletionItem(label=t, kind=CompletionItemKind.Class) for t in TYPES]
+    items += [CompletionItem(label=f, kind=CompletionItemKind.Function) for f in BUILTINS]
+
+    for match in re.finditer(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)", source):
         items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Class))
-    
-    interface_matches = re.finditer(r'\binterface\s+([A-Z][a-zA-Z0-9_]*)', source)
-    for match in interface_matches:
+    for match in re.finditer(r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)", source):
         items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Interface))
-    
+    for match in re.finditer(
+        r"^\s*(?:public|private|protected|static|final|abstract|async|\s)*"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?::\s*[A-Za-z_][\w.\[\]]*)?\s*\{",
+        source,
+        re.MULTILINE,
+    ):
+        items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Method))
+
     return items
 
 
+HOVER_INFO = {
+    "print": "print(value: any): void\n\nPrints a value to stdout.",
+    "range": "range(start: int, end?: int, step?: int): int[]\n\nReturns an array of numbers.",
+    "typeOf": "typeOf(value: any): string\n\nReturns the type name of a value.",
+    "sleep": "sleep(ms: int): Promise<void>\n\nSleeps for the specified milliseconds.",
+    "input": "input(prompt?: string): string\n\nReads a line from stdin.",
+    "int": "Primitive integer type.",
+    "string": "Primitive string type.",
+    "float": "Primitive floating-point type.",
+    "boolean": "Primitive boolean type.",
+    "void": "Represents no value.",
+    "any": "Any type (disables type checking).",
+}
+
+
 @server.feature(TEXT_DOCUMENT_HOVER)
-def hover(ls, params: HoverParams):
-    """Provide hover information."""
-    uri = params.text_document.uri
-    source = ls._get_document(uri)
-    position = params.position
-    
-    # Simple hover - show type information for word at position
-    lines = source.split('\n')
-    if position.line >= len(lines):
+def hover(ls: XLanguageServer, params: HoverParams):
+    source = ls._source(str(params.text_document.uri))
+    lines = source.split("\n")
+    line0 = params.position.line
+    char0 = params.position.character
+    if line0 >= len(lines) or char0 > len(lines[line0]):
         return None
-    
-    line = lines[position.line]
-    if position.character >= len(line):
-        return None
-    
-    # Find word at position
-    import re
-    word_match = None
-    for match in re.finditer(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', line):
+
+    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", lines[line0]):
         start, end = match.span()
-        if start <= position.character < end:
-            word_match = match
-            break
-    
-    if not word_match:
-        return None
-    
-    word = word_match.group(0)
-    
-    # Provide basic hover info for known symbols
-    hover_info = {
-        'print': 'print(value: any): void\n\nPrints a value to stdout.',
-        'range': 'range(start: int, end?: int, step?: int): int[]\n\nReturns an array of numbers.',
-        'typeOf': 'typeOf(value: any): string\n\nReturns the type name of a value.',
-        'sleep': 'sleep(ms: int): Promise<void>\n\nSleeps for the specified milliseconds.',
-        'input': 'input(prompt?: string): string\n\nReads a line from stdin.',
-        'int': 'Primitive integer type.',
-        'string': 'Primitive string type.',
-        'float': 'Primitive floating-point type.',
-        'boolean': 'Primitive boolean type.',
-        'void': 'Represents no value.',
-        'any': 'Any type (disables type checking).',
-    }
-    
-    if word in hover_info:
-        return Hover(
-            contents=MarkupContent(
-                kind=MarkupKind.Markdown,
-                value=f"```x\n{hover_info[word]}\n```"
+        if start <= char0 < end:
+            value = HOVER_INFO.get(match.group(0))
+            if value is None:
+                return None
+            return Hover(
+                contents=MarkupContent(kind=MarkupKind.Markdown, value=f"```x\n{value}\n```")
             )
-        )
-    
+    return None
+
+
+DECL_KEYWORDS = (
+    r"(?:return|if|else|while|for|switch|match|case|default|break|continue|"
+    r"throw|catch|new|print)\b"
+)
+TYPE_TOKEN = r"[A-Za-z_][A-Za-z0-9_]*(?:\[\])*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+MODIFIERS = (
+    r"(?:(?:public|private|protected|static|final|abstract|async|override|"
+    r"internal)\s+)*"
+)
+
+
+def definition_patterns(word: str, enum_member: bool = True) -> list[re.Pattern]:
+    """Ordered patterns that match where ``word`` is *declared*.
+
+    Every pattern captures the declared name in group ``n``.  Patterns are
+    ordered by confidence (type before function before method before field
+    before parameter before enum member); callers decide how much of the
+    buffer each pattern is allowed to see.
+    """
+    w = re.escape(word)
+    guard = rf"^\s*(?!{DECL_KEYWORDS})"
+    patterns = [
+        # class / interface / enum / type alias
+        re.compile(rf"\b(?:class|interface|enum|type)\s+(?P<n>{w})\b"),
+        # free function: "int function add(a, b) {"
+        re.compile(rf"\bfunction\s+(?P<n>{w})\s*\("),
+        # method or constructor: "public void greet() {"
+        re.compile(
+            rf"{guard}{MODIFIERS}(?:{TYPE_TOKEN}\s+){{1,2}}"
+            rf"(?P<n>{w})\s*\([^()]*\)\s*(?::[^{{]*)?\{{"
+        ),
+        # interface / abstract signature: "void serialize();"
+        re.compile(
+            rf"{guard}{MODIFIERS}{TYPE_TOKEN}\s+(?P<n>{w})\s*\([^()]*\)\s*;"
+        ),
+        # field or local declaration: "string name;", "int x = 5;"
+        re.compile(
+            rf"{guard}{MODIFIERS}{TYPE_TOKEN}\s+(?P<n>{w})"
+            rf"\s*(?::[^=;]*)?(?:=[^;]*)?;"
+        ),
+        # let / const / var binding (also matches loop variables); the
+        # delimiter guard stops the optional type token being taken as the name
+        re.compile(
+            rf"\b(?:let|const|var)\s+(?:{TYPE_TOKEN}\s+)?(?P<n>{w})"
+            rf"(?=\s*(?:=|;|,|:|$))"
+        ),
+        # parameter of a declaration: >=1 token, no "=" and no nested "("
+        # before the parameter list (keeps calls such as `print(x)` out); the
+        # name must sit where a parameter name sits (followed by , = : or ))
+        # and the list must be followed by , ; : or { (never end-of-line)
+        re.compile(
+            rf"{guard}{MODIFIERS}(?P<pre>(?:[^\s()={{}}]+\s+)+)"
+            rf"(?P<fn>[A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\b(?P<n>{w})\b"
+            rf"(?=\s*(?:,|=|:|\)))[^()]*\)\s*(?:,|;|:|\{{)"
+        ),
+        # bare indented member (enum entries): "ACTIVE,"
+    ]
+    if enum_member:
+        patterns.append(re.compile(rf"^\s+(?P<n>{w})\s*,?\s*(?://.*)?$"))
+    return patterns
+
+
+def code_lines(source: str) -> list[str]:
+    """Split `source` into lines with comments and literals blanked out.
+
+    Blanked characters become spaces, so every line keeps its original length
+    and all columns still line up with the editor.  Nothing that looks like a
+    declaration inside a comment or a string can then be resolved.
+    """
+    out: list[str] = []
+    index = 0
+    total = len(source)
+    while index < total:
+        character = source[index]
+        following = source[index + 1] if index + 1 < total else ""
+        if character == "/" and following == "/":
+            while index < total and source[index] != "\n":
+                out.append(" ")
+                index += 1
+        elif character == "/" and following == "*":
+            out.append("  ")
+            index += 2
+            while index < total and not (
+                source[index] == "*"
+                and index + 1 < total
+                and source[index + 1] == "/"
+            ):
+                out.append("\n" if source[index] == "\n" else " ")
+                index += 1
+            if index < total:
+                out.append("  ")
+                index += 2
+        elif character in ('"', "'", "`"):
+            quote = character
+            out.append(" ")
+            index += 1
+            while index < total and source[index] != "\n":
+                if source[index] == "\\":
+                    out.append(" ")
+                    if index + 1 < total and source[index + 1] != "\n":
+                        out.append(" ")
+                        index += 2
+                    else:
+                        index += 1
+                    continue
+                if source[index] == quote:
+                    out.append(" ")
+                    index += 1
+                    break
+                out.append(" ")
+                index += 1
+        else:
+            out.append(character)
+            index += 1
+    return "".join(out).split("\n")
+
+
+CALLABLE_LINE = re.compile(
+    rf"^\s*(?!{DECL_KEYWORDS}){MODIFIERS}(?:{TYPE_TOKEN}\s+){{1,2}}"
+    rf"[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\)\s*(?::[^{{]*)?\{{\s*$"
+)
+
+
+def block_end(lines: list[str], opener: int) -> int:
+    """Line index of the `}` matching the `{` on line `opener`."""
+    depth = 0
+    opened = False
+    for scan in range(opener, len(lines)):
+        for character in lines[scan]:
+            if character == "{":
+                depth += 1
+                opened = True
+            elif character == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    return scan
+    return len(lines) - 1
+
+
+def enclosing_callable(lines: list[str], line0: int) -> tuple[int, int] | None:
+    """Innermost function/method/constructor body that contains `line0`."""
+    for index in range(line0, -1, -1):
+        if not CALLABLE_LINE.match(lines[index]):
+            continue
+        end = block_end(lines, index)
+        if index <= line0 <= end:
+            return index, end
     return None
 
 
 @server.feature(TEXT_DOCUMENT_DEFINITION)
-def definition(ls, params: DefinitionParams):
-    """Go to definition."""
-    uri = params.text_document.uri
-    source = ls._get_document(uri)
-    position = params.position
-    
-    # Simplified - in full implementation, would use type checker symbol table
-    lines = source.split('\n')
-    if position.line >= len(lines):
+def definition(ls: XLanguageServer, params: DefinitionParams):
+    uri = str(params.text_document.uri)
+    lines = code_lines(ls._source(uri))
+    line0 = params.position.line
+    char0 = params.position.character
+    if line0 >= len(lines) or char0 > len(lines[line0]):
         return None
-    
-    line = lines[position.line]
-    if position.character >= len(line):
-        return None
-    
-    import re
-    word_match = None
-    for match in re.finditer(r'\b([A-Z][a-zA-Z0-9_]*)\b', line):
+
+    word = None
+    word_start = -1
+    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", lines[line0]):
         start, end = match.span()
-        if start <= position.character < end:
-            word_match = match
+        if start <= char0 < end:
+            word = match.group(0)
+            word_start = start
             break
-    
-    if not word_match:
+    if word is None:
         return None
-    
-    class_name = word_match.group(1)
-    
-    # Search for class/interface definition in current file
-    class_pattern = rf'\b(class|interface)\s+{re.escape(class_name)}\b'
-    for i, l in enumerate(lines):
-        if re.search(class_pattern, l):
-            return Location(
-                uri=uri,
-                range=Range(
-                    start=Position(line=i, character=l.find(class_name)),
-                    end=Position(line=i, character=l.find(class_name) + len(class_name))
-                )
-            )
-    
+
+    patterns = definition_patterns(
+        word, enum_member=any(re.search(r"\benum\b", text) for text in lines)
+    )
+
+    def located(line: int, column: int) -> Location:
+        return Location(
+            uri=uri,
+            range=Range(
+                start=Position(line=line, character=column),
+                end=Position(line=line, character=column + len(word)),
+            ),
+        )
+
+    # Clicking a name inside its own declaration must stay there, otherwise a
+    # same-named field elsewhere in the file wins the file-wide search.
+    for pattern in patterns:
+        for match in pattern.finditer(lines[line0]):
+            if match.start("n") == word_start:
+                return located(line0, match.start("n"))
+
+    # Inside a function body, prefer a declaration from that function (this is
+    # what makes parameter usages land on the parameter list).
+    block = enclosing_callable(lines, line0)
+    if block is not None:
+        start, end = block
+        for pattern in patterns:
+            for index in range(start, end + 1):
+                match = pattern.search(lines[index])
+                if match:
+                    return located(index, match.start("n"))
+
+    for pattern in patterns:
+        for index, text in enumerate(lines):
+            match = pattern.search(text)
+            if match:
+                return located(index, match.start("n"))
     return None
 
 
 @server.feature(TEXT_DOCUMENT_REFERENCES)
-def references(ls, params: ReferenceParams):
-    """Find references."""
-    # Simplified implementation
+def references(ls: XLanguageServer, params: ReferenceParams):
     return []
 
 

@@ -35,7 +35,11 @@ integer function getarrayAtZero(int xp){
 print(`Value of is {array}`)
 
 
+void function mutateAddress(string city){
+    city = "Nagpur";
 
+    // return city
+}
 
 class Address {
     string street;
@@ -45,7 +49,11 @@ class Address {
         this.street = street;
         this.city = city;
 
-        return "Hello"
+        //return "Hello"
+    }
+
+    public Address(){
+        print("Hello Ji")
     }
 }
 
@@ -74,9 +82,14 @@ public class UserAccount {
     public void printAccountDetails() {
         print("User: " + this.username + " (ID: " + this.userId + ")");
         print("City: " + this.billingAddress.city);
+        mutateAddress(this.billingAddress.city);
         //print("Recent Transactions: " + Arrays.tostring(transactionHistory));
+                print("muted City: " + this.billingAddress.city);
+
     }
 }
+
+
 
 
 let Address userAddress = new Address("123 Java Lane", "Tech City");
@@ -187,9 +200,9 @@ print(typeOf(print))
 let sampleArray = [[1],1,2,3, "Hi"]
  sampleArray.pop()
   sampleArray.pop()
-   //sampleArray.pop()
-    //sampleArray.pop()
-     //sampleArray.pop()
+//    sampleArray.pop()
+//     sampleArray.pop()
+//      sampleArray.pop()
 
 print(typeOf(sampleArray[0]))
 for( let i in range(1,sampleArray.length)) {
@@ -257,7 +270,7 @@ any function sayHello(any variable){
 
 print("typeof", typeOf(Bar))
 
-print("Hi", D.P("aeiou"+"hello".length))
+// print("Hi", D.P("aeiou"+"hello".length))
 
 print("hello".length)
 
@@ -310,16 +323,16 @@ interface Dogge extends C{
 }
 
 // Class implementing deep hierarchy + Queryable
-class DeepImpl implements D, Queryable {
-    public void methodA() { print("A") }
-    public void methodB() { print("B") }
-    public void methodC() { print("C") }
-    public void methodD() { print("D") }
-    public any find(string query) { 
-        print("Finding: " + query);
-        return {found: true, query: query};
-    }
-}
+// class DeepImpl implements D, Queryable {
+//     public void methodA() { print("A") }
+//     public void methodB() { print("B") }
+//     public void methodC() { print("C") }
+//     public void methodD() { print("D") }
+//     public any find(string query) { 
+//         print("Finding: " + query);
+//         return {found: true, query: query};
+//     }
+// }
 
 // Multiple interface implementation
 interface Runnable {
@@ -362,11 +375,11 @@ class AppConfig {
 // Test the complex interfaces
 print("=== Testing Complex Interface Hierarchy ===");
 
-let DeepImpl deep = new DeepImpl();
-deep.methodA();
-deep.methodB();
-deep.methodC();
-deep.methodD();
+// let DeepImpl deep = new DeepImpl();
+// deep.methodA();
+// deep.methodB();
+// deep.methodC();
+// deep.methodD();
 
 print("");
 
@@ -382,7 +395,7 @@ print("Config MAX_RETRIES: " + Config.MAX_RETRIES);
 print("Config DEFAULT_URL: " + Config.DEFAULT_URL);
 
 // Interface as type annotation
-let Queryable q = deep;
-print("Queryable assigned from DeepImpl: " + typeOf(q));
+// let Queryable q = deep;
+// print("Queryable assigned from DeepImpl: " + typeOf(q));
 
-print("=== Complex Interface Tests Complete ===");
+// print("=== Complex Interface Tests Complete ===");
