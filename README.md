@@ -25,8 +25,11 @@ x run path/to/main.x [arguments...]
 x path/to/main.x [arguments...]
 x check path/to/main.x
 x build path/to/main.x
+x -watch path/to/main.x
 x --config path/to/x.toml --feature async=off check path/to/main.x
 x run --profile development path/to/main.x -- --verbose "value with spaces"
+x start
+x start -- extra script arguments
 x version
 x help
 ```
@@ -40,6 +43,13 @@ x help
   limit recovery, so errors after it may not be discoverable in that pass.
 - `build` currently performs the same validation; it does not emit a native
   executable.
+- `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
+  whenever the entry file, one of its imported files, or `x.toml` changes;
+  press Ctrl+C to stop. Errors keep the watcher alive, so saving a fix
+  triggers the next run. Watch mode works with `run`, `check`, and `build`
+  and must appear before the source file.
+- Commands listed in the `[scripts]` table of `x.toml` run with `x <name>`,
+  similar to `pnpm start` and package.json scripts.
 - The process exit code is taken from an integer returned by `main`; a `void`
   or inferred-void `main` returns success.
 
@@ -81,6 +91,10 @@ args = ["profile-specific argument"]
 
 [run.profiles.test.environment]
 APP_MODE = "test"
+
+[scripts]
+start = "x run path/to/main.x"
+test = "x check path/to/main.x"
 ```
 
 `[run].args` are passed to the program first, followed by profile arguments
@@ -93,6 +107,17 @@ available without an import. `System.Environment.has("APP_MODE")` and
 `System.Environment.all()` are also available. Configured environment values
 are scoped to the interpreter and do not modify the parent process.
 Run profiles are selected with `--profile NAME`.
+
+`[scripts]` maps script names to shell commands, mirroring the `scripts` table
+in package.json. Run one with `x start` (or `x run start`); extra command-line
+values are appended to the command after shell quoting, profile arguments are
+appended when `--profile` is given, and profile/`.env`/`[run.environment]`
+values are exported to the process. The command runs in the project root
+(directory of `x.toml`) and its exit status becomes the `x` exit code, so
+`x test` propagates a failing status exactly like `pnpm test`. Script names
+must be single words that do not collide with the built-in commands
+(`run`, `check`, `build`, `install`). `--watch` cannot be combined with
+scripts because a shell command does not expose the files it depends on.
 
 The CLI also loads a project-root `.env` file when running a program. Copy the
 safe demo values in [.env.example](./.env.example) to `.env`, then run the
