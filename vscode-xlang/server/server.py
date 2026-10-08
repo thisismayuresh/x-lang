@@ -50,6 +50,7 @@ from pygls.uris import to_fs_path
 
 from xlang.config import XConfig, discover_config, load_config
 from xlang.lexer import Lexer
+from xlang.module_loader import ModuleLoader
 from xlang.parser import Parser
 from xlang.typecheck.checker import TypeChecker
 
@@ -250,10 +251,86 @@ TYPES = ["int", "string", "float", "boolean", "void", "any", "null", "undefined"
 
 BUILTINS = ["print", "range", "typeOf", "sleep", "input", "parseInt", "parseFloat"]
 
+IMPORT_LINE_RE = re.compile(r"^\s*import\s+(.*)$")
+
+
+def _import_completions(
+    ls: XLanguageServer, uri: str, source: str, line: int, character: int
+) -> list[CompletionItem] | None:
+    """Return import target suggestions when the cursor sits after ``import``.
+
+    Offers every standard-library ``System.*`` module plus local ``.x`` files
+    (as dot-separated module paths), so TAB can complete imports the same way
+    a package manager completes dependency paths.  Returns ``None`` when the
+    cursor is not in an import statement.
+    """
+    lines = source.split("\n")
+    if line >= len(lines):
+        return None
+    prefix = lines[line][:character]
+    if IMPORT_LINE_RE.match(prefix) is None:
+        return None
+
+    items: list[CompletionItem] = []
+    for path in sorted(ModuleLoader.STANDARD_LIBRARY_MODULES):
+        items.append(
+            CompletionItem(label=path, kind=CompletionItemKind.Module, detail="standard library")
+        )
+
+    try:
+        fs_path = to_fs_path(uri)
+    except Exception:
+        fs_path = ""
+    directory = os.path.dirname(fs_path) if fs_path else os.getcwd()
+
+    seen: set[str] = set()
+    for candidate in _local_x_files(ls, uri, directory):
+        rel = os.path.relpath(candidate, directory)
+        if rel.startswith(".."):
+            continue
+        module_path = rel[:-2].replace(os.sep, ".").lstrip("./")
+        if not module_path or module_path in seen:
+            continue
+        seen.add(module_path)
+        items.append(
+            CompletionItem(label=module_path, kind=CompletionItemKind.File, detail=rel)
+        )
+    return items
+
+
+def _local_x_files(ls: XLanguageServer, uri: str, directory: str) -> list[str]:
+    """Resolve importable ``.x`` files near the document and in the project root."""
+    roots: list[str] = [directory]
+    try:
+        config = ls.project_config(uri)
+        if config.path is not None:
+            roots.insert(0, str(config.path.parent))
+    except Exception:
+        pass
+
+    found: list[str] = []
+    for root in roots:
+        try:
+            for entry in sorted(os.walk(root)):
+                folder = entry[0]
+                for name in sorted(entry[2]):
+                    if name.endswith(".x"):
+                        found.append(os.path.join(folder, name))
+        except (OSError, PermissionError):
+            continue
+    return found
+
 
 @server.feature(TEXT_DOCUMENT_COMPLETION)
 def completions(ls: XLanguageServer, params: CompletionParams):
     source = ls._source(str(params.text_document.uri))
+    uri = str(params.text_document.uri)
+    import_items = _import_completions(
+        ls, uri, source, params.position.line, params.position.character
+    )
+    if import_items is not None:
+        return import_items
+
     items = [CompletionItem(label=kw, kind=CompletionItemKind.Keyword) for kw in KEYWORDS]
     items += [CompletionItem(label=t, kind=CompletionItemKind.Class) for t in TYPES]
     items += [CompletionItem(label=f, kind=CompletionItemKind.Function) for f in BUILTINS]

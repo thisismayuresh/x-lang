@@ -16,3 +16,31 @@ args = ["argument from x.toml", "an argument with spaces"]
 
 [run.profiles.feature-tour.environment]
 X_MODE = "feature-tour"
+
+# Standard-library modules imported into every .x file by default, exactly as
+# if each file started with `import <name>`.  Re-importing one of these in a
+# source file triggers a "redundant import" warning.
+[imports]
+default = ["System.utils.Math", "System.utils.JSON", "System.io.Console", "System.io.FileSystem"]
+
+# To import ALL supported System modules by default, use the full list below
+# instead of the short one above (this is what x.test.toml documents):
+# [imports]
+# default = [
+#   "System.concurrent.Async", "System.concurrent.Thread",
+#   "System.Environment",
+#   "System.io.Console", "System.io.FileSystem", "System.io.Network",
+#   "System.io.Network.http", "System.io.Network.http.fetch",
+#   "System.Throwable", "System.Throwable.Error", "System.Throwable.Error.DatabaseError",
+#   "System.Throwable.Exception", "System.Throwable.Exception.DatabaseException",
+#   "System.Throwable.Exception.IOException", "System.Throwable.Exception.IOException.FileSystemException",
+#   "System.Throwable.Exception.IOException.HttpException", "System.Throwable.Exception.RuntimeException",
+#   "System.Throwable.Exception.RuntimeException.ArithmeticException",
+#   "System.Throwable.Exception.RuntimeException.IllegalArgumentException",
+#   "System.Throwable.Exception.RuntimeException.IndexOutOfBoundsException",
+#   "System.Throwable.Exception.RuntimeException.TypeException",
+#   "System.utils.Collections", "System.utils.Collections.HashMap", "System.utils.Collections.LinkedList",
+#   "System.utils.Collections.List", "System.utils.Collections.PriorityQueue", "System.utils.Collections.Queue",
+#   "System.utils.Collections.Set", "System.utils.Collections.Stack", "System.utils.Collections.Trie",
+#   "System.utils.JSON", "System.utils.JSON.toJSON", "System.utils.Math",
+# ]

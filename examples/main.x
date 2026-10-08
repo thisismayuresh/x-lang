@@ -1,4 +1,7 @@
+
 import System.io.FileSystem
+import System.utils.JSON
+
 let string[] entries = FileSystem.listDirectory("./");
 
 for(int entry of entries ){
@@ -100,9 +103,9 @@ let UserAccount account = new UserAccount(9876, "DevUser", userAddress, history)
 
 account.printAccountDetails();
 
-let obj = {
-    "type": "us",
-   
+let record{ string kind; string x } obj = {
+    "kind": "us",
+    "x": ""
 }
 
 obj.x = "xxx";
@@ -127,7 +130,7 @@ protected class ANimal implements Person{
 }
 
 
-let classm = new ANimal();
+let ANimal classm = new ANimal();
 
 print("getgendr",classm.getGender())
 
@@ -143,18 +146,18 @@ integer[] function foo(){
 print("fooed", foo())
 
 
-let nestedArray = [[1,2,3],[4,5,6],[7,8,9], [10]]
-let nestedArray2 = [[1,2,3],[4,5,6],[7,8,9], [10]]
+let int[][] nestedArray = [[1,2,3],[4,5,6],[7,8,9], [10]]
+let int[][] nestedArray2 = [[1,2,3],[4,5,6],[7,8,9], [10]]
 
 
-const leta3 = nestedArray[3][0]
+let int leta3 = nestedArray[3][0]
 typeOf(nestedArray[0]);
- const len=[].length===0
+let boolean len = [].length===0
 print(len)
 print("hi")
 
 
-let testArray = [];
+let int[] testArray = [];
 
 if(testArray.length === 0){
     print("its working")
@@ -178,7 +181,7 @@ print("returned value-->"+rest(1,2,3,4,5,6,7,8,9,0))
 
 
 
-let a = 10;
+let int a = 10;
 
 a > 100
     ? print("Greater than 100")
@@ -197,7 +200,9 @@ print(typeOf(print))
 
 
 
-let sampleArray = [[1],1,2,3, "Hi"]
+let any[] sampleArray = [[1],1,2,3, "Hi"]
+
+
  sampleArray.pop()
   sampleArray.pop()
 //    sampleArray.pop()
@@ -227,7 +232,7 @@ print("ACCCC"+ac(99))
 
 
 
-let arrayToBeMapped = [1,2,3,4,5,6];
+let int[] arrayToBeMapped = [1,2,3,4,5,6];
 
 /*
 arrayToBeMapped.map(int a=>{

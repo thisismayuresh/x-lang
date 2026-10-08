@@ -238,9 +238,9 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
-        self._check_strict_typing(program.declarations)
+        self._check_strict_typing(program.declarations, self._source_name)
         for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations)
+            self._check_strict_typing(module_declarations, self._source_name)
         scope = self._builtin_scope()
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
@@ -275,9 +275,9 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
-        self._check_strict_typing(program.declarations)
+        self._check_strict_typing(program.declarations, self._source_name)
         for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations)
+            self._check_strict_typing(module_declarations, self._source_name)
 
     # ------------------------------------------------------------------
     # Scopes and collection
@@ -906,26 +906,104 @@ class TypeChecker:
                                 ],
                             )
 
-    def _check_strict_typing(self, declarations: list[Any]) -> None:
-        """Check that all types are explicitly specified when strict_typing is enabled."""
+    def _check_strict_typing(self, declarations: list[Any], source_name: str | None = None) -> None:
+        """Check that all types are explicitly specified when strict_typing is enabled.
+
+        Traverses top-level declarations, class members, function bodies and all
+        nested statement blocks so that return types, parameters and local
+        variables cannot be omitted.
+        """
         if not self._config or not self._config.enabled("strict_typing"):
             return
         
         for declaration in declarations:
-            self._check_strict_typing_declaration(declaration)
+            self._check_strict_typing_declaration(declaration, source_name=source_name)
+
+    def _check_strict_typing_statements(
+        self, statements: list[Any], source_name: str | None = None
+    ) -> None:
+        """Recurse through a block, checking local variable declarations."""
+        for statement in statements:
+            self._check_strict_typing_statement(statement, source_name)
+
+    def _check_strict_typing_statement(
+        self, statement: Any, source_name: str | None = None
+    ) -> None:
+        if statement is None:
+            return
+
+        previous_location = None
+        if getattr(statement, "line", None) is not None:
+            previous_location = self._location
+            self._location = (
+                statement.line,
+                getattr(statement, "column", None),
+                getattr(statement, "source_name", None) or source_name,
+            )
+
+        try:
+            if isinstance(statement, Block):
+                self._check_strict_typing_statements(statement.statements, source_name)
+            elif isinstance(statement, IfStatement):
+                self._check_strict_typing_statements(statement.then_branch.statements, source_name)
+                else_branch = statement.else_branch
+                if isinstance(else_branch, Block):
+                    self._check_strict_typing_statements(else_branch.statements, source_name)
+                elif else_branch is not None:
+                    self._check_strict_typing_statement(else_branch, source_name)
+            elif isinstance(statement, (WhileStatement, DoWhileStatement)):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, ForStatement):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, ClassicForStatement):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, TryStatement):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+                for _, _, catch_body in statement.catches:
+                    self._check_strict_typing_statements(catch_body.statements, source_name)
+                if statement.finally_body is not None:
+                    self._check_strict_typing_statements(
+                        statement.finally_body.statements, source_name
+                    )
+            elif isinstance(statement, SwitchStatement):
+                for case in statement.cases:
+                    self._check_strict_typing_statements(case.body.statements, source_name)
+            elif isinstance(
+                statement, (ExpressionStatement, Assignment, FunctionDeclaration, VariableDeclaration)
+            ):
+                self._check_strict_typing_declaration(
+                    statement, class_name=None, source_name=source_name, local=True
+                )
+            elif isinstance(statement, FunctionExpression):
+                for param in statement.parameters:
+                    if param.type_name is None:
+                        self._error(
+                            f"Parameter '{param.name}' in arrow function must have "
+                            "an explicit type (strict_typing enabled)",
+                            statement,
+                            helps=[
+                                _parameter_type_help("Function", "", None)
+                            ],
+                        )
+        finally:
+            if previous_location is not None:
+                self._location = previous_location
 
     def _check_strict_typing_declaration(
         self,
         declaration: Any,
         class_name: str | None = None,
         is_interface: bool = False,
+        source_name: str | None = None,
+        local: bool = False,
     ) -> None:
         """Check a single declaration for missing type annotations.
 
         ``class_name`` is the enclosing class (or interface) when the
         declaration is a member of one, so the diagnostic can say
         ``Method``/``Constructor``/``property`` instead of ``Function``/
-        ``Variable``.
+        ``Variable``.  ``local`` marks a variable declared inside a function
+        body.
         """
         if declaration is None:
             return
@@ -952,13 +1030,16 @@ class TypeChecker:
                             )
                         ],
                     )
+            if declaration.body:
+                self._check_strict_typing_statements(declaration.body, source_name=source_name)
         elif isinstance(declaration, VariableDeclaration):
-            if declaration.type_name is None and declaration.initializer is None:
-                label = (
-                    "Variable"
-                    if class_name is None
-                    else member_noun(declaration.modifiers).capitalize()
-                )
+            if declaration.type_name is None:
+                if local:
+                    label = "Local variable"
+                elif class_name is None:
+                    label = "Variable"
+                else:
+                    label = member_noun(declaration.modifiers).capitalize()
                 self._error(
                     f"{label} '{declaration.name}' must have an explicit type (strict_typing enabled)",
                     declaration,
