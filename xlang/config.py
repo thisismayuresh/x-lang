@@ -33,6 +33,7 @@ FEATURE_DEFAULTS = {
     "interfaces": True,
     "loops": True,
     "namespaces": True,
+    "network": True,
     "object_literals": True,
     "pattern_matching": True,
     "records": True,

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..runtime import qualified_exception_paths
+
 
 PRIMITIVE_ALIASES = {
     "int": "integer",
@@ -79,8 +81,13 @@ BUILTIN_TYPE_NAMES = frozenset(
         "IndexOutOfBoundsException",
         "IOException",
         "FileSystemException",
+        "HttpException",
         "DatabaseException",
         "DatabaseError",
+        # Fully-qualified hierarchy paths, so a catch clause may name an
+        # exception inline: catch (System.Throwable.Exception.IOException.
+        # HttpException error) — every generated path is accepted.
+        *qualified_exception_paths(),
     }
 )
 

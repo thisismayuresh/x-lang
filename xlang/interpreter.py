@@ -76,8 +76,13 @@ from .ast_nodes import (
     WhileStatement,
     WildcardPattern,
 )
+from . import jsonify
 from .config import XConfig
 from .diagnostics import SourceWarning, member_noun
+from .network import FetchCall, normalize_fetch_call, perform_fetch
+from .runtime import (
+    EXCEPTION_PARENTS as _EXCEPTION_PARENTS,
+)
 from .runtime import (
     BuiltinFunction,
     Environment,
@@ -97,6 +102,7 @@ from .runtime import (
     XObject,
     XSuper,
     XThreadHandle,
+    exception_children,
 )
 
 
@@ -221,19 +227,9 @@ def _is_class_method(function: XFunction) -> bool:
 
 
 class Interpreter:
-    EXCEPTION_PARENTS = {
-        "Error": "Throwable",
-        "Exception": "Throwable",
-        "RuntimeException": "Exception",
-        "ArithmeticException": "RuntimeException",
-        "TypeException": "RuntimeException",
-        "IllegalArgumentException": "RuntimeException",
-        "IndexOutOfBoundsException": "RuntimeException",
-        "IOException": "Exception",
-        "FileSystemException": "IOException",
-        "DatabaseException": "Exception",
-        "DatabaseError": "Error",
-    }
+    #: Builtin exception hierarchy (child -> parent); defined once in
+    #: :mod:`xlang.runtime` so the loader and type checker agree with us.
+    EXCEPTION_PARENTS = _EXCEPTION_PARENTS
 
     #: Global names that only exist while a ``[features]`` flag is enabled.
     #: Used to turn "Name 'x' is not defined" into an actionable message.
@@ -383,9 +379,20 @@ class Interpreter:
                 imported_value = self._resolve_import(declaration.source_name)
                 alias = declaration.alias_name
                 # If the name already exists in globals (e.g. a builtin collection
-                # short-name) allow the import to silently re-bind it.
+                # short-name) allow the import to silently re-bind it.  One
+                # exception: importing an exception namespace
+                # (System.Throwable.Exception.IOException) over its own builtin
+                # constructor keeps the constructor, so `throw IOException(...)`
+                # still works after the import — the namespace stays reachable
+                # through the full System... path, or via an alias.
                 if alias in self.globals.values:
-                    self.globals.values[alias] = imported_value
+                    existing_value = self.globals.values[alias]
+                    if isinstance(existing_value, (BuiltinFunction, XClass)) and (
+                        isinstance(imported_value, (Environment, dict))
+                    ):
+                        pass
+                    else:
+                        self.globals.values[alias] = imported_value
                 else:
                     self.globals.define(alias, imported_value)
             elif isinstance(declaration, ImportNamespaceAlias):
@@ -494,6 +501,7 @@ class Interpreter:
             "IndexOutOfBoundsException",
             "FileSystemException",
             "IOException",
+            "HttpException",
             "DatabaseException",
             "DatabaseError",
         )
@@ -516,6 +524,14 @@ class Interpreter:
         if self.config.enabled("filesystem"):
             io_namespace.define("FileSystem", self._filesystem_members())
         io_namespace.define("Console", self._console_members())
+        if self.config.enabled("network"):
+            network_namespace = Environment(io_namespace)
+            http_namespace = Environment(network_namespace)
+            http_namespace.define(
+                "fetch", BuiltinFunction("http.fetch", self._http_fetch)
+            )
+            network_namespace.define("http", http_namespace)
+            io_namespace.define("Network", network_namespace)
         system_namespace.define("io", io_namespace)
         concurrent_namespace = Environment(system_namespace)
         if self.config.enabled("threads"):
@@ -561,7 +577,13 @@ class Interpreter:
         utils_namespace.define("Collections", collections_namespace)
         if self.config.enabled("math_library"):
             utils_namespace.define("Math", self._math_members())
+        utils_namespace.define("JSON", self._json_members())
         system_namespace.define("utils", utils_namespace)
+        if self.config.enabled("exceptions"):
+            # System.Throwable.Exception.IOException.HttpException mirrors the
+            # exception hierarchy so any node can be imported or named inline
+            # in a catch clause.
+            system_namespace.define("Throwable", self._exception_namespace("Throwable"))
         environment_namespace = Environment(system_namespace)
         environment_namespace.define(
             "has", BuiltinFunction("Environment.has", self._environment_has)
@@ -1191,6 +1213,58 @@ class Interpreter:
             "print": BuiltinFunction("Console.print", lambda args: self._builtin_print(args)),
             "input": BuiltinFunction("Console.input", lambda args: self._builtin_input(args)),
         }
+
+    def _exception_namespace(self, name: str) -> dict[str, Any]:
+        """Member table for *name* in the ``System.Throwable...`` tree.
+
+        Branches nest (``Exception`` holds ``IOException``, which holds
+        ``HttpException``); leaves are the same builtin constructors the
+        globals expose, so ``System.Throwable.Exception.IOException.
+        HttpException("boom")`` builds the value ``throw`` needs.
+        """
+        members: dict[str, Any] = {}
+        for child in exception_children(name):
+            if exception_children(child):
+                members[child] = self._exception_namespace(child)
+            else:
+                value = self.globals.values.get(child)
+                if value is not None:
+                    members[child] = value
+        return members
+
+    def _json_members(self) -> dict[str, BuiltinFunction]:
+        """Member table for ``System.utils.JSON``.
+
+        Declares ``toJSON`` as the builtin ``System.utils.JSON.toJSON`` —
+        a ``JSON.stringify`` equivalent for X values.
+        """
+        return {
+            "toJSON": BuiltinFunction("JSON.toJSON", self._json_to_string),
+        }
+
+    def _json_to_string(self, arguments: list[Any]) -> str:
+        """Builtin ``System.utils.JSON.toJSON(value, indent?) -> string``."""
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX(
+                "toJSON(value, indent?) expects a value and an optional indent"
+            )
+        space = arguments[1] if len(arguments) == 2 else None
+        return jsonify.stringify(arguments[0], space)
+
+    def _http_fetch(self, arguments: list[Any]) -> Any:
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX(
+                "fetch(url, options) expects a url and an optional options object",
+                "HttpException",
+            )
+        options = arguments[1] if len(arguments) == 2 else None
+        # Validate synchronously so mistakes surface at the call site with a
+        # source location, even before the coroutine is awaited.
+        normalize_fetch_call(arguments[0], options)
+        return FetchCall(lambda: self._http_fetch_async(arguments[0], options))
+
+    async def _http_fetch_async(self, url: str, options: Any) -> Any:
+        return await asyncio.to_thread(perform_fetch, url, options)
 
     async def _filesystem_async_call(
         self,
@@ -3592,7 +3666,12 @@ class Interpreter:
         elif isinstance(statement, EnumDeclaration):
             self._define_enum(statement, environment)
         elif isinstance(statement, ExpressionStatement):
-            self._evaluate(statement.expression, environment)
+            value = self._evaluate(statement.expression, environment)
+            if isinstance(value, FetchCall):
+                raise RuntimeErrorX(
+                    "The fetch() result was discarded — did you forget "
+                    "'await' before fetch(...)?"
+                )
         elif isinstance(statement, IfStatement):
             if self._is_truthy(self._evaluate(statement.condition, environment)):
                 self._execute_block(statement.then_branch.statements, Environment(environment))
@@ -3815,7 +3894,14 @@ class Interpreter:
     def _exception_matches(self, value: Any, type_name: str | None) -> bool:
         if type_name is None:
             return True
-        requested_types = type_name.split("|")
+        # Catch types may be written inline with their full hierarchy path
+        # (System.Throwable.Exception.IOException.HttpException); the thrown
+        # value always carries the short name, so compare leaf names.
+        requested_types = [
+            requested.split(".")[-1].strip()
+            for requested in type_name.split("|")
+            if requested.split(".")[-1].strip()
+        ]
         if isinstance(value, XExceptionValue):
             for requested_type in requested_types:
                 current_type: str | None = value.name
@@ -4701,6 +4787,13 @@ class Interpreter:
         name: str,
         access_context: XClass | None = None,
     ) -> Any:
+        # An unawaited fetch()/readTextAsync() coroutine: explain the real
+        # problem instead of "Value has no member".
+        if inspect.iscoroutine(object_value) or isinstance(object_value, FetchCall):
+            raise RuntimeErrorX(
+                f"Cannot read '{name}' from an asynchronous result — "
+                f"did you forget 'await'?"
+            )
         # OOP-style dot access on a collection instance: students.add(x)
         if isinstance(object_value, XCollectionInstance):
             methods = object_value._methods

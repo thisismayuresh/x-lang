@@ -53,6 +53,51 @@ class ThrownValue(Exception):
         self.source_name = source_name
 
 
+#: Builtin exception hierarchy: child name -> parent name.  One source of
+#: truth for catch matching, the ``System.Throwable...`` namespace tree,
+#: importable paths, and the type checker's known type names.
+EXCEPTION_PARENTS: dict[str, str] = {
+    "Error": "Throwable",
+    "Exception": "Throwable",
+    "RuntimeException": "Exception",
+    "ArithmeticException": "RuntimeException",
+    "TypeException": "RuntimeException",
+    "IllegalArgumentException": "RuntimeException",
+    "IndexOutOfBoundsException": "RuntimeException",
+    "IOException": "Exception",
+    "FileSystemException": "IOException",
+    "HttpException": "IOException",
+    "DatabaseException": "Exception",
+    "DatabaseError": "Error",
+}
+
+
+def exception_children(name: str) -> list[str]:
+    """Direct children of *name* in the builtin exception hierarchy."""
+    return sorted(
+        child for child, parent in EXCEPTION_PARENTS.items() if parent == name
+    )
+
+
+def qualified_exception_paths() -> list[str]:
+    """Importable ``System.Throwable...`` paths, roots before children.
+
+    ``System.Throwable.Exception.IOException.HttpException`` is the
+    fully-qualified name of ``HttpException``; every prefix of the path is
+    importable too.
+    """
+    paths: list[str] = []
+
+    def walk(name: str, prefix: str) -> None:
+        path = f"{prefix}.{name}"
+        paths.append(path)
+        for child in exception_children(name):
+            walk(child, path)
+
+    walk("Throwable", "System")
+    return paths
+
+
 class Environment:
     def __init__(self, parent: Environment | None = None) -> None:
         self.parent = parent

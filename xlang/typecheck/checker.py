@@ -2209,10 +2209,18 @@ class TypeChecker:
                 continue
             if candidate in known:
                 continue
+            # Exception-hierarchy paths are exact: a typo'd intermediate
+            # segment would otherwise fall through to the leaf-name rule
+            # below and typecheck as valid.
+            is_exception_path = candidate == "System.Throwable" or (
+                candidate.startswith("System.Throwable.")
+            )
             segments = [segment.strip() for segment in candidate.split(".")]
-            if segments[0] in known:
+            if not is_exception_path and segments[0] in known:
                 continue
-            if any(segment in known for segment in segments[1:]):
+            if not is_exception_path and any(
+                segment in known for segment in segments[1:]
+            ):
                 continue
             helps: Sequence[str] = ()
             suggestion = _closest_match(candidate, known)
