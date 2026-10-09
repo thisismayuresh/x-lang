@@ -40,6 +40,7 @@ from ..ast_nodes import (
     ForStatement,
     FunctionDeclaration,
     FunctionExpression,
+    ImportCall,
     ImportDeclaration,
     ImportAlias,
     ImportNamespaceAlias,

@@ -19,6 +19,7 @@ from .ast_nodes import (
     ForStatement,
     FunctionDeclaration,
     FunctionExpression,
+    ImportCall,
     ImportDeclaration,
     Identifier,
     IfStatement,
@@ -273,6 +274,7 @@ class Parser:
         return self._statement()
 
     def _import_declaration(self) -> ImportDeclaration:
+        import_token = self._previous()
         parts = [self._consume("IDENTIFIER", "Expected import path").value]
         wildcard = False
         while self._match("."):
@@ -292,6 +294,12 @@ class Parser:
                     if not self._match(","):
                         break
                 self._consume("}", "Expected '}' after grouped imports")
+                if self._check("("):
+                    raise ParseError(
+                        "Grouped imports cannot be called; import the names "
+                        "first, then call them",
+                        self._peek(),
+                    )
                 self._match(";")
                 return ImportDeclaration(targets)
             if self._match("*"):
@@ -303,11 +311,34 @@ class Parser:
         alias = None
         if self._match("as"):
             alias = self._consume("IDENTIFIER", "Expected import alias").value
+        statement = None
+        if self._check("("):
+            if wildcard:
+                raise ParseError(
+                    "A wildcard import cannot be called; import the name "
+                    "directly, then call it",
+                    self._peek(),
+                )
+            self._match("(")
+            arguments = self._arguments_after_open_paren()
+            # `import B.greet("Maya")` binds the import and then calls it
+            # right away; the call is kept as a statement so it runs in
+            # statement order, after the loader has bound the module.
+            call = self._mark_span(
+                ImportCall(".".join(parts), alias, arguments),
+                import_token.line,
+                import_token.column,
+            )
+            statement = self._mark_span(
+                ExpressionStatement(call),
+                import_token.line,
+                import_token.column,
+            )
         self._match(";")
         if wildcard and alias is None and self._peek().kind not in (";", "EOF"):
             if not self._line_terminator_before_current():
                 raise ParseError("Unexpected token after wildcard import", self._peek())
-        return ImportDeclaration([(".".join(parts), alias)], wildcard)
+        return ImportDeclaration([(".".join(parts), alias)], wildcard, statement)
 
     def _export_specifier_declaration(self) -> None:
         """Parse JS/TS style ``export { name, other as alias };``.

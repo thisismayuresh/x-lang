@@ -162,6 +162,35 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             bound_aliases.add(alias)
         declarations[:0] = injected
 
+    def _resolve_import_call_target(self, source_name: str, alias: str | None) -> Any:
+        """Resolve the callee of ``import B.greet("Maya")``.
+
+        The loader flattens the imported module's declarations, so the target
+        is normally already bound under its (aliased) local name; the dotted
+        import path is the fallback when flattening bound nothing.
+        """
+        local_name = alias or source_name.split(".")[-1]
+        try:
+            callee = self._lookup(self.globals, local_name)
+        except RuntimeErrorX:
+            callee = None
+        if callee is None:
+            try:
+                callee = self._resolve_import(source_name)
+            except RuntimeErrorX as error:
+                # The dotted path is the fallback when nothing bound the
+                # target (most often an import entered without its module,
+                # such as in the REPL), so say which import failed.
+                raise RuntimeErrorX(
+                    f"Cannot call '{source_name}': {error.message}",
+                    error.exception_name,
+                ) from None
+        if isinstance(callee, list) and callee and all(
+            isinstance(function, XFunction) for function in callee
+        ):
+            callee = OverloadedFunction(local_name, callee)
+        return callee
+
     def _interpret_program(self, program: Program) -> Any:
         if self.validate and self.config.enabled("type_checker"):
             self._validate_declarations(program)
@@ -186,6 +215,12 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 isinstance(declaration, ExpressionStatement)
                 and isinstance(declaration.expression, Identifier)
             )
+            for declaration in declarations
+        ) or any(
+            # `import B.greet("Maya")` runs code at the top level, so it counts
+            # as a top-level statement just like a bare `greet("Maya");`.
+            isinstance(declaration, ImportDeclaration)
+            and declaration.statement is not None
             for declaration in declarations
         )
         for declaration in declarations:
@@ -240,9 +275,15 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     ClassDeclaration,
                     EnumDeclaration,
                     NamespaceDeclaration,
-                    ImportDeclaration,
                 ),
             ):
+                continue
+            elif isinstance(declaration, ImportDeclaration):
+                # `import B.greet("Maya")` is an import plus an immediate call,
+                # so it runs here, in statement order, after the import has
+                # been bound by the loader.
+                if declaration.statement is not None:
+                    self._execute(declaration.statement, self.globals)
                 continue
             else:
                 self._execute(declaration, self.globals)
@@ -1527,6 +1568,16 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             value = self._evaluate(expression.value, environment)
             self._set_location(expression)
             return self._assign(expression.target, expression.operator, value, environment)
+        if isinstance(expression, ImportCall):
+            # `import B.greet("Maya")` — the loader already bound the import;
+            # this only performs the call the import statement carries.
+            self._set_location(expression)
+            callee = self._resolve_import_call_target(
+                expression.import_path, expression.alias
+            )
+            arguments = self._evaluate_call_arguments(expression.arguments, environment)
+            self._set_location(expression)
+            return self._call(callee, arguments)
         if isinstance(expression, Call):
             # delete(target) must see the key expression itself, so it runs
             # before arguments are evaluated (reading the value first would

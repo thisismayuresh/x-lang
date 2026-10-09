@@ -25,6 +25,7 @@ from ..ast_nodes import (
     Identifier,
     IfStatement,
     ImportAlias,
+    ImportCall,
     ImportDeclaration,
     ImportNamespaceAlias,
     Index,
@@ -584,11 +585,14 @@ class TypeChecker:
             self._infer(declaration.expression, scope)
         elif isinstance(declaration, Assignment):
             self._infer(declaration, scope)
+        elif isinstance(declaration, ImportDeclaration):
+            if declaration.statement is not None:
+                self._check_declaration(declaration.statement, scope)
+            return
         elif isinstance(
             declaration,
             (
                 ModuleImport,
-                ImportDeclaration,
                 ImportAlias,
                 ImportNamespaceAlias,
                 EnumDeclaration,
@@ -1266,6 +1270,21 @@ class TypeChecker:
             return self._infer_assignment(expression, scope)
         if isinstance(expression, Member):
             return self._infer_member(expression, scope)
+        if isinstance(expression, ImportCall):
+            # Checked as an ordinary call to the imported name: the loader
+            # flattens the module, so the target is registered already.
+            local_name = expression.alias or expression.import_path.split(".")[-1]
+            call = Call(Identifier(local_name), expression.arguments)
+            for attribute in (
+                "line",
+                "column",
+                "source_name",
+                "end_line",
+                "end_column",
+            ):
+                if hasattr(expression, attribute):
+                    setattr(call, attribute, getattr(expression, attribute))
+            return self._infer_call(call, scope)
         if isinstance(expression, Call):
             return self._infer_call(expression, scope)
         if isinstance(expression, NewExpression):

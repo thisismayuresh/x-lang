@@ -169,7 +169,13 @@ class ModuleLoader:
         direct_declarations = [
             declaration
             for declaration in program.declarations
-            if not isinstance(declaration, ImportDeclaration) and declaration is not None
+            if declaration is not None
+            and (
+                not isinstance(declaration, ImportDeclaration)
+                # `import B.greet("Maya")` imports *and* calls, so it stays in
+                # the file's own declarations to run after its imports bind.
+                or declaration.statement is not None
+            )
         ]
         self.direct_declarations[resolved_path] = direct_declarations
         self._warn_about_bare_main_reference(

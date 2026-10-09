@@ -212,8 +212,8 @@ Implemented and currently demonstrated features:
   `Thread.start` and `join`.
 - [x] Program arguments through `args`, plus the `print`, `range`, and `Exception`
   built-ins, and the `typeOf` runtime type helper.
-- [x] Project-relative named imports, grouped imports, wildcard imports, and
-  import aliases.
+- [x] Project-relative named imports, grouped imports, wildcard imports,
+  import aliases, and calling an imported function from the import itself.
 - [x] The `System.io` modules (Console, FileSystem, and the awaitable
   `Network.http` `fetch`), `System.process.Environment`, `System.concurrent`, and
   `System.utils` described below.
@@ -483,6 +483,31 @@ import greeting.* as Greet
 
 Greet.sayGreet()
 ```
+
+An imported function can be invoked straight from the import, which keeps
+one-off helper calls to a single line (see `examples/import_function`):
+
+```x
+// import_function/B.x
+export string function greet(string name, string greeting = "Hello") {
+    print(greeting + ", " + name + "!");
+    return greeting + ", " + name + "!";
+}
+```
+
+```x
+// import_function/A.x
+import B.greet("Maya");   // imports greet and calls it -> "Hello, Maya!"
+greet("Ada");             // the import stays bound, so greet is reusable
+```
+
+The import behaves exactly like `import B.greet`; the call runs where the
+import is written, so statement order is kept, and it counts as a top-level
+statement (no extra automatic `main()` on top of it). Aliases work too:
+`import B.greet as hello("Maya")`. The result of the call is discarded — write
+`greet("Maya")` if you need the value. A wrong argument count, a target that is
+not callable, and the grouped/wildcard forms (`import B.{greet}(...)`,
+`import B.*(...)`) are all rejected with a normal diagnostic.
 
 An imported module runs its top-level statements once. If the module calls its
 exported `main()` itself, the importing file only needs the import:

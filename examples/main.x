@@ -1,6 +1,7 @@
-
 import System.io.FileSystem
 import System.utils.JSON
+
+import main_tests.greet("Maya")
 
 let string[] entries = FileSystem.listDirectory("./");
 
