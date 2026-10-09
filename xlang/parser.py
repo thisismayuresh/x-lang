@@ -123,6 +123,7 @@ class Parser:
         self.features = features or {}
         self.source_name = source_name
         self.in_async_function = False
+        self.function_depth = 0
         self.recover_errors = recover_errors
         self.errors: list[ParseError] = []
         self._reported_errors: set[tuple[str, int, int, str | None]] = set()
@@ -675,11 +676,14 @@ class Parser:
 
     def _function_body(self, is_async: bool) -> list[Any]:
         previous_async_context = self.in_async_function
+        previous_function_depth = self.function_depth
         self.in_async_function = is_async
+        self.function_depth = previous_function_depth + 1
         try:
             return self._block().statements
         finally:
             self.in_async_function = previous_async_context
+            self.function_depth = previous_function_depth
 
     def _parameters(self) -> list[Parameter]:
         self._consume("(", "Expected '(' before parameters")
@@ -962,6 +966,13 @@ class Parser:
             return ExpressionStatement(expression)
 
         if self._match("return"):
+            return_token = self._previous()
+            if self.function_depth == 0:
+                raise ParseError(
+                    "'return' is only valid inside a function",
+                    return_token,
+                    self.source_name,
+                )
             value = (
                 None
                 if self._check(";")

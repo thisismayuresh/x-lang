@@ -58,7 +58,7 @@ FEATURE_DEFAULTS = {
 
 COMMAND_LINE_SOURCE = Path("<command line>")
 
-BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl")
+BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl", "format")
 
 
 class ConfigError(Exception):

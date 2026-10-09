@@ -939,7 +939,9 @@ class WatchFlagTests(unittest.TestCase):
         )
 
         self.assertEqual(return_code, 2)
-        self.assertIn("--watch can only be used with run, check, or build", errors)
+        self.assertIn(
+            "--watch can only be used with run, check, build, or format", errors
+        )
 
     def test_watch_normalization_stops_at_the_argument_separator(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1171,6 +1173,144 @@ class ScriptTests(unittest.TestCase):
 
         self.assertEqual(return_code, 2)
         self.assertIn("[scripts] must be a TOML table", errors)
+
+
+class FormatCommandTests(unittest.TestCase):
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def test_format_rewrites_a_file_in_place(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "function  f( int a ){\nlet x=a+1;\nreturn x;\n}\n",
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["format", "--no-config", str(source_file)]
+            )
+
+            self.assertEqual(return_code, 0)
+            self.assertIn("formatted", output)
+            self.assertEqual(errors, "")
+            self.assertEqual(
+                source_file.read_text(encoding="utf-8"),
+                "function f(int a) {\n  let x = a + 1;\n  return x;\n}\n",
+            )
+
+    def test_format_is_a_no_op_when_already_formatted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "let a = 1;\n", encoding="utf-8"
+            )
+            before = source_file.stat().st_mtime_ns
+
+            return_code, output, _ = self.run_cli(
+                ["format", "--no-config", str(source_file)]
+            )
+
+            self.assertEqual(return_code, 0)
+            self.assertIn("already formatted", output)
+            self.assertEqual(source_file.stat().st_mtime_ns, before)
+
+    def test_format_reports_syntax_errors_without_rewriting(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            original = "let x = 1;\nreturn x;\n"
+            source_file.write_text(original, encoding="utf-8")
+
+            return_code, output, errors = self.run_cli(
+                ["format", "--no-config", str(source_file)]
+            )
+
+            self.assertEqual(return_code, 1)
+            self.assertEqual(output, "")
+            self.assertIn("'return' is only valid inside a function", errors)
+            self.assertEqual(source_file.read_text(encoding="utf-8"), original)
+
+    def test_format_requires_the_x_extension(self):
+        return_code, _, errors = self.run_cli(
+            ["format", "--no-config", "main.txt"]
+        )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("source files must use the .x extension", errors)
+
+    def test_implicit_x_file_invocation_still_runs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                'function main() {\n    print("run-me");\n}\n', encoding="utf-8"
+            )
+            return_code, output, _ = self.run_cli(
+                ["--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("run-me", output)
+
+    def test_watch_format_reformats_when_the_file_changes(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text("let a=1;\n", encoding="utf-8")
+            sleep_calls = []
+
+            def fake_sleep(_seconds):
+                sleep_calls.append(_seconds)
+                if len(sleep_calls) == 1:
+                    source_file.write_text(
+                        "function  g(){return 2;}\n", encoding="utf-8"
+                    )
+                elif len(sleep_calls) >= 4:
+                    raise KeyboardInterrupt
+
+            with patch("xlang.cli.time.sleep", side_effect=fake_sleep):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "--watch", "format", str(source_file)]
+                )
+
+            self.assertEqual(return_code, 0)
+            self.assertIn("formatted", output)
+            self.assertIn("change detected", errors)
+            self.assertIn("watching", errors)
+            self.assertEqual(
+                source_file.read_text(encoding="utf-8"),
+                "function g() {\n  return 2;\n}\n",
+            )
+
+    def test_watch_format_survives_syntax_errors_while_typing(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text("let a = 1;\n", encoding="utf-8")
+            sleep_calls = []
+
+            def fake_sleep(_seconds):
+                sleep_calls.append(_seconds)
+                if len(sleep_calls) == 1:
+                    # Half-typed edit: invalid until the next save.
+                    source_file.write_text("let a = ;\n", encoding="utf-8")
+                elif len(sleep_calls) == 3:
+                    source_file.write_text("let a=2;\n", encoding="utf-8")
+                elif len(sleep_calls) >= 5:
+                    raise KeyboardInterrupt
+
+            with patch("xlang.cli.time.sleep", side_effect=fake_sleep):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "format", "--watch", str(source_file)]
+                )
+
+            self.assertEqual(return_code, 0)
+            self.assertIn("error", errors)
+            self.assertIn("change detected", errors)
+            self.assertEqual(
+                source_file.read_text(encoding="utf-8"), "let a = 2;\n"
+            )
 
 
 if __name__ == "__main__":

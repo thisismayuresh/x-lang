@@ -38,6 +38,7 @@ Usage:
   x [OPTIONS] run <file>.x [-- <program arguments...>]
   x [OPTIONS] check <file>.x
   x [OPTIONS] build <file>.x
+  x [OPTIONS] format <file>.x
   x [OPTIONS] install <package>...
   x [OPTIONS] repl
   x [OPTIONS] -watch <file>.x [program arguments...]
@@ -54,6 +55,12 @@ Options:
                         (the single-dash form -watch is also accepted)
   -h, --help            Show this help
   -V, --version         Show the interpreter version
+
+Format:
+  x format file.x       Rewrite file.x with canonical formatting in place
+  x --watch format file.x
+                        Reformat automatically whenever file.x changes while
+                        you type
 
 Scripts:
   Commands defined in the [scripts] table of x.toml run with 'x <name>',
@@ -174,7 +181,7 @@ def _execute(
         return 2
     if parsed.watch and command == "install":
         state.abort = True
-        print("x: --watch can only be used with run, check, or build", file=sys.stderr)
+        print("x: --watch can only be used with run, check, build, or format", file=sys.stderr)
         return 2
 
     if command == "install":
@@ -221,7 +228,7 @@ def _execute(
                 return 2
             print("x: source files must use the .x extension", file=sys.stderr)
             return 2
-        if command in ("check", "build"):
+        if command in ("check", "build", "format"):
             print(
                 f"x: '{parsed.source}' is a script; run it with "
                 f"'x {parsed.source}'",
@@ -275,6 +282,10 @@ def _execute(
     if not os.access(source_path, os.R_OK):
         print(f"x: cannot read '{source_path}': permission denied", file=sys.stderr)
         return 2
+
+    if command == "format":
+        return _format_source_file(source_path, state, config.color,
+                                   show_context=not parsed.no_context)
 
     try:
         run_profile = config.selected_run(parsed.profile) if command == "run" else None
@@ -545,7 +556,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         watch=False,
     )
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("run", "check", "build", "install", "repl"):
+    for command in ("run", "check", "build", "format", "install", "repl"):
         command_parser = subparsers.add_parser(
             command,
             parents=[common_parser],
@@ -648,6 +659,48 @@ def _insert_script_command(
     return arguments, False
 
 
+def _format_source_file(
+    source_path: Path,
+    state: _WatchState,
+    color_mode: str | None,
+    show_context: bool = True,
+) -> int:
+    """Rewrite *source_path* with canonical formatting, in place.
+
+    The file is only written when formatting actually changes it, which
+    keeps ``x --watch format`` quiet and free of self-triggered rewrite
+    loops.  Syntax errors abort the rewrite with a normal diagnostic.
+    """
+    from .formatter import format_source
+
+    state.files.add(source_path)
+    try:
+        original = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        print(f"x: cannot read '{source_path}': {error}", file=sys.stderr)
+        return 2
+    try:
+        formatted = format_source(original, source_name=str(source_path))
+    except (LexError, ParseError) as error:
+        return _report_source_errors(
+            [error],
+            {source_path.resolve(): original},
+            source_path,
+            color_mode or "auto",
+            show_context=show_context,
+        )
+    if formatted == original:
+        print(f"{source_path}: already formatted")
+        return 0
+    try:
+        source_path.write_text(formatted, encoding="utf-8")
+    except OSError as error:
+        print(f"x: cannot write '{source_path}': {error}", file=sys.stderr)
+        return 2
+    print(f"{source_path}: formatted")
+    return 0
+
+
 def _watch_loop(
     parsed: argparse.Namespace,
     is_implicit_command: bool,
@@ -656,6 +709,7 @@ def _watch_loop(
     """Run once, then re-run whenever a watched file changes until Ctrl+C."""
     restore_sigint = _ensure_sigint_handler()
     state = _WatchState()
+    is_format_command = getattr(parsed, "command", None) == "format"
     try:
         exit_code = _execute(
             parsed, is_implicit_command, is_script_invocation, state
@@ -689,8 +743,13 @@ def _watch_loop(
             watched.update(state.files)
             watched.update(_seed_watch_paths(parsed, state))
             refreshed = _snapshot_files(watched)
-            for path, signature in refreshed.items():
-                snapshot.setdefault(path, signature)
+            if is_format_command:
+                # The formatter rewrites the watched file itself; adopt the
+                # post-format signatures so its own write does not loop.
+                snapshot = refreshed
+            else:
+                for path, signature in refreshed.items():
+                    snapshot.setdefault(path, signature)
     except KeyboardInterrupt:
         sys.stdout.flush()
         print("\nx: stopped watching", file=sys.stderr)

@@ -3,7 +3,7 @@ default-command = "run"
 color = "auto"
 
 [features]
-strict_typing = true
+strict_typing = false
 
 [run]
 args = []
@@ -20,27 +20,19 @@ X_MODE = "feature-tour"
 # Standard-library modules imported into every .x file by default, exactly as
 # if each file started with `import <name>`.  Re-importing one of these in a
 # source file triggers a "redundant import" warning.
+# For the full list of every supported System module, see x.test.toml.
 [imports]
-default = ["System.utils.Math", "System.utils.JSON", "System.io.Console", "System.io.FileSystem"]
+default = [
+  "System.utils.Math",
+  "System.utils.JSON",
+  "System.io.Console",
+  "System.io.FileSystem",
+]
 
-# To import ALL supported System modules by default, use the full list below
-# instead of the short one above (this is what x.test.toml documents):
-# [imports]
-# default = [
-#   "System.concurrent.Async", "System.concurrent.Thread",
-#   "System.process.Environment",
-#   "System.io.Console", "System.io.FileSystem", "System.io.Network",
-#   "System.io.Network.http", "System.io.Network.http.fetch",
-#   "System.Throwable", "System.Throwable.Error", "System.Throwable.Error.DatabaseError",
-#   "System.Throwable.Exception", "System.Throwable.Exception.DatabaseException",
-#   "System.Throwable.Exception.IOException", "System.Throwable.Exception.IOException.FileSystemException",
-#   "System.Throwable.Exception.IOException.HttpException", "System.Throwable.Exception.RuntimeException",
-#   "System.Throwable.Exception.RuntimeException.ArithmeticException",
-#   "System.Throwable.Exception.RuntimeException.IllegalArgumentException",
-#   "System.Throwable.Exception.RuntimeException.IndexOutOfBoundsException",
-#   "System.Throwable.Exception.RuntimeException.TypeException",
-#   "System.utils.Collections", "System.utils.Collections.HashMap", "System.utils.Collections.LinkedList",
-#   "System.utils.Collections.List", "System.utils.Collections.PriorityQueue", "System.utils.Collections.Queue",
-#   "System.utils.Collections.Set", "System.utils.Collections.Stack", "System.utils.Collections.Trie",
-#   "System.utils.JSON", "System.utils.JSON.toJSON", "System.utils.Math",
-# ]
+# Named project commands, like package.json scripts: 'x dev main.x' runs
+#   x --watch format main.x
+# appending whatever arguments follow the script name (use '--' before
+# arguments that start with '-').  The value is an arbitrary shell string,
+# so it can be anything: 'x --watch run main.x', 'npm test', etc.
+[scripts]
+dev = "x --watch format"
