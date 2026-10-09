@@ -25,6 +25,8 @@ x run path/to/main.x [arguments...]
 x path/to/main.x [arguments...]
 x check path/to/main.x
 x build path/to/main.x
+x format path/to/main.x
+x --watch format path/to/main.x
 x -watch path/to/main.x
 x --config path/to/x.toml --feature async=off check path/to/main.x
 x run --profile development path/to/main.x -- --verbose "value with spaces"
@@ -43,11 +45,20 @@ x help
   limit recovery, so errors after it may not be discoverable in that pass.
 - `build` currently performs the same validation; it does not emit a native
   executable.
+- `format` rewrites the source file in place with canonical formatting
+  (implemented by `xlang/formatter.py`): two-space indentation, normalized
+  spacing around operators and commas, `if`/`else` and `try`/`catch` kept on
+  one line, one statement per line, comments and string literals preserved
+  verbatim, and at most one blank line between statements. Formatting is
+  idempotent; a file that is already formatted is left untouched. Files with
+  syntax errors are diagnosed instead of rewritten.
 - `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
   whenever the entry file, one of its imported files, or `x.toml` changes;
   press Ctrl+C to stop. Errors keep the watcher alive, so saving a fix
-  triggers the next run. Watch mode works with `run`, `check`, and `build`
-  and must appear before the source file.
+  triggers the next run. Watch mode works with `run`, `check`, `build`, and
+  `format` and must appear before the source file. Combined with `format`
+  (`x --watch format file.x`), the file is automatically reformatted every
+  time you save it while typing.
 - Commands listed in the `[scripts]` table of `x.toml` run with `x <name>`,
   similar to `pnpm start` and package.json scripts.
 - The process exit code is taken from an integer returned by `main`; a `void`
@@ -238,7 +249,11 @@ exits unsuccessfully without running the program.
 Run `x check examples/errors/syntax_error.x` to see an unexpected-token
 diagnostic. The invalid `;` after `=` is a valid character, but it is not a
 valid expression token; by contrast, a character such as `$` is reported by
-the lexer as an unexpected character.
+the lexer as an unexpected character. Contextual keywords are checked the
+same way: a `return` outside any function body (for example at the top level
+or inside a top-level loop) is a parse error —
+`'return' is only valid inside a function` — in the same family as
+`'await' is only valid inside an async function`.
 
 Type errors use the same rustc-style block, with optional `= note:` and
 `= help:` follow-up lines. Run `x check examples/errors/typed_array.x` to

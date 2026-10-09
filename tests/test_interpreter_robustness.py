@@ -347,9 +347,9 @@ class RobustnessTests(unittest.TestCase):
         )
         self.assertEqual(error.line, 1)
 
-        result, output = self.run_x("return 5;")
-        self.assertEqual(result, 5)
-        self.assertEqual(output, [])
+        with self.assertRaises(ParseError) as raised:
+            self.run_x("return 5;")
+        self.assertIn("'return' is only valid inside a function", str(raised.exception))
 
     def test_deep_recursion_reports_a_runtime_error(self):
         error = self.assert_runtime_error(

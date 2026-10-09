@@ -9,6 +9,8 @@ class Token:
     value: str
     line: int
     column: int
+    start: int = -1
+    end: int = -1
 
 
 class LexError(Exception):
@@ -151,6 +153,7 @@ class Lexer:
         initial_line: int = 1,
         initial_column: int = 1,
         recover_errors: bool = False,
+        keep_comments: bool = False,
     ) -> None:
         self.source = source
         self.source_name = source_name
@@ -158,6 +161,7 @@ class Lexer:
         self.line = initial_line
         self.column = initial_column
         self.recover_errors = recover_errors
+        self.keep_comments = keep_comments
         self.errors: list[LexError] = []
 
     def tokenize(self) -> list[Token]:
@@ -186,27 +190,50 @@ class Lexer:
                 self._advance()
                 continue
             if self._starts_with("//"):
-                self._skip_line_comment()
+                if self.keep_comments:
+                    tokens.append(self._comment_token("//"))
+                else:
+                    self._skip_line_comment()
                 continue
             if self._starts_with("/*"):
-                self._skip_block_comment()
+                if self.keep_comments:
+                    tokens.append(self._comment_token("/*"))
+                else:
+                    self._skip_block_comment()
                 continue
 
             start_line = self.line
             start_column = self.column
+            start_offset = self.position
             if character.isalpha() or character == "_":
                 value = self._read_identifier()
                 kind = value if value in KEYWORDS else "IDENTIFIER"
-                tokens.append(Token(kind, value, start_line, start_column))
+                tokens.append(
+                    Token(kind, value, start_line, start_column, start_offset, self.position)
+                )
                 continue
             if character.isdigit():
                 tokens.append(
-                    Token("NUMBER", self._read_number(), start_line, start_column)
+                    Token(
+                        "NUMBER",
+                        self._read_number(),
+                        start_line,
+                        start_column,
+                        start_offset,
+                        self.position,
+                    )
                 )
                 continue
             if character in ('"', "'"):
                 tokens.append(
-                    Token("STRING", self._read_string(character), start_line, start_column)
+                    Token(
+                        "STRING",
+                        self._read_string(character),
+                        start_line,
+                        start_column,
+                        start_offset,
+                        self.position,
+                    )
                 )
                 continue
             if character == "`":
@@ -216,6 +243,8 @@ class Lexer:
                         self._read_template_string(),
                         start_line,
                         start_column,
+                        start_offset,
+                        self.position,
                     )
                 )
                 continue
@@ -231,11 +260,29 @@ class Lexer:
             if matched_operator is not None:
                 for _ in matched_operator:
                     self._advance()
-                tokens.append(Token(matched_operator, matched_operator, start_line, start_column))
+                tokens.append(
+                    Token(
+                        matched_operator,
+                        matched_operator,
+                        start_line,
+                        start_column,
+                        start_offset,
+                        self.position,
+                    )
+                )
                 continue
             if character in "{}()[];,.?:|+-*/%!=<>@":
                 self._advance()
-                tokens.append(Token(character, character, start_line, start_column))
+                tokens.append(
+                    Token(
+                        character,
+                        character,
+                        start_line,
+                        start_column,
+                        start_offset,
+                        self.position,
+                    )
+                )
                 continue
             error = LexError(
                 f"Unexpected character {character!r}",
@@ -247,6 +294,24 @@ class Lexer:
                 raise error
             self.errors.append(error)
             self._advance()
+
+    def _comment_token(self, prefix: str) -> Token:
+        """Scan a ``//`` or ``/*`` comment into a ``COMMENT`` token."""
+        start_line = self.line
+        start_column = self.column
+        start_offset = self.position
+        if prefix == "//":
+            self._skip_line_comment()
+        else:
+            self._skip_block_comment()
+        return Token(
+            "COMMENT",
+            self.source[start_offset:self.position],
+            start_line,
+            start_column,
+            start_offset,
+            self.position,
+        )
 
     def _at_end(self) -> bool:
         return self.position >= len(self.source)
