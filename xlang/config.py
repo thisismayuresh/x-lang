@@ -58,6 +58,8 @@ FEATURE_DEFAULTS = {
 
 COMMAND_LINE_SOURCE = Path("<command line>")
 
+BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl")
+
 
 class ConfigError(Exception):
     def __init__(
@@ -85,6 +87,8 @@ class XConfig:
     run_arguments: list[str] = field(default_factory=list)
     environment: dict[str, str] = field(default_factory=dict)
     profiles: dict[str, RunProfile] = field(default_factory=dict)
+    scripts: dict[str, str] = field(default_factory=dict)
+    default_imports: list[str] = field(default_factory=list)
     default_command: str = "run"
     color: str = "auto"
 
@@ -208,7 +212,7 @@ def load_env_file(path: Path) -> dict[str, str]:
 def _apply_config_tables(
     config: XConfig, data: dict[str, Any], config_path: Path
 ) -> None:
-    _validate_keys(data, {"features", "run", "cli"}, "root", config_path)
+    _validate_keys(data, {"features", "run", "cli", "scripts", "imports"}, "root", config_path)
 
     feature_values = data.get("features", {})
     if not isinstance(feature_values, dict):
@@ -241,6 +245,43 @@ def _apply_config_tables(
         raise ConfigError("[cli].color must be a string", config_path)
     _validate_color(color, config_path)
     config.color = color
+
+    script_values = data.get("scripts", {})
+    if not isinstance(script_values, dict):
+        raise ConfigError("[scripts] must be a TOML table", config_path)
+    for script_name, script_command in script_values.items():
+        if not isinstance(script_command, str):
+            raise ConfigError(
+                f"[scripts].{script_name} must be a string", config_path
+            )
+        if not script_command.strip():
+            raise ConfigError(
+                f"[scripts].{script_name} must not be empty", config_path
+            )
+        if script_name in BUILTIN_COMMANDS:
+            raise ConfigError(
+                f"Script name '{script_name}' conflicts with the built-in "
+                f"'{script_name}' command",
+                config_path,
+            )
+        if (
+            not script_name
+            or script_name.startswith("-")
+            or any(character.isspace() for character in script_name)
+        ):
+            raise ConfigError(
+                f"Invalid script name '{script_name}': use a single word "
+                "without spaces or leading dashes",
+                config_path,
+            )
+        config.scripts[script_name] = script_command
+    imports_values = data.get("imports", {})
+    if not isinstance(imports_values, dict):
+        raise ConfigError("[imports] must be a TOML table", config_path)
+    _validate_keys(imports_values, {"default"}, "[imports]", config_path)
+    config.default_imports = _string_list(
+        imports_values.get("default", []), "[imports].default", config_path
+    )
 
     run_values = data.get("run", {})
     if not isinstance(run_values, dict):

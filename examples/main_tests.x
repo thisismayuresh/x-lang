@@ -90,12 +90,14 @@ int function calculateArea(int width, int height) {
     return width * height;
 }
 
-string function greet(string name, string greeting = "Hello") {
+export string function greet(string name, string greeting = "Hello") {
+    print(greeting + ", " + name + "!");
     return greeting + ", " + name + "!";
+
 }
 
 int function sum(int... numbers) {
-    let total = 0;
+    let  int total = 0;
     for (let n of numbers) {
         total = total + n;
     }

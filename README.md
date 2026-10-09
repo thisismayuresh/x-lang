@@ -25,8 +25,11 @@ x run path/to/main.x [arguments...]
 x path/to/main.x [arguments...]
 x check path/to/main.x
 x build path/to/main.x
+x -watch path/to/main.x
 x --config path/to/x.toml --feature async=off check path/to/main.x
 x run --profile development path/to/main.x -- --verbose "value with spaces"
+x start
+x start -- extra script arguments
 x version
 x help
 ```
@@ -40,6 +43,13 @@ x help
   limit recovery, so errors after it may not be discoverable in that pass.
 - `build` currently performs the same validation; it does not emit a native
   executable.
+- `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
+  whenever the entry file, one of its imported files, or `x.toml` changes;
+  press Ctrl+C to stop. Errors keep the watcher alive, so saving a fix
+  triggers the next run. Watch mode works with `run`, `check`, and `build`
+  and must appear before the source file.
+- Commands listed in the `[scripts]` table of `x.toml` run with `x <name>`,
+  similar to `pnpm start` and package.json scripts.
 - The process exit code is taken from an integer returned by `main`; a `void`
   or inferred-void `main` returns success.
 
@@ -81,6 +91,10 @@ args = ["profile-specific argument"]
 
 [run.profiles.test.environment]
 APP_MODE = "test"
+
+[scripts]
+start = "x run path/to/main.x"
+test = "x check path/to/main.x"
 ```
 
 `[run].args` are passed to the program first, followed by profile arguments
@@ -88,11 +102,22 @@ and then any CLI arguments. Use `--` to mark the end of X CLI options and begin
 program arguments. Each TOML array entry remains one argument; spaces are not
 split. Environment values from the operating system are overlaid by
 `[run].environment`, then by the selected profile. X code can read a value
-directly as `System.Environment.APP_MODE`; the built-in `System` namespace is
-available without an import. `System.Environment.has("APP_MODE")` and
-`System.Environment.all()` are also available. Configured environment values
+directly as `System.process.Environment.APP_MODE`; the built-in `System` namespace is
+available without an import. `System.process.Environment.has("APP_MODE")` and
+`System.process.Environment.all()` are also available. Configured environment values
 are scoped to the interpreter and do not modify the parent process.
 Run profiles are selected with `--profile NAME`.
+
+`[scripts]` maps script names to shell commands, mirroring the `scripts` table
+in package.json. Run one with `x start` (or `x run start`); extra command-line
+values are appended to the command after shell quoting, profile arguments are
+appended when `--profile` is given, and profile/`.env`/`[run.environment]`
+values are exported to the process. The command runs in the project root
+(directory of `x.toml`) and its exit status becomes the `x` exit code, so
+`x test` propagates a failing status exactly like `pnpm test`. Script names
+must be single words that do not collide with the built-in commands
+(`run`, `check`, `build`, `install`). `--watch` cannot be combined with
+scripts because a shell command does not expose the files it depends on.
 
 The CLI also loads a project-root `.env` file when running a program. Copy the
 safe demo values in [.env.example](./.env.example) to `.env`, then run the
@@ -103,7 +128,7 @@ cp .env.example .env
 x run examples/configuration/configured_args.x
 ```
 
-Read values directly as `System.Environment.VARIABLE_NAME`; no import or
+Read values directly as `System.process.Environment.VARIABLE_NAME`; no import or
 `get()` call is needed. `.env` assignments support `KEY=VALUE`, optional
 `export`, blank lines, full-line comments, and single- or double-quoted values.
 The file is not loaded for `check` or `build`. Existing operating-system
@@ -131,6 +156,11 @@ Implemented and currently demonstrated features:
   `int` as an alias for `integer`, array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
   defaults, rest properties, and object spread.
+- [x] `delete(target)` removes an object key *and* its value, splices out an
+  array element (the array gets shorter), or drops a class-instance field.
+  It is declared in Python as `Object.delete`, is available unqualified with
+  no import, returns `true`, and reports a target that is not there with the
+  same error reading it would raise.
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
@@ -182,10 +212,10 @@ Implemented and currently demonstrated features:
   `Thread.start` and `join`.
 - [x] Program arguments through `args`, plus the `print`, `range`, and `Exception`
   built-ins, and the `typeOf` runtime type helper.
-- [x] Project-relative named imports, grouped imports, wildcard imports, and
-  import aliases.
+- [x] Project-relative named imports, grouped imports, wildcard imports,
+  import aliases, and calling an imported function from the import itself.
 - [x] The `System.io` modules (Console, FileSystem, and the awaitable
-  `Network.http` `fetch`), `System.Environment`, `System.concurrent`, and
+  `Network.http` `fetch`), `System.process.Environment`, `System.concurrent`, and
   `System.utils` described below.
 - [x] Fully-qualified catch types over importable `System.Throwable...`
   exception paths, and `JSON.stringify`-style `System.utils.JSON.toJSON`.
@@ -288,6 +318,67 @@ Run the complete sample with:
 
 ```sh
 x run examples/type_of.x
+```
+
+### Deleting keys, indices and fields
+
+`delete(target)` removes exactly one entry and returns `true`. It is a
+builtin, so it needs no import: the Python side declares its origin as
+`Object.delete` (`DELETE_BUILTIN_NAME` in
+`xlang/interpreter/_native_builtins.py`), and — while the `object_literals`
+feature is enabled — the qualified `Object.delete(target)` spelling works the
+same way. `typeOf(delete)` reports `"function"`.
+
+```x
+let object<string, integer> freqMap = {};
+freqMap.p = 34;
+delete(freqMap.p);          // the key AND the value are gone
+print("p" in freqMap);      // false
+
+let integer[] values = [10, 20, 30];
+delete(values[1]);          // spliced out: [10, 30], length 2
+
+class Box {
+    string label;
+    public Box(string label) { this.label = label; }
+}
+let Box box = new Box("hi");
+delete(box.label);          // that instance loses the field
+```
+
+| Target | What `delete` does |
+| --- | --- |
+| `object.key` / `object["key"]` | Removes the key and its value; `in`, `Object.keys`, and `Object.values` stop reporting it. |
+| `array[index]` | Splices the element out — the array shrinks and later elements shift left. Negative indices work. |
+| `instance.field` | Removes the field from that instance only; visibility rules still apply. |
+
+Delete is as strict as reading, which is what makes a deleted value report an
+error instead of quietly coming back:
+
+- deleting a key, index, or field that is not there raises the error its read
+  would raise — `Cannot delete key p: object has no such key`,
+  `Cannot delete index 3: out of range for array of length 2`,
+  `'Box' has no member 'label'` — so a second `delete(freqMap.p)` is
+  reported rather than allowed to do nothing;
+- reading something that was deleted raises the same errors
+  (`Object has no field 'p'`, `'Box' has no member 'label'`, out of range);
+- `delete` takes exactly one key or index expression: `delete(x)`, `delete(5)`,
+  and `delete(f())` report `delete expects an object key or array index`, and
+  `delete()` / `delete(a, b)` report the argument count;
+- containers that cannot lose an entry refuse with `TypeException`:
+  `strings are immutable`, `tuples do not support index deletion`,
+  `class members are shared by every instance`, `imports declare their own
+  members`, and `builtins are declared in the standard library and cannot be
+  removed` (so `delete(Math.abs)` fails).
+
+Because `for (let key in object)` iterates a snapshot of the keys, deleting
+inside the loop is safe and empties the object:
+
+```x
+for (let key in counts) {
+    delete(counts[key]);
+}
+print(counts); // {}
 ```
 
 ## Optional chaining and ternary expressions
@@ -393,6 +484,31 @@ import greeting.* as Greet
 Greet.sayGreet()
 ```
 
+An imported function can be invoked straight from the import, which keeps
+one-off helper calls to a single line (see `examples/import_function`):
+
+```x
+// import_function/B.x
+export string function greet(string name, string greeting = "Hello") {
+    print(greeting + ", " + name + "!");
+    return greeting + ", " + name + "!";
+}
+```
+
+```x
+// import_function/A.x
+import B.greet("Maya");   // imports greet and calls it -> "Hello, Maya!"
+greet("Ada");             // the import stays bound, so greet is reusable
+```
+
+The import behaves exactly like `import B.greet`; the call runs where the
+import is written, so statement order is kept, and it counts as a top-level
+statement (no extra automatic `main()` on top of it). Aliases work too:
+`import B.greet as hello("Maya")`. The result of the call is discarded — write
+`greet("Maya")` if you need the value. A wrong argument count, a target that is
+not callable, and the grouped/wildcard forms (`import B.{greet}(...)`,
+`import B.*(...)`) are all rejected with a normal diagnostic.
+
 An imported module runs its top-level statements once. If the module calls its
 exported `main()` itself, the importing file only needs the import:
 
@@ -484,7 +600,7 @@ System/
 ```
 
 Top-level globals that need no namespace and no import: `print`, `range`,
-`typeOf`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
+`typeOf`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
 `command_input` is enabled), `trace` (when `decorators` is enabled), `Object`
 (when `object_literals` is enabled), and the short collection names (`Stack`,
 `HashMap`, `Queue`, ...) when `collections` is enabled.

@@ -19,6 +19,7 @@ from .ast_nodes import (
     ForStatement,
     FunctionDeclaration,
     FunctionExpression,
+    ImportCall,
     ImportDeclaration,
     Identifier,
     IfStatement,
@@ -41,6 +42,7 @@ from .ast_nodes import (
     BindingPattern,
     EnumPattern,
     ObjectPattern,
+    ResourceBinding,
     SwitchCase,
     SwitchStatement,
     ThisExpression,
@@ -73,6 +75,22 @@ class ParseError(Exception):
         self.line = token.line
         self.column = token.column
         self.source_name = source_name
+        self.end_line = token.line
+        self.end_column = token_end_column(token)
+
+
+def token_end_column(token: Token) -> int:
+    """Last column *token* covers, so diagnostics can underline it.
+
+    A string literal's stored value drops its quotes, so the span adds them
+    back; template strings may run over several lines and keywords with no
+    text of their own (end of file) underline a single column.
+    """
+    if token.kind == "STRING":
+        return token.column + len(token.value) + 1
+    if token.kind in {"TEMPLATE_STRING", "EOF"}:
+        return token.column
+    return token.column + max(len(token.value), 1) - 1
 
 
 class Parser:
@@ -256,6 +274,7 @@ class Parser:
         return self._statement()
 
     def _import_declaration(self) -> ImportDeclaration:
+        import_token = self._previous()
         parts = [self._consume("IDENTIFIER", "Expected import path").value]
         wildcard = False
         while self._match("."):
@@ -275,6 +294,12 @@ class Parser:
                     if not self._match(","):
                         break
                 self._consume("}", "Expected '}' after grouped imports")
+                if self._check("("):
+                    raise ParseError(
+                        "Grouped imports cannot be called; import the names "
+                        "first, then call them",
+                        self._peek(),
+                    )
                 self._match(";")
                 return ImportDeclaration(targets)
             if self._match("*"):
@@ -286,11 +311,34 @@ class Parser:
         alias = None
         if self._match("as"):
             alias = self._consume("IDENTIFIER", "Expected import alias").value
+        statement = None
+        if self._check("("):
+            if wildcard:
+                raise ParseError(
+                    "A wildcard import cannot be called; import the name "
+                    "directly, then call it",
+                    self._peek(),
+                )
+            self._match("(")
+            arguments = self._arguments_after_open_paren()
+            # `import B.greet("Maya")` binds the import and then calls it
+            # right away; the call is kept as a statement so it runs in
+            # statement order, after the loader has bound the module.
+            call = self._mark_span(
+                ImportCall(".".join(parts), alias, arguments),
+                import_token.line,
+                import_token.column,
+            )
+            statement = self._mark_span(
+                ExpressionStatement(call),
+                import_token.line,
+                import_token.column,
+            )
         self._match(";")
         if wildcard and alias is None and self._peek().kind not in (";", "EOF"):
             if not self._line_terminator_before_current():
                 raise ParseError("Unexpected token after wildcard import", self._peek())
-        return ImportDeclaration([(".".join(parts), alias)], wildcard)
+        return ImportDeclaration([(".".join(parts), alias)], wildcard, statement)
 
     def _export_specifier_declaration(self) -> None:
         """Parse JS/TS style ``export { name, other as alias };``.
@@ -942,6 +990,13 @@ class Parser:
             return ThrowStatement(value)
         if self._match("try"):
             self._require_feature("exceptions", self._previous())
+            resources: list[ResourceBinding] = []
+            if self._match("("):
+                while True:
+                    resources.append(self._resource_binding())
+                    if not self._match(","):
+                        break
+                self._consume(")", "Expected ')' after resource bindings")
             body = self._as_block(self._statement())
             catches: list[tuple[str | None, str, Block]] = []
             while self._match("catch"):
@@ -964,9 +1019,9 @@ class Parser:
                     ("|".join(catch_types) if catch_types else None, catch_name, catch_body)
                 )
             finally_body = self._as_block(self._statement()) if self._match("finally") else None
-            if not catches and finally_body is None:
+            if not catches and finally_body is None and not resources:
                 raise ParseError("A try statement needs catch or finally", self._peek())
-            return TryStatement(body, catches, finally_body)
+            return TryStatement(body, catches, finally_body, resources)
         if self._match(";"):
             return ExpressionStatement(Literal(None))
         missing_keyword = self._declaration_without_keyword_error()
@@ -976,27 +1031,49 @@ class Parser:
         self._consume_statement_terminator("Expected ';' after expression")
         return ExpressionStatement(expression)
 
+    def _resource_binding(self) -> ResourceBinding:
+        """Parse one ``let name = expression`` inside ``try ( ... )``."""
+        if self._match("let"):
+            constant = False
+        elif self._match("const"):
+            constant = True
+        else:
+            raise ParseError(
+                "Resource bindings must start with 'let' or 'const'", self._peek()
+            )
+        if not self._check("IDENTIFIER"):
+            raise ParseError("Expected a resource name", self._peek())
+        first = self._consume("IDENTIFIER", "Expected a resource name")
+        type_name: str | None = None
+        name_token = first
+        offset = 0
+        while self._peek(offset).kind == "[" and self._peek(offset + 1).kind == "]":
+            offset += 2
+        if self._peek(offset).kind == "IDENTIFIER":
+            type_name = first.value + "[]" * (offset // 2)
+            name_token = self._consume("IDENTIFIER", "Expected a resource name")
+        if not self._match("="):
+            raise ParseError("Expected '=' after resource name", self._peek())
+        value = self._expression()
+        return ResourceBinding(name_token.value, type_name, value, constant)
+
     def _declaration_without_keyword_error(self) -> ParseError | None:
         """Diagnose ``Type name = ...`` statements that forgot ``let``/``const``.
 
-        A statement that starts with ``IDENTIFIER IDENTIFIER`` or
-        ``IDENTIFIER [] IDENTIFIER`` cannot be an expression, so it is a
-        botched declaration rather than a broken expression statement.
+        A statement that starts with ``IDENTIFIER IDENTIFIER``, or with a type
+        name followed by any number of ``[]`` array suffixes and then another
+        identifier, cannot be an expression, so it is a botched declaration
+        rather than a broken expression statement.
         """
         if not self._check("IDENTIFIER"):
             return None
         type_token = self._peek()
         offset = 1
-        if self._peek(1).kind == "IDENTIFIER":
-            type_text = type_token.value
-        elif (
-            self._peek(1).kind == "["
-            and self._peek(2).kind == "]"
-            and self._peek(3).kind == "IDENTIFIER"
-        ):
-            type_text = type_token.value + "[]"
-            offset = 3
-        else:
+        type_text = type_token.value
+        while self._peek(offset).kind == "[" and self._peek(offset + 1).kind == "]":
+            type_text += "[]"
+            offset += 2
+        if self._peek(offset).kind != "IDENTIFIER":
             return None
         name_token = self._peek(offset)
         if self._peek(offset + 1).kind == "=":
@@ -1286,17 +1363,20 @@ class Parser:
             self._advance()
             next_precedence = precedence if precedence == 1 else precedence + 1
             right = self._expression(next_precedence)
+            left = expression
             if precedence == 1:
                 if operator == "=" and isinstance(expression, (ArrayLiteral, ObjectLiteral)):
                     expression = self._assignment_pattern(expression)
                 expression = Assignment(expression, operator, right)
             else:
-                expression = Binary(expression, operator, right)
+                expression = Binary(left, operator, right)
+            self._attach_span(expression, left)
         if minimum_precedence == 1 and self._match("?"):
             true_value = self._expression()
             self._consume(":", "Expected ':' in conditional expression")
             false_value = self._expression()
             expression = Binary(expression, "?:", (true_value, false_value))
+            self._attach_span(expression, expression)
         return expression
 
     def _assignment_pattern(self, expression: Any) -> Any:
@@ -1348,9 +1428,14 @@ class Parser:
 
     def _unary(self) -> Any:
         if self._match("!", "-", "+", "++", "--"):
-            operator = self._previous().kind
-            return Unary(operator, self._unary())
+            operator_token = self._previous()
+            operand = self._unary()
+            return self._attach_span(
+                Unary(operator_token.kind, operand), operator_token
+            )
+        chain_start = self._peek()
         expression = self._primary()
+        self._attach_span(expression, chain_start)
         chain_segments: list[OptionalChainSegment] = []
         optional_chain_started = False
         chain_object = expression
@@ -1373,6 +1458,7 @@ class Parser:
                     )
                 else:
                     expression = Call(expression, arguments, type_arguments)
+                    self._attach_span(expression, chain_start)
             elif self._match("("):
                 arguments = self._arguments_after_open_paren()
                 if optional_chain_started:
@@ -1381,6 +1467,7 @@ class Parser:
                     )
                 else:
                     expression = Call(expression, arguments)
+                    self._attach_span(expression, chain_start)
             elif self._match("?."):
                 optional_chain_started = True
                 if not chain_segments:
@@ -1415,6 +1502,7 @@ class Parser:
                     chain_segments.append(OptionalChainSegment("member", name))
                 else:
                     expression = Member(expression, name)
+                    self._attach_span(expression, chain_start)
             elif self._match("["):
                 index = self._expression()
                 self._consume("]", "Expected ']' after index")
@@ -1422,6 +1510,7 @@ class Parser:
                     chain_segments.append(OptionalChainSegment("index", index))
                 else:
                     expression = Index(expression, index)
+                    self._attach_span(expression, chain_start)
             elif (
                 not self._line_terminator_before_current()
                 and self._match("++", "--")
@@ -1429,12 +1518,14 @@ class Parser:
                 if optional_chain_started:
                     expression = OptionalChain(chain_object, chain_segments)
                 expression = Unary(self._previous().kind, expression, postfix=True)
+                self._attach_span(expression, chain_start)
                 optional_chain_started = False
                 chain_segments = []
             else:
                 break
         if optional_chain_started:
             expression = OptionalChain(chain_object, chain_segments)
+            self._attach_span(expression, chain_start)
         return expression
 
     def _parenthesized_arrow(self) -> Any | None:
@@ -1856,9 +1947,31 @@ class Parser:
     def _attach_location(self, node: Any, token: Token) -> Any:
         if node is None:
             return None
-        node.line = token.line
-        node.column = token.column
+        return self._mark_span(node, token.line, token.column)
+
+    def _attach_span(self, node: Any, start: Any) -> Any:
+        """Give *node* the span running from *start* to the last token read.
+
+        ``start`` is either a token or an already-located node, which is how
+        a growing postfix or binary chain keeps the position of its leftmost
+        operand.  Nodes with no position of their own are returned untouched.
+        """
+        if node is None:
+            return None
+        line = getattr(start, "line", None)
+        column = getattr(start, "column", None)
+        if line is None or column is None:
+            return node
+        return self._mark_span(node, line, column)
+
+    def _mark_span(self, node: Any, line: int, column: int) -> Any:
+        node.line = line
+        node.column = column
         node.source_name = self.source_name
+        previous = self._previous()
+        if previous.line == line:
+            node.end_line = line
+            node.end_column = token_end_column(previous)
         return node
 
     def _match(self, *kinds: str) -> bool:

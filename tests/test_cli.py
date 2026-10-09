@@ -89,7 +89,7 @@ class CommandLineTests(unittest.TestCase):
                     print(args[0])
                     print(args[2])
                     print(args[3])
-                    print(System.Environment.X_MODE)
+                    print(System.process.Environment.X_MODE)
                 }
                 """,
                 encoding="utf-8",
@@ -132,11 +132,11 @@ class CommandLineTests(unittest.TestCase):
             source_file.write_text(
                 """
                 function main() {
-                    print(System.Environment.X_ENV_DEMO_NAME)
-                    print(System.Environment.X_ENV_DEMO_MODE)
-                    print(System.Environment.X_ENV_DEMO_PORT)
-                    print(System.Environment.X_ENV_DEMO_OVERRIDE)
-                    print(System.Environment.has("X_ENV_DEMO_PORT"))
+                    print(System.process.Environment.X_ENV_DEMO_NAME)
+                    print(System.process.Environment.X_ENV_DEMO_MODE)
+                    print(System.process.Environment.X_ENV_DEMO_PORT)
+                    print(System.process.Environment.X_ENV_DEMO_OVERRIDE)
+                    print(System.process.Environment.has("X_ENV_DEMO_PORT"))
                 }
                 """,
                 encoding="utf-8",
@@ -161,6 +161,73 @@ class CommandLineTests(unittest.TestCase):
             ],
         )
         self.assertEqual(errors, "")
+
+    def test_system_process_exit_sets_the_process_exit_code(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print("before");
+                    System.process.exit(3);
+                    print("after");
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 3)
+        self.assertEqual(output.splitlines(), ["before"])
+        self.assertEqual(errors, "")
+
+    def test_system_process_exit_runs_finally_blocks_first(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    try {
+                        System.process.exit(5);
+                    } finally {
+                        print("cleanup");
+                    }
+                    print("after");
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 5)
+        self.assertEqual(output.splitlines(), ["cleanup"])
+        self.assertEqual(errors, "")
+
+    def test_global_system_environment_namespace_is_gone(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print(System.Environment.HOME);
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", "--color", "never", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("Name 'Environment' is not defined", errors)
 
     def test_invalid_env_file_reports_its_path_and_line(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -764,6 +831,346 @@ class CliRobustnessTests(unittest.TestCase):
         self.assertIn(f"{source_file}:1:", errors)
         self.assertNotIn("Traceback", errors)
         self.assertNotIn("RecursionError", errors)
+
+
+class WatchFlagTests(unittest.TestCase):
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def test_single_dash_watch_runs_the_program_and_reports_watching(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                'function main() {\n    print("watched-hello");\n}\n',
+                encoding="utf-8",
+            )
+
+            with patch("xlang.cli.time.sleep", side_effect=KeyboardInterrupt):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "-watch", str(source_file)]
+                )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("watched-hello", output)
+        self.assertIn("watching", errors)
+        self.assertIn("stopped watching", errors)
+
+    def test_watch_reloads_when_the_source_file_changes(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                'function main() {\n    print("first-revision");\n}\n',
+                encoding="utf-8",
+            )
+            sleep_calls = []
+
+            def fake_sleep(_seconds):
+                sleep_calls.append(_seconds)
+                if len(sleep_calls) == 1:
+                    source_file.write_text(
+                        'function main() {\n    print("second-revision-longer");\n}\n',
+                        encoding="utf-8",
+                    )
+                elif len(sleep_calls) >= 3:
+                    raise KeyboardInterrupt
+
+            with patch("xlang.cli.time.sleep", side_effect=fake_sleep):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "-watch", str(source_file)]
+                )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("first-revision", output)
+        self.assertIn("second-revision-longer", output)
+        self.assertIn("change detected", errors)
+
+    def test_watch_flag_is_accepted_before_and_after_the_command(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                'function main() {\n    print("position-ok");\n}\n',
+                encoding="utf-8",
+            )
+            for arguments in (
+                ["--no-config", "-w", "run", str(source_file)],
+                ["--no-config", "run", "--watch", str(source_file)],
+                ["--no-config", "--watch", "check", str(source_file)],
+            ):
+                with self.subTest(arguments=arguments):
+                    with patch("xlang.cli.time.sleep", side_effect=KeyboardInterrupt):
+                        return_code, output, errors = self.run_cli(arguments)
+                    self.assertEqual(return_code, 0)
+                    self.assertIn("watching", errors)
+                    if "run" in arguments:
+                        self.assertIn("position-ok", output)
+
+    def test_watch_waits_for_a_source_file_that_does_not_exist_yet(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "late.x"
+            sleep_calls = []
+
+            def fake_sleep(_seconds):
+                sleep_calls.append(_seconds)
+                if len(sleep_calls) == 1:
+                    source_file.write_text(
+                        'function main() {\n    print("late-arrival");\n}\n',
+                        encoding="utf-8",
+                    )
+                elif len(sleep_calls) >= 3:
+                    raise KeyboardInterrupt
+
+            with patch("xlang.cli.time.sleep", side_effect=fake_sleep):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "-watch", str(source_file)]
+                )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("does not exist", errors)
+        self.assertIn("change detected", errors)
+        self.assertIn("late-arrival", output)
+
+    def test_watch_is_rejected_for_the_install_command(self):
+        return_code, _, errors = self.run_cli(
+            ["--no-config", "-watch", "install", "pkg"]
+        )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("--watch can only be used with run, check, or build", errors)
+
+    def test_watch_normalization_stops_at_the_argument_separator(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                "function main(string[] args) {\n    print(args[0])\n}\n",
+                encoding="utf-8",
+            )
+
+            return_code, output, _ = self.run_cli(
+                ["--no-config", "run", str(source_file), "--", "-watch"]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("-watch", output)
+        self.assertNotIn("--watch", output)
+
+    def test_literal_dash_watch_token_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                'function main() {\n    print("token-ok");\n}\n',
+                encoding="utf-8",
+            )
+
+            with patch("xlang.cli.time.sleep", side_effect=KeyboardInterrupt):
+                return_code, output, errors = self.run_cli(
+                    ["--no-config", "run", "-watch", str(source_file)]
+                )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("token-ok", output)
+        self.assertIn("watching", errors)
+
+
+class ScriptTests(unittest.TestCase):
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def write_config(self, directory, contents):
+        config_path = Path(directory) / "x.toml"
+        config_path.write_text(contents, encoding="utf-8")
+        return config_path
+
+    def test_named_script_runs_like_a_package_manager_start_command(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nstart = "echo hello-from-script > start-output.txt"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "start"]
+            )
+            script_output = (Path(temporary_directory) / "start-output.txt").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("hello-from-script", script_output)
+        self.assertIn("running script 'start'", errors)
+
+    def test_script_receives_additional_command_line_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nargs = "echo > args-output.txt"\n',
+            )
+            return_code, _, _ = self.run_cli(
+                ["--config", str(config_path), "args", "alpha", "beta"]
+            )
+            script_output = (Path(temporary_directory) / "args-output.txt").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(script_output.strip(), "alpha beta")
+
+    def test_script_exit_code_becomes_the_process_exit_code(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nfail = "exit 7"\n',
+            )
+            return_code, _, _ = self.run_cli(
+                ["--config", str(config_path), "fail"]
+            )
+
+        self.assertEqual(return_code, 7)
+
+    def test_run_command_also_accepts_a_script_name(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nstart = "echo via-run-command > run-output.txt"\n',
+            )
+            return_code, _, _ = self.run_cli(
+                ["--config", str(config_path), "run", "start"]
+            )
+            script_output = (Path(temporary_directory) / "run-output.txt").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("via-run-command", script_output)
+
+    def test_profile_arguments_and_environment_apply_to_scripts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[run.profiles.demo]\n'
+                'args = ["profile-arg"]\n'
+                "\n"
+                "[run.profiles.demo.environment]\n"
+                'SCRIPT_MODE = "demo-mode"\n'
+                "\n"
+                "[scripts]\n"
+                'show = "echo mode=$SCRIPT_MODE > profile-output.txt"\n',
+            )
+            return_code, _, _ = self.run_cli(
+                ["--config", str(config_path), "--profile", "demo", "show"]
+            )
+            script_output = (
+                Path(temporary_directory) / "profile-output.txt"
+            ).read_text(encoding="utf-8")
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("mode=demo-mode", script_output)
+        self.assertIn("profile-arg", script_output)
+
+    def test_unknown_script_lists_the_available_scripts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nstart = "echo one"\ntest = "echo two"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "deploy"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("unknown script 'deploy'", errors)
+        self.assertIn("start, test", errors)
+
+    def test_script_invocation_without_a_scripts_table_reports_it(self):
+        return_code, _, errors = self.run_cli(["--no-config", "start"])
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("'start' is not a source file", errors)
+        self.assertIn("no [scripts] are defined", errors)
+
+    def test_watch_is_rejected_for_scripts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nstart = "echo hi"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "-watch", "start"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("--watch cannot be used with scripts", errors)
+
+    def test_check_command_cannot_run_a_script(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nstart = "echo hi"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "check", "start"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("is a script; run it with 'x start'", errors)
+
+    def test_script_name_conflicting_with_a_command_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\nrun = "echo hi"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "check", "main.x"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("conflicts with the built-in 'run' command", errors)
+
+    def test_script_names_with_spaces_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                '[scripts]\n"bad name" = "echo hi"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "check", "main.x"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("Invalid script name 'bad name'", errors)
+
+    def test_script_values_must_be_strings(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                "[scripts.start]\ncmd = 'echo hi'\n",
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "check", "main.x"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("[scripts].start must be a string", errors)
+
+    def test_scripts_must_be_a_table(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = self.write_config(
+                temporary_directory,
+                'scripts = "start"\n',
+            )
+            return_code, _, errors = self.run_cli(
+                ["--config", str(config_path), "check", "main.x"]
+            )
+
+        self.assertEqual(return_code, 2)
+        self.assertIn("[scripts] must be a TOML table", errors)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,24 @@ class UndefinedLiteral:
 class ImportDeclaration:
     targets: list[tuple[str, str | None]]
     wildcard: bool = False
+    # `import B.greet("Maya")` is an import plus an immediate call: the parser
+    # stores the ExpressionStatement to run here, after the import is bound.
+    statement: Any | None = None
+
+
+@dataclass
+class ImportCall:
+    """The imported target invoked inline: the callee of ``import B.greet(...)``.
+
+    Only ever produced by the import parser; resolving it goes through the
+    same import resolution a plain ``import B.greet`` uses.
+    """
+
+    # NB: not ``source_name`` — every located node carries ``source_name``
+    # for diagnostics, and the parser overwrites it with the file name.
+    import_path: str
+    alias: str | None
+    arguments: list[Any]
 
 
 @dataclass
@@ -242,10 +260,21 @@ class ThrowStatement:
 
 
 @dataclass
+class ResourceBinding:
+    """One ``try (let name = expression)`` resource declaration."""
+
+    name: str
+    type_name: str | None
+    value: Any
+    constant: bool = False
+
+
+@dataclass
 class TryStatement:
     body: Block
     catches: list[tuple[str | None, str, Block]]
     finally_body: Block | None
+    resources: list[ResourceBinding] = field(default_factory=list)
 
 
 @dataclass

@@ -25,6 +25,7 @@ from ..ast_nodes import (
     Identifier,
     IfStatement,
     ImportAlias,
+    ImportCall,
     ImportDeclaration,
     ImportNamespaceAlias,
     Index,
@@ -68,6 +69,7 @@ from .types import (
     VOID,
     TypeScope,
     XType,
+    _strip_array,
     is_compatible,
     parse_type,
     split_union,
@@ -238,9 +240,9 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
-        self._check_strict_typing(program.declarations)
+        self._check_strict_typing(program.declarations, self._source_name)
         for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations)
+            self._check_strict_typing(module_declarations, self._source_name)
         scope = self._builtin_scope()
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
@@ -275,9 +277,9 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
-        self._check_strict_typing(program.declarations)
+        self._check_strict_typing(program.declarations, self._source_name)
         for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations)
+            self._check_strict_typing(module_declarations, self._source_name)
 
     # ------------------------------------------------------------------
     # Scopes and collection
@@ -289,6 +291,9 @@ class TypeChecker:
             "print",
             "range",
             "typeOf",
+            # delete(...) comes from Object.delete (see DELETE_BUILTIN_NAME in
+            # xlang/interpreter/_native_builtins.py) but is callable unqualified.
+            "delete",
             "sleep",
             "args",
             "Object",
@@ -580,11 +585,14 @@ class TypeChecker:
             self._infer(declaration.expression, scope)
         elif isinstance(declaration, Assignment):
             self._infer(declaration, scope)
+        elif isinstance(declaration, ImportDeclaration):
+            if declaration.statement is not None:
+                self._check_declaration(declaration.statement, scope)
+            return
         elif isinstance(
             declaration,
             (
                 ModuleImport,
-                ImportDeclaration,
                 ImportAlias,
                 ImportNamespaceAlias,
                 EnumDeclaration,
@@ -629,7 +637,34 @@ class TypeChecker:
     def _check_try(self, declaration: TryStatement, scope: TypeScope) -> None:
         self._try_depth += 1
         try:
-            self._check_statements(declaration.body.statements, scope.child())
+            body_scope = scope.child()
+            for binding in declaration.resources:
+                annotated = self._resolve_annotation(binding.type_name)
+                if binding.value is not None:
+                    actual = self._infer(binding.value, body_scope)
+                    if not is_compatible(actual, annotated, relations=self):
+                        self._error(
+                            f"Cannot assign '{actual.display()}' to "
+                            f"'{binding.name}' of type '{annotated.display()}'",
+                            declaration,
+                            notes=[
+                                f"expected `{annotated.display()}`, "
+                                f"found `{actual.display()}`"
+                            ],
+                        )
+                    if (
+                        annotated.is_any
+                        and not actual.is_any
+                        and actual.name not in {"null", "undefined", "void"}
+                    ):
+                        annotated = actual
+                body_scope.define(
+                    binding.name,
+                    annotated,
+                    binding.value is not None,
+                    constant=binding.constant,
+                )
+            self._check_statements(declaration.body.statements, body_scope)
         finally:
             self._try_depth -= 1
         for catch_name, catch_type, catch_body in declaration.catches:
@@ -906,26 +941,111 @@ class TypeChecker:
                                 ],
                             )
 
-    def _check_strict_typing(self, declarations: list[Any]) -> None:
-        """Check that all types are explicitly specified when strict_typing is enabled."""
+    def _check_strict_typing(self, declarations: list[Any], source_name: str | None = None) -> None:
+        """Check that all types are explicitly specified when strict_typing is enabled.
+
+        Traverses top-level declarations, class members, function bodies and all
+        nested statement blocks so that return types, parameters and local
+        variables cannot be omitted.
+        """
         if not self._config or not self._config.enabled("strict_typing"):
             return
         
         for declaration in declarations:
-            self._check_strict_typing_declaration(declaration)
+            self._check_strict_typing_declaration(declaration, source_name=source_name)
+
+    def _check_strict_typing_statements(
+        self, statements: list[Any], source_name: str | None = None
+    ) -> None:
+        """Recurse through a block, checking local variable declarations."""
+        for statement in statements:
+            self._check_strict_typing_statement(statement, source_name)
+
+    def _check_strict_typing_statement(
+        self, statement: Any, source_name: str | None = None
+    ) -> None:
+        if statement is None:
+            return
+
+        previous_location = None
+        if getattr(statement, "line", None) is not None:
+            previous_location = self._location
+            self._location = (
+                statement.line,
+                getattr(statement, "column", None),
+                getattr(statement, "source_name", None) or source_name,
+            )
+
+        try:
+            if isinstance(statement, Block):
+                self._check_strict_typing_statements(statement.statements, source_name)
+            elif isinstance(statement, IfStatement):
+                self._check_strict_typing_statements(statement.then_branch.statements, source_name)
+                else_branch = statement.else_branch
+                if isinstance(else_branch, Block):
+                    self._check_strict_typing_statements(else_branch.statements, source_name)
+                elif else_branch is not None:
+                    self._check_strict_typing_statement(else_branch, source_name)
+            elif isinstance(statement, (WhileStatement, DoWhileStatement)):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, ForStatement):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, ClassicForStatement):
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+            elif isinstance(statement, TryStatement):
+                for resource in statement.resources:
+                    if resource.type_name is None:
+                        self._error(
+                            f"Resource variable '{resource.name}' must have an "
+                            "explicit type (strict_typing enabled)",
+                            statement,
+                        )
+                self._check_strict_typing_statements(statement.body.statements, source_name)
+                for _, _, catch_body in statement.catches:
+                    self._check_strict_typing_statements(catch_body.statements, source_name)
+                if statement.finally_body is not None:
+                    self._check_strict_typing_statements(
+                        statement.finally_body.statements, source_name
+                    )
+            elif isinstance(statement, SwitchStatement):
+                for case in statement.cases:
+                    self._check_strict_typing_statements(case.body.statements, source_name)
+            elif isinstance(
+                statement, (ExpressionStatement, Assignment, FunctionDeclaration, VariableDeclaration)
+            ):
+                self._check_strict_typing_declaration(
+                    statement, class_name=None, source_name=source_name, local=True
+                )
+            elif isinstance(statement, FunctionExpression):
+                for param in statement.parameters:
+                    if param.type_name is None:
+                        self._error(
+                            f"Parameter '{param.name}' in arrow function must have "
+                            "an explicit type (strict_typing enabled)",
+                            statement,
+                            helps=[
+                                _parameter_type_help("Function", "", None)
+                            ],
+                        )
+        finally:
+            if previous_location is not None:
+                self._location = previous_location
 
     def _check_strict_typing_declaration(
         self,
         declaration: Any,
         class_name: str | None = None,
         is_interface: bool = False,
+        source_name: str | None = None,
+        local: bool = False,
     ) -> None:
         """Check a single declaration for missing type annotations.
 
         ``class_name`` is the enclosing class (or interface) when the
         declaration is a member of one, so the diagnostic can say
         ``Method``/``Constructor``/``property`` instead of ``Function``/
-        ``Variable``.
+        ``Variable``.  ``local`` marks a variable declared inside a function
+        body.
         """
         if declaration is None:
             return
@@ -952,13 +1072,16 @@ class TypeChecker:
                             )
                         ],
                     )
+            if declaration.body:
+                self._check_strict_typing_statements(declaration.body, source_name=source_name)
         elif isinstance(declaration, VariableDeclaration):
-            if declaration.type_name is None and declaration.initializer is None:
-                label = (
-                    "Variable"
-                    if class_name is None
-                    else member_noun(declaration.modifiers).capitalize()
-                )
+            if declaration.type_name is None:
+                if local:
+                    label = "Local variable"
+                elif class_name is None:
+                    label = "Variable"
+                else:
+                    label = member_noun(declaration.modifiers).capitalize()
                 self._error(
                     f"{label} '{declaration.name}' must have an explicit type (strict_typing enabled)",
                     declaration,
@@ -1045,6 +1168,7 @@ class TypeChecker:
                     for name, field_type in type_value.record_fields
                 ),
                 is_any=type_value.is_any,
+                dimensions=type_value.dimensions,
             )
         arguments = tuple(
             self._resolve_named(argument, generics, seen)
@@ -1064,6 +1188,7 @@ class TypeChecker:
                 union_parts=type_value.union_parts,
                 record_fields=fields,
                 is_any=type_value.is_any,
+                dimensions=type_value.dimensions,
             )
         if name in self._aliases and not arguments and name not in seen:
             alias = self._aliases[name]
@@ -1075,10 +1200,11 @@ class TypeChecker:
                 union_parts=alias.union_parts,
                 record_fields=alias.record_fields,
                 is_any=alias.is_any,
+                dimensions=max(type_value.dimensions, alias.dimensions),
             )
             return self._resolve_named(combined, generics, seen | {name})
         if (
-            name in KNOWN_TYPE_NAMES
+            name in BUILTIN_TYPE_NAMES
             or name == "record"
             or name in self._classes
             or name in self._interfaces
@@ -1092,6 +1218,7 @@ class TypeChecker:
                 union_parts=type_value.union_parts,
                 record_fields=fields,
                 is_any=type_value.is_any,
+                dimensions=type_value.dimensions,
             )
         return ANY
 
@@ -1143,6 +1270,21 @@ class TypeChecker:
             return self._infer_assignment(expression, scope)
         if isinstance(expression, Member):
             return self._infer_member(expression, scope)
+        if isinstance(expression, ImportCall):
+            # Checked as an ordinary call to the imported name: the loader
+            # flattens the module, so the target is registered already.
+            local_name = expression.alias or expression.import_path.split(".")[-1]
+            call = Call(Identifier(local_name), expression.arguments)
+            for attribute in (
+                "line",
+                "column",
+                "source_name",
+                "end_line",
+                "end_column",
+            ):
+                if hasattr(expression, attribute):
+                    setattr(call, attribute, getattr(expression, attribute))
+            return self._infer_call(call, scope)
         if isinstance(expression, Call):
             return self._infer_call(expression, scope)
         if isinstance(expression, NewExpression):
@@ -1210,6 +1352,7 @@ class TypeChecker:
             union_parts=element.union_parts,
             record_fields=element.record_fields,
             is_any=element.is_any,
+            dimensions=element.dimensions + 1,
         )
 
     def _collapse(self, types: list[XType]) -> XType:
@@ -1287,8 +1430,25 @@ class TypeChecker:
         if operator == "typeof":
             return STRING
         if operator in {"++", "--"}:
-            if isinstance(expression.operand, Identifier):
-                scope.mark_assigned(expression.operand.name)
+            target = expression.operand
+            if isinstance(target, Identifier):
+                found = scope.lookup(target.name)
+                if (
+                    found is not None
+                    and found[1]
+                    and scope.is_constant(target.name)
+                ):
+                    self._error(
+                        f"Cannot reassign constant '{target.name}'",
+                        expression,
+                        helps=[
+                            f"declare '{target.name}' with `let` instead of `const` "
+                            "to allow reassignment"
+                        ],
+                    )
+                scope.mark_assigned(target.name)
+            elif isinstance(target, (Member, Index)):
+                self._check_const_container_write(target, scope, expression)
             return operand
         if operator in {"-", "+"}:
             if operand.name == "integer":
@@ -1413,21 +1573,15 @@ class TypeChecker:
                 return target_type
             return value_type
         if isinstance(target, Member):
+            self._check_const_container_write(target, scope, expression)
             self._check_member_write(target, value_type, scope, expression)
             return value_type
         if isinstance(target, Index):
+            self._check_const_container_write(target, scope, expression)
             container = self._infer(target.object, scope)
             self._infer(target.index, scope)
             if container.is_array:
-                element = XType(
-                    container.name,
-                    container.arguments,
-                    is_array=False,
-                    is_nullable=container.is_nullable,
-                    union_parts=container.union_parts,
-                    record_fields=container.record_fields,
-                    is_any=container.is_any,
-                )
+                element = _strip_array(container)
                 if not is_compatible(value_type, element, relations=self):
                     self._error(
                         f"Cannot assign '{value_type.display()}' to array element "
@@ -1440,6 +1594,35 @@ class TypeChecker:
                     )
             return value_type
         return value_type
+
+    @staticmethod
+    def _assignment_root_name(target: Any) -> str | None:
+        """Return the variable an assignment target ultimately writes into.
+
+        ``matrix[0][1]`` and ``settings.port`` both trace back to one binding;
+        calls and ``this`` do not trace to a name at all.
+        """
+        while isinstance(target, (Member, Index)):
+            target = target.object
+        if isinstance(target, Identifier):
+            return target.name
+        return None
+
+    def _check_const_container_write(
+        self, target: Any, scope: TypeScope, node: Any
+    ) -> None:
+        """Report writes through a ``const`` binding (deep immutability)."""
+        root = self._assignment_root_name(target)
+        if root is None or not scope.is_constant(root):
+            return
+        noun = "member" if isinstance(target, Member) else "element"
+        self._error(
+            f"Cannot modify {noun} of constant '{root}'",
+            node,
+            helps=[
+                f"declare '{root}' with `let` instead of `const` to allow mutation"
+            ],
+        )
 
     def _check_member_write(
         self,
@@ -1596,6 +1779,7 @@ class TypeChecker:
                             union_parts=mapped.union_parts,
                             record_fields=mapped.record_fields,
                             is_any=mapped.is_any,
+                            dimensions=mapped.dimensions + 1,
                         )
                     return XType("any", is_array=True, is_any=True)
             if callee.name == "filter":
@@ -1714,15 +1898,7 @@ class TypeChecker:
         container = self._infer(expression.object, scope)
         self._infer(expression.index, scope)
         if container.is_array:
-            return XType(
-                container.name,
-                container.arguments,
-                is_array=False,
-                is_nullable=container.is_nullable,
-                union_parts=container.union_parts,
-                record_fields=container.record_fields,
-                is_any=container.is_any,
-            )
+            return _strip_array(container)
         if container.name == "string":
             return STRING
         return ANY
@@ -2320,6 +2496,11 @@ class TypeChecker:
         if key in self._seen:
             return
         self._seen.add(key)
+        end_line = getattr(node, "end_line", None)
+        end_column = getattr(node, "end_column", None)
+        if end_column is None and line is not None and self._location is not None:
+            end_line = getattr(self, "_location_end_line", None)
+            end_column = getattr(self, "_location_end_column", None)
         self.errors.append(
             TypeCheckError(
                 message,
@@ -2328,5 +2509,7 @@ class TypeChecker:
                 column=column,
                 notes=notes,
                 helps=helps,
+                end_line=end_line,
+                end_column=end_column,
             )
         )

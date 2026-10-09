@@ -80,7 +80,9 @@ class ModuleLoader:
         "System.io.Network",
         "System.io.Network.http",
         "System.io.Network.http.fetch",
-        "System.Environment",
+        "System.process",
+        "System.process.Environment",
+        "System.process.exit",
         "System.utils.Collections",
         "System.utils.Collections.HashMap",
         "System.utils.Collections.LinkedList",
@@ -167,7 +169,13 @@ class ModuleLoader:
         direct_declarations = [
             declaration
             for declaration in program.declarations
-            if not isinstance(declaration, ImportDeclaration) and declaration is not None
+            if declaration is not None
+            and (
+                not isinstance(declaration, ImportDeclaration)
+                # `import B.greet("Maya")` imports *and* calls, so it stays in
+                # the file's own declarations to run after its imports bind.
+                or declaration.statement is not None
+            )
         ]
         self.direct_declarations[resolved_path] = direct_declarations
         self._warn_about_bare_main_reference(
@@ -180,6 +188,7 @@ class ModuleLoader:
             if not isinstance(declaration, ImportDeclaration):
                 continue
             for module_path, alias in declaration.targets:
+                self._warn_default_reimport(module_path, declaration, str(resolved_path))
                 if declaration.wildcard:
                     imported_path = self._path_for_module(
                         module_path, resolved_path
@@ -371,6 +380,23 @@ class ModuleLoader:
             if "export" in getattr(declaration, "modifiers", set())
             and (name := self._declaration_name(declaration)) is not None
         ]
+
+    def _warn_default_reimport(
+        self, module_path: str, declaration: Any, source_name: str
+    ) -> None:
+        """Warn when a module is imported explicitly AND has been added to
+        ``[imports].default`` so the import is repeated."""
+        if module_path not in getattr(self.config, "default_imports", []):
+            return
+        self.warnings.append(
+            ModuleWarning(
+                f"'{module_path}' is declared as a default import in x.toml "
+                f"([imports].default); importing it again is redundant",
+                source_name,
+                getattr(declaration, "line", None),
+                getattr(declaration, "column", None),
+            )
+        )
 
     def _warn_duplicate_main(
         self,

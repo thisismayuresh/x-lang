@@ -102,7 +102,11 @@ class TypeRelations(Protocol):
 
 @dataclass(frozen=True)
 class XType:
-    """A parsed X type annotation."""
+    """A parsed X type annotation.
+
+    ``dimensions`` is the array depth (``int[][]`` -> 2); ``is_array`` stays
+    in sync so existing checks keep working.
+    """
 
     name: str
     arguments: tuple["XType", ...] = ()
@@ -111,6 +115,15 @@ class XType:
     union_parts: tuple["XType", ...] = ()
     record_fields: tuple[tuple[str, "XType"], ...] = ()
     is_any: bool = False
+    dimensions: int = 0
+
+    def __post_init__(self) -> None:
+        depth = self.dimensions
+        if depth <= 0 and self.is_array:
+            depth = 1
+        depth = max(0, depth)
+        object.__setattr__(self, "dimensions", depth)
+        object.__setattr__(self, "is_array", depth > 0)
 
     def display(self) -> str:
         """Return a readable type name."""
@@ -121,7 +134,7 @@ class XType:
             if len(self.union_parts) > 1:
                 text = f"({text})"
             if self.is_array:
-                text += "[]"
+                text += "[]" * self.dimensions
             if self.is_nullable:
                 text += "?"
             return text
@@ -136,7 +149,7 @@ class XType:
             )
             text = f"record{{{fields}}}"
         if self.is_array:
-            text += "[]"
+            text += "[]" * self.dimensions
         if self.is_nullable:
             text += "?"
         return text
@@ -173,7 +186,7 @@ def parse_type(type_name: str | None) -> XType:
     array = text.endswith("[]")
     if array:
         text = text[:-2]
-        # Nested arrays: string[][]
+        # Nested arrays: string[][][], one dimension per "[]" suffix.
         inner = parse_type(text)
         return XType(
             inner.name,
@@ -183,6 +196,7 @@ def parse_type(type_name: str | None) -> XType:
             union_parts=inner.union_parts,
             record_fields=inner.record_fields,
             is_any=inner.is_any,
+            dimensions=inner.dimensions + 1,
         )
     generic_name, arguments = _split_generic(text)
     normalized = PRIMITIVE_ALIASES.get(generic_name, generic_name)
@@ -232,6 +246,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
             ),
             record_fields=type_value.record_fields,
             is_any=type_value.is_any,
+            dimensions=type_value.dimensions,
         )
     if type_value.name in mapping and not type_value.arguments:
         replacement = mapping[type_value.name]
@@ -243,6 +258,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
             union_parts=replacement.union_parts,
             record_fields=replacement.record_fields,
             is_any=replacement.is_any,
+            dimensions=max(type_value.dimensions, replacement.dimensions),
         )
     return XType(
         type_value.name,
@@ -254,19 +270,22 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
             for name, field_type in type_value.record_fields
         ),
         is_any=type_value.is_any,
+        dimensions=type_value.dimensions,
     )
 
 
 def _strip_array(type_value: XType) -> XType:
-    """Return the element type of an array type (``integer[]`` -> ``integer``)."""
+    """Return the element type of an array type (``integer[][]`` -> ``integer[]``)."""
+    depth = max(0, type_value.dimensions - 1)
     return XType(
         type_value.name,
         type_value.arguments,
-        is_array=False,
+        is_array=depth > 0,
         is_nullable=type_value.is_nullable,
         union_parts=type_value.union_parts,
         record_fields=type_value.record_fields,
         is_any=type_value.is_any,
+        dimensions=depth,
     )
 
 
@@ -279,6 +298,7 @@ def _strip_nullable(type_value: XType) -> XType:
         union_parts=type_value.union_parts,
         record_fields=type_value.record_fields,
         is_any=type_value.is_any,
+        dimensions=type_value.dimensions,
     )
 
 
@@ -307,6 +327,8 @@ def is_compatible(
     if target.is_array:
         if not source.is_array:
             return source.name in {"array", "object"}
+        if source.dimensions != target.dimensions:
+            return False
         element_target = _strip_array(target)
         element_source = _strip_array(source)
         return is_compatible(element_source, element_target, relations=relations)
@@ -331,6 +353,10 @@ def is_compatible(
         return True
     if target.name == "object":
         return True
+    if source.is_array and not target.is_array:
+        # An array never satisfies a scalar annotation (``int[]`` where ``int``
+        # is expected); the runtime would reject it anyway.
+        return False
     if target.name == "function":
         return source.name == "function"
     if target.name == "float" and source.name == "integer":

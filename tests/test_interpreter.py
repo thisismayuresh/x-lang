@@ -1312,6 +1312,152 @@ line three`);
             ["finally after return", "5", "inner finally", "second"],
         )
 
+    def test_try_with_resources_closes_before_finally_and_catch(self):
+        result, output = self.run_x("""
+            class Res {
+                public void use() { print("use"); }
+                public void close() { print("close"); }
+            }
+            function main() {
+                try (let Res r = new Res()) {
+                    r.use();
+                }
+                finally {
+                    print("finally");
+                }
+                try (let r = new Res()) {
+                    throw new Exception("boom");
+                }
+                catch (Exception error) {
+                    print("caught " + error.message);
+                }
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["use", "close", "finally", "close", "caught boom"],
+        )
+
+    def test_try_with_resources_prefers_the_body_error_when_close_fails(self):
+        result, output = self.run_x("""
+            class Res {
+                public void close() {
+                    print("closing");
+                    throw new Exception("close boom");
+                }
+            }
+            function main() {
+                try (let r = new Res()) {
+                    print("body");
+                }
+                catch (Exception error) {
+                    print("caught close failure: " + error.message);
+                }
+                try (let r = new Res()) {
+                    throw new Exception("body boom");
+                }
+                catch (Exception error) {
+                    print("caught body failure: " + error.message);
+                }
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            [
+                "body",
+                "closing",
+                "caught close failure: close boom",
+                "closing",
+                "caught body failure: body boom",
+            ],
+        )
+
+    def test_try_with_resources_closes_when_the_block_returns(self):
+        result, output = self.run_x("""
+            class Res {
+                public void close() { print("close"); }
+            }
+            integer function work() {
+                try (let r = new Res()) {
+                    return 7;
+                }
+                finally {
+                    print("finally");
+                }
+                return 0;
+            }
+            function main() {
+                print(work());
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["close", "finally", "7"])
+
+    def test_try_with_resources_rejects_a_resource_without_close(self):
+        result, output = self.run_x("""
+            function main() {
+                try (let value = 5) {
+                    print("body");
+                }
+                catch (Exception error) {
+                    print(error.message);
+                }
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output[0], "body")
+        self.assertIn("Resource 'value' has no close() method", output[1])
+
+    def test_try_with_resources_scopes_the_binding_to_the_block(self):
+        result, output = self.run_x("""
+            class Res {
+                public void close() { print("close"); }
+            }
+            function main() {
+                try (let r = new Res()) {
+                    print("inside");
+                }
+                finally {
+                    print("finally");
+                }
+                try {
+                    print(r);
+                }
+                catch (Exception error) {
+                    print(error.message);
+                }
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["inside", "close", "finally", "Name 'r' is not defined"],
+        )
+
+    def test_try_with_resources_accepts_several_bindings_closed_in_reverse(self):
+        result, output = self.run_x("""
+            class Res {
+                string label = "";
+                public Res(string name) { this.label = name; }
+                public void close() { print("close " + this.label); }
+            }
+            function main() {
+                try (let first = new Res("first"), let second = new Res("second")) {
+                    print("body");
+                }
+                finally {
+                    print("finally");
+                }
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["body", "close second", "close first", "finally"],
+        )
+
     def test_match_expression_patterns_bind_and_guard(self):
         result, output = self.run_x("""
             enum Status {
@@ -1508,6 +1654,78 @@ line three`);
                 }
                 """)
 
+    def test_const_containers_reject_element_and_member_writes(self):
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot modify element of constant 'numbers'"
+        ):
+            self.run_x("""
+                function main() {
+                    const numbers = [1, 2];
+                    numbers[0] = 9;
+                }
+                """)
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot modify element of constant 'rows'"
+        ):
+            self.run_x("""
+                function main() {
+                    const rows = [[1, 2]];
+                    rows[0][1] = 5;
+                }
+                """)
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot modify member of constant 'config'"
+        ):
+            self.run_x("""
+                function main() {
+                    const config = {port: 1};
+                    config.port = 2;
+                }
+                """)
+
+        with self.assertRaisesRegex(
+            RuntimeErrorX, "Cannot modify member of constant 'counter'"
+        ):
+            self.run_x("""
+                class Counter {
+                    integer value = 0;
+                }
+                function main() {
+                    const counter = new Counter();
+                    counter.value = 5;
+                }
+                """)
+
+    def test_const_allows_mutation_through_a_let_alias(self):
+        result, output = self.run_x("""
+            function main() {
+                const numbers = [1, 2];
+                let alias = numbers;
+                alias[0] = 9;
+                print(numbers[0]);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["9"])
+
+    def test_const_instance_methods_still_run(self):
+        result, output = self.run_x("""
+            class Counter {
+                integer value = 0;
+                public Counter() { this.value = 1; }
+                public void bump() { this.value = this.value + 1; }
+            }
+            function main() {
+                const counter = new Counter();
+                counter.bump();
+                print(counter.value);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["2"])
+
     def test_typed_arrays_reject_wrong_elements_and_invalid_mutations(self):
         literal_source = """
             function main() {
@@ -1600,7 +1818,7 @@ line three`);
         result, output = self.run_x(
             """
             function main() {
-                print(System.Environment.X_PROJECT);
+                print(System.process.Environment.X_PROJECT);
             }
             """,
             environment={"X_PROJECT": "x-language"},
@@ -1612,7 +1830,7 @@ line three`);
             self.run_x(
                 """
                 function main() {
-                    print(System.Environment.get("X_PROJECT"));
+                    print(System.process.Environment.get("X_PROJECT"));
                 }
                 """,
                 environment={"X_PROJECT": "x-language"},
@@ -1784,6 +2002,145 @@ line three`);
                     print(sample[4]);
                 }
                 """)
+
+    def test_multidimensional_arrays_index_assign_and_report_length(self):
+        result, output = self.run_x("""
+            function main() {
+                let int[][] grid = [[1, 2], [3, 4]];
+                grid[1][0] = 9;
+                let int[][][] cube = [[[1, 2]], [[3]]];
+                print(grid[1][0], grid[0][1], grid.length, grid[0].length);
+                print(cube[1][0][0], cube.length);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["9 2 2 2", "3 2"])
+
+    def test_multidimensional_array_arguments_keep_their_depth(self):
+        result, output = self.run_x("""
+            int function total(int[][] rows) {
+                let int sum = 0;
+                for (let row in rows) {
+                    for (let value in row) {
+                        sum = sum + value;
+                    }
+                }
+                return sum;
+            }
+            function main() {
+                let int[][] rows = [[1, 2], [3, 4]];
+                let int[][] alias = rows;
+                print(total(rows), total(alias));
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["10 10"])
+
+    def test_set_of_class_instances_uses_identity_semantics(self):
+        result, output = self.run_x("""
+            class Employee {
+                string name;
+                public Employee(string name) { this.name = name; }
+            }
+            function main() {
+                let Set<Employee> staff = new Set();
+                let Employee ann = new Employee("Ann");
+                let Employee bo = new Employee("Bo");
+                staff.add(ann);
+                staff.add(bo);
+                staff.add(ann);
+                print(staff.size());
+                print(staff.has(ann));
+                print(staff.has(new Employee("Ann")));
+                staff.remove(bo);
+                print(staff.size(), staff.has(bo));
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["2", "true", "false", "1 false"])
+
+    def test_set_stores_objects_arrays_and_primitive_values(self):
+        result, output = self.run_x("""
+            function main() {
+                let Set<object> objects = new Set();
+                objects.add({id: 1});
+                objects.add({id: 1});
+                print(objects.size());
+
+                let Set<int[]> rows = new Set();
+                rows.add([1, 2]);
+                rows.add([1, 2]);
+                print(rows.size());
+
+                let Set<int> numbers = new Set<int>();
+                numbers.add(1);
+                numbers.add(1);
+                numbers.add(2);
+                print(numbers.size(), numbers.has(2), numbers.toArray());
+                print(numbers);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["2", "2", "2 true [1, 2]", "{1, 2}"],
+        )
+
+    def test_set_supports_membership_operator_and_iteration(self):
+        result, output = self.run_x("""
+            function main() {
+                let Set<int> numbers = new Set();
+                numbers.add(3);
+                numbers.add(1);
+                numbers.add(2);
+                let int sum = 0;
+                for (let value in numbers) {
+                    sum = sum + value;
+                }
+                print(sum);
+                print(3 in numbers, 9 in numbers);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["6", "true false"])
+
+    def test_set_algebra_results_support_dot_calls(self):
+        result, output = self.run_x("""
+            function main() {
+                let Set<string> left = new Set();
+                left.add("a");
+                left.add("b");
+                let Set<string> right = new Set();
+                right.add("b");
+                right.add("c");
+                print(left.union(right).size(), left.union(right).toArray());
+                print(left.intersection(right).size(), left.intersection(right).toArray());
+                print(left.difference(right).size(), left.difference(right).toArray());
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(
+            output,
+            ["3 [a, b, c]", "1 [b]", "1 [a]"],
+        )
+
+    def test_math_random_int_stays_inside_requested_bounds(self):
+        result, output = self.run_x("""
+            import System.utils.Math
+            function main() {
+                let int valid = 1;
+                for (let i = 0; i < 300; i = i + 1) {
+                    let int ranged = Math.randomInt(1, 5);
+                    if (ranged < 1 || ranged > 5) { valid = 0; }
+                    let int zeroBased = Math.randomInt(4);
+                    if (zeroBased < 0 || zeroBased > 4) { valid = 0; }
+                }
+                print(valid);
+                print(Math.randomInt(7) % 1 == 0);
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["1", "true"])
 
 
 if __name__ == "__main__":
