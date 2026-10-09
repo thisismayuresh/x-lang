@@ -28,3 +28,11 @@ default = [
   "System.io.Console",
   "System.io.FileSystem",
 ]
+
+# Named project commands, like package.json scripts: 'x dev main.x' runs
+#   x --watch format main.x
+# appending whatever arguments follow the script name (use '--' before
+# arguments that start with '-').  The value is an arbitrary shell string,
+# so it can be anything: 'x --watch run main.x', 'npm test', etc.
+[scripts]
+dev = "x --watch format"
