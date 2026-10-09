@@ -23,6 +23,8 @@ class SourceWarning:
     column: int | None = None
     notes: tuple[str, ...] = ()
     helps: tuple[str, ...] = ()
+    end_line: int | None = None
+    end_column: int | None = None
 
 
 RED = "\x1b[31m"
@@ -138,8 +140,8 @@ def render_diagnostic(
         lines.extend(_hint_lines(error, gutter, use_color))
         return "\n".join(lines)
 
-    displayed_source, caret_column = _display_line(
-        source_lines[line - 1], column
+    displayed_source, caret_column, caret_end = _display_line(
+        source_lines[line - 1], column, _span_end(error, line, column)
     )
     source_marker = _color("|", BLUE + BOLD, use_color)
     line_marker = _color(str(line), CYAN + BOLD, use_color)
@@ -154,6 +156,8 @@ def render_diagnostic(
                 message_lines,
                 RED,
                 use_color,
+                caret_end,
+                len(displayed_source),
             )
         )
     lines.extend(_hint_lines(error, gutter, use_color))
@@ -171,6 +175,8 @@ def render_warning(
     *,
     notes: Sequence[str] = (),
     helps: Sequence[str] = (),
+    end_line: int | None = None,
+    end_column: int | None = None,
 ) -> str:
     """Render a warning block with the same layout as :func:`render_diagnostic`.
 
@@ -209,8 +215,10 @@ def render_warning(
         lines.extend(_hint_lines_for(notes, helps, gutter, use_color))
         return "\n".join(lines)
 
-    displayed_source, caret_column = _display_line(
-        source_lines[line - 1], column
+    displayed_source, caret_column, caret_end = _display_line(
+        source_lines[line - 1],
+        column,
+        _warning_span_end(end_line, end_column, line, column),
     )
     source_marker = _color("|", BLUE + BOLD, use_color)
     line_marker = _color(str(line), CYAN + BOLD, use_color)
@@ -225,6 +233,8 @@ def render_warning(
                 message_lines,
                 YELLOW,
                 use_color,
+                caret_end,
+                len(displayed_source),
             )
         )
     lines.extend(_hint_lines_for(notes, helps, gutter, use_color))
@@ -247,20 +257,52 @@ def _position(value: Any, minimum: int) -> int | None:
     return position
 
 
-def _display_line(line_text: str, column: int | None) -> tuple[str, int | None]:
-    """Source line to print plus the 1-based column the caret should mark.
+def _display_line(
+    line_text: str, column: int | None, end_column: int | None = None
+) -> tuple[str, int | None, int | None]:
+    """Source line to print plus the caret's first and last column.
 
     Tabs are expanded to :data:`TAB_WIDTH`-column stops in both the line and
-    the caret offset, so a caret under a tab-indented line stays under the
-    same character.  Lines without tabs come back untouched.
+    the caret offsets, so a caret under a tab-indented line stays under the
+    same character.  Lines without tabs come back untouched.  ``end_column``
+    is the last column the caret should cover (``None`` or a value before
+    *column* collapses to a single ``^``).
     """
     if column is None:
-        return line_text, None
+        return line_text, None, None
+    if end_column is not None and end_column < column:
+        end_column = None
     if "\t" not in line_text:
-        return line_text, column
+        return line_text, column, end_column
     expanded = line_text.expandtabs(TAB_WIDTH)
     offset = len(line_text[: column - 1].expandtabs(TAB_WIDTH))
-    return expanded, offset + 1
+    if end_column is None:
+        return expanded, offset + 1, None
+    end_offset = len(line_text[: end_column - 1].expandtabs(TAB_WIDTH))
+    return expanded, offset + 1, end_offset + 1
+
+
+def _span_end(error: BaseException, line: int, column: int | None) -> int | None:
+    """Last column of *error*'s underline when it stays on one line.
+
+    Diagnostics may carry ``end_line``/``end_column``; a span that runs past
+    the reported line is dropped so the renderer keeps drawing one caret line
+    (multi-line underlines are not rendered yet).
+    """
+    end_line = getattr(error, "end_line", None)
+    if end_line is not None and end_line != line:
+        return None
+    end_column = _position(getattr(error, "end_column", None), column or 1)
+    return end_column
+
+
+def _warning_span_end(
+    end_line: int | None, end_column: int | None, line: int, column: int | None
+) -> int | None:
+    """``end_column`` for :func:`render_warning` when it stays on *line*."""
+    if end_line is not None and end_line != line:
+        return None
+    return _position(end_column, column or 1)
 
 
 def _message_lines(message: str) -> list[str]:
@@ -284,13 +326,24 @@ def _caret_lines(
     message_lines: list[str],
     color: str,
     use_color: bool,
+    end_column: int | None = None,
+    line_width: int | None = None,
 ) -> list[str]:
     """Caret line plus continuation lines, kept inside the source gutter.
 
-    An empty message line still draws its caret, with no trailing whitespace.
+    ``end_column`` widens the marker into a run of ``^`` characters covering
+    the whole offending span, the way rustc and mypy underline an
+    expression; without one (or when it would run past the printed line) the
+    marker stays a single ``^``.  An empty message line still draws its
+    caret, with no trailing whitespace.
     """
     pad = " " * max(column - 1, 0)
-    caret = _color("^", color + BOLD, use_color)
+    width = 1
+    if end_column is not None and end_column >= column:
+        width = end_column - column + 1
+        if line_width is not None:
+            width = max(min(width, line_width - column + 1), 1)
+    caret = _color("^" * width, color + BOLD, use_color)
     base = f"{gutter} {source_marker} {pad}"
     first = _color(message_lines[0], color, use_color)
     lines = [f"{base}{caret} {first}" if first else f"{base}{caret}"]

@@ -600,7 +600,14 @@ class CliEndToEndTests(unittest.TestCase):
         blocks = checked.stderr.count("error: ")
         self.assertGreaterEqual(blocks, 2)
         self.assertEqual(checked.stderr.count("-->"), blocks)
-        self.assertEqual(checked.stderr.count("^"), blocks)
+        # One caret line per block; the marker itself may be a run of "^"
+        # covering the whole offending span.
+        caret_lines = [
+            line
+            for line in checked.stderr.splitlines()
+            if "^" in line.split("|", 1)[-1]
+        ]
+        self.assertEqual(len(caret_lines), blocks)
         summary = re.search(r"x: found (\d+) type error\(s\)", checked.stderr)
         self.assertIsNotNone(summary, checked.stderr)
         self.assertEqual(int(summary.group(1)), blocks)

@@ -89,7 +89,7 @@ class CommandLineTests(unittest.TestCase):
                     print(args[0])
                     print(args[2])
                     print(args[3])
-                    print(System.Environment.X_MODE)
+                    print(System.process.Environment.X_MODE)
                 }
                 """,
                 encoding="utf-8",
@@ -132,11 +132,11 @@ class CommandLineTests(unittest.TestCase):
             source_file.write_text(
                 """
                 function main() {
-                    print(System.Environment.X_ENV_DEMO_NAME)
-                    print(System.Environment.X_ENV_DEMO_MODE)
-                    print(System.Environment.X_ENV_DEMO_PORT)
-                    print(System.Environment.X_ENV_DEMO_OVERRIDE)
-                    print(System.Environment.has("X_ENV_DEMO_PORT"))
+                    print(System.process.Environment.X_ENV_DEMO_NAME)
+                    print(System.process.Environment.X_ENV_DEMO_MODE)
+                    print(System.process.Environment.X_ENV_DEMO_PORT)
+                    print(System.process.Environment.X_ENV_DEMO_OVERRIDE)
+                    print(System.process.Environment.has("X_ENV_DEMO_PORT"))
                 }
                 """,
                 encoding="utf-8",
@@ -161,6 +161,73 @@ class CommandLineTests(unittest.TestCase):
             ],
         )
         self.assertEqual(errors, "")
+
+    def test_system_process_exit_sets_the_process_exit_code(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print("before");
+                    System.process.exit(3);
+                    print("after");
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 3)
+        self.assertEqual(output.splitlines(), ["before"])
+        self.assertEqual(errors, "")
+
+    def test_system_process_exit_runs_finally_blocks_first(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    try {
+                        System.process.exit(5);
+                    } finally {
+                        print("cleanup");
+                    }
+                    print("after");
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 5)
+        self.assertEqual(output.splitlines(), ["cleanup"])
+        self.assertEqual(errors, "")
+
+    def test_global_system_environment_namespace_is_gone(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print(System.Environment.HOME);
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            return_code, output, errors = self.run_cli(
+                ["run", "--no-config", "--color", "never", str(source_file)]
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("Name 'Environment' is not defined", errors)
 
     def test_invalid_env_file_reports_its_path_and_line(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

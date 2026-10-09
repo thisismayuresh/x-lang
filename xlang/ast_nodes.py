@@ -242,10 +242,21 @@ class ThrowStatement:
 
 
 @dataclass
+class ResourceBinding:
+    """One ``try (let name = expression)`` resource declaration."""
+
+    name: str
+    type_name: str | None
+    value: Any
+    constant: bool = False
+
+
+@dataclass
 class TryStatement:
     body: Block
     catches: list[tuple[str | None, str, Block]]
     finally_body: Block | None
+    resources: list[ResourceBinding] = field(default_factory=list)
 
 
 @dataclass

@@ -64,7 +64,9 @@
       - ThreadSafeMap
       - ThreadSafeSet
     - Math
-  - Environment
+  - process
+    - Environment
+    - exit
 - Object
   - keys
   - values

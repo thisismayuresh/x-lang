@@ -8,6 +8,14 @@ from ._common import *  # noqa: F401,F403
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _ARRAY_METHODS, _STRING_METHODS
 
 
+#: Declared origin of the top-level ``delete(...)`` builtin.  ``delete`` is the
+#: unqualified spelling of ``Object.delete(...)`` in the ``Object`` namespace —
+#: the same arrangement ``print`` has with the console builtins — so the
+#: qualified name below is the single Python-side statement of where the
+#: builtin comes from: it is used for the ``BuiltinFunction`` label, the
+#: object-namespace entry, editor hover text and the README.
+DELETE_BUILTIN_NAME = "Object.delete"
+
 
 class NativeBuiltins:
     def _object_members(self) -> Environment:
@@ -24,6 +32,9 @@ class NativeBuiltins:
         )
         object_namespace.define(
             "hasOwn", BuiltinFunction("Object.hasOwn", self._object_has_own)
+        )
+        object_namespace.define(
+            "delete", BuiltinFunction(DELETE_BUILTIN_NAME, self._delete_indirect)
         )
         return object_namespace
 
@@ -62,6 +73,241 @@ class NativeBuiltins:
         ):
             raise RuntimeErrorX("Object.hasOwn expects an object and a string key")
         return arguments[1] in arguments[0]
+
+    # ------------------------------------------------------------------
+    # delete(target) — remove an object key, an array element, or a field
+    # ------------------------------------------------------------------
+
+    def _delete_indirect(self, arguments: list[Any]) -> Any:
+        """Called only when ``delete`` is not written as ``delete(target)``.
+
+        ``delete`` has to see the *key expression* (``delete(user.name)`` or
+        ``delete(values[0])``) so it can remove the entry itself; evaluating
+        the argument first would read the value and lose the container.  The
+        interpreter therefore routes ``delete(...)``/``Object.delete(...)``
+        through :meth:`_delete_builtin_call` before arguments are evaluated,
+        which leaves this implementation for round-uses such as
+        ``let f = Object.delete;``.
+        """
+        raise RuntimeErrorX(
+            f"{DELETE_BUILTIN_NAME} must be called as delete(target) or "
+            "Object.delete(target), for example delete(user.name) or "
+            "delete(values[0])",
+            "IllegalArgumentException",
+        )
+
+    def _delete_builtin_call(
+        self, argument_nodes: list[Any], environment: Environment
+    ) -> bool:
+        """Evaluate ``delete(target)``; returns ``true`` when it removed it.
+
+        Delete is strict, exactly like reading: a key, index or field that is
+        not there raises the same error its read would raise, so deleting
+        twice (``delete(o.p); delete(o.p);``) is reported instead of silently
+        doing nothing.
+        """
+        if len(argument_nodes) != 1:
+            raise RuntimeErrorX(
+                f"delete expects exactly one argument, got {len(argument_nodes)}",
+                "IllegalArgumentException",
+            )
+        target = argument_nodes[0]
+        if isinstance(target, Member):
+            container = self._evaluate(target.object, environment)
+            self._set_location(target)
+            return self._delete_member(container, target.name, environment)
+        if isinstance(target, Index):
+            container = self._evaluate(target.object, environment)
+            key = self._evaluate(target.index, environment)
+            self._set_location(target)
+            return self._delete_index(container, key)
+        self._set_location(target)
+        raise RuntimeErrorX(
+            "delete expects an object key or array index, for example "
+            "delete(user.name) or delete(values[0])",
+            "IllegalArgumentException",
+        )
+
+    def _resolve_delete_callee(
+        self, callee: Any, environment: Environment
+    ) -> BuiltinFunction | None:
+        """Return the ``delete`` builtin when *callee* is a delete call.
+
+        The identity check keeps a user-defined ``delete`` function (or an
+        unrelated ``something.delete(...)`` method) working exactly as written:
+        only calls that resolve to the builtin declared as
+        ``DELETE_BUILTIN_NAME`` take the special path.
+        """
+        if isinstance(callee, Identifier) and callee.name == "delete":
+            try:
+                value = environment.get("delete")
+            except RuntimeErrorX:
+                return None
+            if isinstance(value, BuiltinFunction) and value.name == DELETE_BUILTIN_NAME:
+                return value
+            return None
+        if (
+            isinstance(callee, Member)
+            and callee.name == "delete"
+            and isinstance(callee.object, Identifier)
+            and callee.object.name == "Object"
+        ):
+            try:
+                object_namespace = environment.get("Object")
+            except RuntimeErrorX:
+                return None
+            if not isinstance(object_namespace, Environment):
+                return None
+            value = object_namespace.values.get("delete")
+            if isinstance(value, BuiltinFunction) and value.name == DELETE_BUILTIN_NAME:
+                return value
+        return None
+
+    def _delete_member(
+        self, container: Any, name: str, environment: Environment
+    ) -> bool:
+        """Remove ``name`` from an object, instance, or namespace."""
+        if isinstance(container, dict):
+            if name not in container:
+                raise RuntimeErrorX(
+                    f"Cannot delete key {name}: object has no such key",
+                    "IndexOutOfBoundsException",
+                )
+            declared = container[name]
+            if isinstance(declared, BuiltinFunction):
+                raise RuntimeErrorX(
+                    f"Cannot delete '{name}': builtins are declared in the "
+                    "standard library and cannot be removed",
+                    "TypeException",
+                )
+            del container[name]
+            return True
+        if isinstance(container, Environment):
+            raise RuntimeErrorX(
+                f"Cannot delete '{name}' from a namespace: imports declare "
+                "their own members",
+                "TypeException",
+            )
+        if isinstance(container, XInstance):
+            return self._delete_instance_member(container, name, environment)
+        if isinstance(container, XClass):
+            raise RuntimeErrorX(
+                f"Cannot delete '{name}' from class '{container.name}': "
+                "class members are shared by every instance",
+                "TypeException",
+            )
+        if isinstance(container, str):
+            raise RuntimeErrorX(
+                f"Cannot delete property '{name}' from a string: "
+                "strings are immutable",
+                "TypeException",
+            )
+        raise RuntimeErrorX(
+            f"Cannot delete property '{name}': "
+            f"{self._builtin_type_of([container])} values do not support "
+            "property deletion",
+            "TypeException",
+        )
+
+    def _delete_instance_member(
+        self, instance: XInstance, name: str, environment: Environment
+    ) -> bool:
+        """Remove one field from a class instance (visibility rules apply)."""
+        if name in instance.fields:
+            field_definition = self._find_field_owner(instance.xclass, name)
+            if field_definition is not None:
+                field_owner, field_declaration = field_definition
+                if not self._can_access_member(
+                    field_declaration.modifiers,
+                    field_owner,
+                    self._access_context(environment),
+                ):
+                    raise RuntimeErrorX(
+                        f"Cannot access {member_noun(field_declaration.modifiers)} "
+                        f"'{instance.xclass.name}.{name}'"
+                    )
+            del instance.fields[name]
+            return True
+        if instance.xclass.find_methods(name):
+            raise RuntimeErrorX(
+                f"Cannot delete method '{instance.xclass.name}.{name}': "
+                "methods are declared on the class",
+                "TypeException",
+            )
+        if self._find_field_owner(instance.xclass, name, is_static=True) is not None:
+            raise RuntimeErrorX(
+                f"Cannot delete static field '{instance.xclass.name}.{name}': "
+                "static fields are shared by every instance",
+                "TypeException",
+            )
+        raise RuntimeErrorX(
+            f"'{instance.xclass.name}' has no member '{name}'"
+        )
+
+    def _delete_index(self, container: Any, key: Any) -> bool:
+        """Remove one array element (the array shrinks) or one object key."""
+        if isinstance(container, list):
+            if isinstance(key, bool) or not isinstance(key, int):
+                raise RuntimeErrorX(
+                    f"Cannot delete index {self._stringify(key)}: "
+                    "index must be an integer",
+                    "IndexOutOfBoundsException",
+                )
+            if not (-len(container) <= key < len(container)):
+                raise RuntimeErrorX(
+                    f"Cannot delete index {key}: out of range for array "
+                    f"of length {len(container)}",
+                    "IndexOutOfBoundsException",
+                )
+            container.pop(key)
+            return True
+        if isinstance(container, dict):
+            if isinstance(key, bool) or not isinstance(key, (int, str)):
+                raise RuntimeErrorX(
+                    f"Cannot delete key {self._stringify(key)}: "
+                    "object keys must be strings",
+                    "IndexOutOfBoundsException",
+                )
+            if key not in container:
+                raise RuntimeErrorX(
+                    f"Cannot delete key {self._stringify(key)}: "
+                    "object has no such key",
+                    "IndexOutOfBoundsException",
+                )
+            declared = container[key]
+            if isinstance(declared, BuiltinFunction):
+                raise RuntimeErrorX(
+                    f"Cannot delete '{self._stringify(key)}': builtins are "
+                    "declared in the standard library and cannot be removed",
+                    "TypeException",
+                )
+            del container[key]
+            return True
+        if isinstance(container, str):
+            raise RuntimeErrorX(
+                f"Cannot delete index {self._stringify(key)}: "
+                "strings are immutable",
+                "TypeException",
+            )
+        if isinstance(container, tuple):
+            raise RuntimeErrorX(
+                f"Cannot delete index {self._stringify(key)}: "
+                "tuples do not support index deletion",
+                "TypeException",
+            )
+        if isinstance(container, XInstance):
+            raise RuntimeErrorX(
+                f"Cannot delete index {self._stringify(key)}: "
+                f"class '{container.xclass.name}' members are named, "
+                "not indexed",
+                "TypeException",
+            )
+        raise RuntimeErrorX(
+            f"Cannot delete index {self._stringify(key)}: "
+            f"{self._builtin_type_of([container])} values do not support "
+            "index deletion",
+            "TypeException",
+        )
 
     def _thread_members(self) -> dict[str, BuiltinFunction]:
         return {

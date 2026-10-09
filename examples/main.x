@@ -404,3 +404,53 @@ print("Config DEFAULT_URL: " + Config.DEFAULT_URL);
 // print("Queryable assigned from DeepImpl: " + typeOf(q));
 
 // print("=== Complex Interface Tests Complete ===");
+
+
+
+let string string = "Maya";
+
+print(string.charAt(0));
+
+
+  let object<string, integer> freqMap = {};
+
+  let string userInput = "Hello";
+
+for (let char in userInput) {
+  if (char in freqMap) {
+     freqMap[char] +=1;
+ }
+  else { 
+    freqMap[char] = 1;
+  print("Tip of "+ typeOf( print(delete(freqMap[char]))))
+ }
+}
+
+
+// freqMap.p=34;
+// delete(freqMap.p)
+// delete(freqMap.p) //How is this allowing to delete again ?
+// delete(freqMap)
+// delete(freqMap["e"])
+// delete(freqMap.p)
+
+// freqMap.H = 0
+
+// gooo()
+
+// ()
+
+{}
+
+let integer[] myArray = [1,2,3,4,5];
+delete(myArray[myArray.length-1])
+print(myArray)
+
+// delete(freqMap.H)
+// delete(freqMap.e)
+// delete(freqMap.l)
+// delete(freqMap.l)
+// delete(freqMap.o)
+// delete(freqMap.p)
+// delete(freqMap.l)
+print((freqMap))

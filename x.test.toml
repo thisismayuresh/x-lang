@@ -69,7 +69,7 @@ dev = "x -watch run examples/main.x"
 default = [
   "System.concurrent.Async",
   "System.concurrent.Thread",
-  "System.Environment",
+  "System.process.Environment",
   "System.io.Console",
   "System.io.FileSystem",
   "System.io.Network",

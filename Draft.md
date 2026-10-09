@@ -3893,9 +3893,9 @@ profile arguments, then command-line arguments after the `--` delimiter.
 Array entries are preserved as individual strings, including spaces.
 Configured environment values overlay the process environment, and profile
 values overlay base run values. X code reads an effective environment value
-directly as `System.Environment.NAME`, without importing the environment
-module or mutating the parent process. `System.Environment.has(name)` and
-`System.Environment.all()` are also available. Profiles are selected with
+directly as `System.process.Environment.NAME`, without importing the environment
+module or mutating the parent process. `System.process.Environment.has(name)` and
+`System.process.Environment.all()` are also available. Profiles are selected with
 `--profile NAME`.
 Explicit `run`, `check`, or `build` commands override `default-command`.
 

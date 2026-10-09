@@ -102,9 +102,9 @@ and then any CLI arguments. Use `--` to mark the end of X CLI options and begin
 program arguments. Each TOML array entry remains one argument; spaces are not
 split. Environment values from the operating system are overlaid by
 `[run].environment`, then by the selected profile. X code can read a value
-directly as `System.Environment.APP_MODE`; the built-in `System` namespace is
-available without an import. `System.Environment.has("APP_MODE")` and
-`System.Environment.all()` are also available. Configured environment values
+directly as `System.process.Environment.APP_MODE`; the built-in `System` namespace is
+available without an import. `System.process.Environment.has("APP_MODE")` and
+`System.process.Environment.all()` are also available. Configured environment values
 are scoped to the interpreter and do not modify the parent process.
 Run profiles are selected with `--profile NAME`.
 
@@ -128,7 +128,7 @@ cp .env.example .env
 x run examples/configuration/configured_args.x
 ```
 
-Read values directly as `System.Environment.VARIABLE_NAME`; no import or
+Read values directly as `System.process.Environment.VARIABLE_NAME`; no import or
 `get()` call is needed. `.env` assignments support `KEY=VALUE`, optional
 `export`, blank lines, full-line comments, and single- or double-quoted values.
 The file is not loaded for `check` or `build`. Existing operating-system
@@ -156,6 +156,11 @@ Implemented and currently demonstrated features:
   `int` as an alias for `integer`, array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
   defaults, rest properties, and object spread.
+- [x] `delete(target)` removes an object key *and* its value, splices out an
+  array element (the array gets shorter), or drops a class-instance field.
+  It is declared in Python as `Object.delete`, is available unqualified with
+  no import, returns `true`, and reports a target that is not there with the
+  same error reading it would raise.
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
@@ -210,7 +215,7 @@ Implemented and currently demonstrated features:
 - [x] Project-relative named imports, grouped imports, wildcard imports, and
   import aliases.
 - [x] The `System.io` modules (Console, FileSystem, and the awaitable
-  `Network.http` `fetch`), `System.Environment`, `System.concurrent`, and
+  `Network.http` `fetch`), `System.process.Environment`, `System.concurrent`, and
   `System.utils` described below.
 - [x] Fully-qualified catch types over importable `System.Throwable...`
   exception paths, and `JSON.stringify`-style `System.utils.JSON.toJSON`.
@@ -313,6 +318,67 @@ Run the complete sample with:
 
 ```sh
 x run examples/type_of.x
+```
+
+### Deleting keys, indices and fields
+
+`delete(target)` removes exactly one entry and returns `true`. It is a
+builtin, so it needs no import: the Python side declares its origin as
+`Object.delete` (`DELETE_BUILTIN_NAME` in
+`xlang/interpreter/_native_builtins.py`), and — while the `object_literals`
+feature is enabled — the qualified `Object.delete(target)` spelling works the
+same way. `typeOf(delete)` reports `"function"`.
+
+```x
+let object<string, integer> freqMap = {};
+freqMap.p = 34;
+delete(freqMap.p);          // the key AND the value are gone
+print("p" in freqMap);      // false
+
+let integer[] values = [10, 20, 30];
+delete(values[1]);          // spliced out: [10, 30], length 2
+
+class Box {
+    string label;
+    public Box(string label) { this.label = label; }
+}
+let Box box = new Box("hi");
+delete(box.label);          // that instance loses the field
+```
+
+| Target | What `delete` does |
+| --- | --- |
+| `object.key` / `object["key"]` | Removes the key and its value; `in`, `Object.keys`, and `Object.values` stop reporting it. |
+| `array[index]` | Splices the element out — the array shrinks and later elements shift left. Negative indices work. |
+| `instance.field` | Removes the field from that instance only; visibility rules still apply. |
+
+Delete is as strict as reading, which is what makes a deleted value report an
+error instead of quietly coming back:
+
+- deleting a key, index, or field that is not there raises the error its read
+  would raise — `Cannot delete key p: object has no such key`,
+  `Cannot delete index 3: out of range for array of length 2`,
+  `'Box' has no member 'label'` — so a second `delete(freqMap.p)` is
+  reported rather than allowed to do nothing;
+- reading something that was deleted raises the same errors
+  (`Object has no field 'p'`, `'Box' has no member 'label'`, out of range);
+- `delete` takes exactly one key or index expression: `delete(x)`, `delete(5)`,
+  and `delete(f())` report `delete expects an object key or array index`, and
+  `delete()` / `delete(a, b)` report the argument count;
+- containers that cannot lose an entry refuse with `TypeException`:
+  `strings are immutable`, `tuples do not support index deletion`,
+  `class members are shared by every instance`, `imports declare their own
+  members`, and `builtins are declared in the standard library and cannot be
+  removed` (so `delete(Math.abs)` fails).
+
+Because `for (let key in object)` iterates a snapshot of the keys, deleting
+inside the loop is safe and empties the object:
+
+```x
+for (let key in counts) {
+    delete(counts[key]);
+}
+print(counts); // {}
 ```
 
 ## Optional chaining and ternary expressions
@@ -509,7 +575,7 @@ System/
 ```
 
 Top-level globals that need no namespace and no import: `print`, `range`,
-`typeOf`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
+`typeOf`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
 `command_input` is enabled), `trace` (when `decorators` is enabled), `Object`
 (when `object_literals` is enabled), and the short collection names (`Stack`,
 `HashMap`, `Queue`, ...) when `collections` is enabled.

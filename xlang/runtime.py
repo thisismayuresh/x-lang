@@ -27,6 +27,10 @@ class RuntimeErrorX(Exception):
         self.line: int | None = None
         self.column: int | None = None
         self.source_name: str | None = None
+        #: Last column of the offending span, so the renderer can underline
+        #: the whole expression with ``^^^`` instead of a single ``^``.
+        self.end_line: int | None = None
+        self.end_column: int | None = None
 
 
 class ReturnSignal(Exception):
@@ -46,11 +50,15 @@ class ThrownValue(Exception):
         source_name: str | None = None,
         line: int | None = None,
         column: int | None = None,
+        end_line: int | None = None,
+        end_column: int | None = None,
     ) -> None:
         self.value = value
         self.line = line
         self.column = column
         self.source_name = source_name
+        self.end_line = end_line
+        self.end_column = end_column
 
 
 #: Builtin exception hierarchy: child name -> parent name.  One source of
@@ -166,6 +174,14 @@ class Environment:
             self.parent.assign(name, value)
             return
         raise RuntimeErrorX(f"Cannot assign to undefined name '{name}'")
+
+    def is_constant(self, name: str) -> bool:
+        """Return True when *name* is bound to a ``const`` in this chain."""
+        if name in self.values:
+            return name in self.constants
+        if self.parent is not None:
+            return self.parent.is_constant(name)
+        return False
 
 
 class XArray(list[Any]):

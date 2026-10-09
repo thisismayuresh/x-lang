@@ -44,6 +44,9 @@ class MathBuiltins:
             "min": BuiltinFunction("Math.min", lambda args: self._math_min(args)),
             "max": BuiltinFunction("Math.max", lambda args: self._math_max(args)),
             "random": BuiltinFunction("Math.random", lambda args: self._math_random(args)),
+            "randomInt": BuiltinFunction(
+                "Math.randomInt", lambda args: self._math_random_int(args)
+            ),
             "degrees": BuiltinFunction("Math.degrees", lambda args: self._math_degrees(args)),
             "radians": BuiltinFunction("Math.radians", lambda args: self._math_radians(args)),
             "isclose": BuiltinFunction("Math.isclose", lambda args: self._math_isclose(args)),
@@ -182,6 +185,21 @@ class MathBuiltins:
         if args:
             raise RuntimeErrorX("Math.random expects no arguments")
         return random.random()
+
+    def _math_random_int(self, args: list[Any]) -> int:
+        """``Math.randomInt(max)`` or ``Math.randomInt(min, max)``, both inclusive."""
+        if len(args) == 1:
+            low, high = 0, args[0]
+        elif len(args) == 2:
+            low, high = args[0], args[1]
+        else:
+            raise RuntimeErrorX("Math.randomInt expects 1 or 2 arguments")
+        for value in (low, high):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise RuntimeErrorX("Math.randomInt expects integer bounds")
+        if low > high:
+            raise RuntimeErrorX("Math.randomInt requires min <= max")
+        return random.randint(low, high)
 
     def _math_degrees(self, args: list[Any]) -> float:
         return self._math_unary(args, math.degrees)

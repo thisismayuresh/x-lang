@@ -39,6 +39,7 @@ Usage:
   x [OPTIONS] check <file>.x
   x [OPTIONS] build <file>.x
   x [OPTIONS] install <package>...
+  x [OPTIONS] repl
   x [OPTIONS] -watch <file>.x [program arguments...]
   x <script> [-- <script arguments...>]
   x <file>.x [program arguments...]
@@ -115,6 +116,27 @@ def main(argv: list[str] | None = None) -> int:
     return _execute(parsed, is_implicit_command, is_script_invocation)
 
 
+def _exit_code_of(stop: SystemExit) -> int:
+    """Map a ``System.process.exit`` request onto a shell exit status."""
+    code = stop.code
+    if code is None:
+        return 0
+    if isinstance(code, bool) or not isinstance(code, (int, float)):
+        if isinstance(code, str):
+            print(code, file=sys.stderr)
+        else:
+            print(
+                "x: System.process.exit expects an integer exit code",
+                file=sys.stderr,
+            )
+        return 1
+    if isinstance(code, float):
+        code = int(code)
+    if 0 <= code <= 255:
+        return code
+    return 1
+
+
 def _execute(
     parsed: argparse.Namespace,
     is_implicit_command: bool,
@@ -164,6 +186,15 @@ def _execute(
         print("x: package manager is not yet implemented")
         print(f"x: would install: {', '.join(packages)}")
         return 0
+
+    if command == "repl":
+        state.abort = True
+        if parsed.watch:
+            print("x: --watch cannot be used with repl", file=sys.stderr)
+            return 2
+        from .repl import run_repl
+
+        return run_repl(config)
 
     source_path = Path(parsed.source)
     if source_path.suffix != ".x":
@@ -317,6 +348,8 @@ def _execute(
         )
         try:
             result = interpreter.interpret(program)
+        except SystemExit as stop:
+            result = _exit_code_of(stop)
         finally:
             _report_warnings(interpreter.warnings, loader.sources, config.color)
         if result is None:
@@ -357,6 +390,8 @@ def _execute(
             typed_error.line = error.line
             typed_error.column = error.column
             typed_error.source_name = error.source_name
+            typed_error.end_line = error.end_line
+            typed_error.end_column = error.end_column
             error = typed_error
         return _report_source_error(
             error,
@@ -385,6 +420,8 @@ def _execute(
         uncaught_error.line = thrown.line
         uncaught_error.column = thrown.column
         uncaught_error.source_name = thrown.source_name
+        uncaught_error.end_line = getattr(thrown, "end_line", None)
+        uncaught_error.end_column = getattr(thrown, "end_column", None)
         return _report_source_error(
             uncaught_error,
             loader.sources,
@@ -404,6 +441,10 @@ def _execute(
             runtime_error.source_name = source_name or str(source_path)
             runtime_error.line = line
             runtime_error.column = column
+            if interpreter.current_span is not None:
+                runtime_error.end_line, runtime_error.end_column = (
+                    interpreter.current_span
+                )
         else:
             runtime_error.source_name = str(source_path)
             runtime_error.line = None
@@ -425,6 +466,10 @@ def _execute(
             runtime_error.source_name = source_name or str(source_path)
             runtime_error.line = line
             runtime_error.column = column
+            if interpreter.current_span is not None:
+                runtime_error.end_line, runtime_error.end_column = (
+                    interpreter.current_span
+                )
         else:
             runtime_error.source_name = str(source_path)
             runtime_error.line = None
@@ -500,7 +545,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         watch=False,
     )
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("run", "check", "build", "install"):
+    for command in ("run", "check", "build", "install", "repl"):
         command_parser = subparsers.add_parser(
             command,
             parents=[common_parser],
@@ -508,6 +553,8 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         )
         if command == "install":
             command_parser.add_argument("packages", nargs="+")
+        elif command == "repl":
+            pass
         else:
             command_parser.add_argument("source")
             if command == "run":

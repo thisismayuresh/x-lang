@@ -8,6 +8,48 @@ from ._common import *  # noqa: F401,F403
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _ARRAY_METHODS, _STRING_METHODS
 
 
+class _SetKey:
+    """Hashable wrapper so arrays, objects and instances can live in a Set.
+
+    Strings, numbers and booleans keep their value semantics; everything else
+    compares by identity, matching how ``===`` treats arrays, objects and
+    class instances.  Without the wrapper Python's ``set`` rejects unhashable
+    X values (``Set<Employee>``, ``Set<{...}>``, ``Set<int[]>``).
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        try:
+            return hash(self.value)
+        except TypeError:
+            return id(self.value)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, _SetKey):
+            return NotImplemented
+        left, right = self.value, other.value
+        if left is right:
+            return True
+        if isinstance(left, bool) or isinstance(right, bool):
+            return type(left) is type(right) and left == right
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            return left == right
+        if isinstance(left, str) and isinstance(right, str):
+            return left == right
+        return False
+
+    def __repr__(self) -> str:
+        return repr(self.value)
+
+
+def _set_key(value: Any) -> Any:
+    """Wrap *value* for storage inside a Python set unless already wrapped."""
+    return value if isinstance(value, _SetKey) else _SetKey(value)
+
 
 class CollectionBuiltins:
     def _hashmap_members(self) -> dict[str, BuiltinFunction]:
@@ -1763,7 +1805,7 @@ class CollectionBuiltins:
             init = arguments[0]
             if not hasattr(init, "__iter__"):
                 raise RuntimeErrorX("Set.create initial value must be iterable")
-            return set(init)
+            return {_set_key(item) for item in init}
         return set()
 
     def _set_add(self, arguments: list[Any]) -> None:
@@ -1773,7 +1815,7 @@ class CollectionBuiltins:
         s, value = arguments[0], arguments[1]
         if not isinstance(s, set):
             raise RuntimeErrorX("Set.add expects a Set instance")
-        s.add(value)
+        s.add(_set_key(value))
         return None
 
     def _set_has(self, arguments: list[Any]) -> bool:
@@ -1783,7 +1825,7 @@ class CollectionBuiltins:
         s, value = arguments[0], arguments[1]
         if not isinstance(s, set):
             raise RuntimeErrorX("Set.has expects a Set instance")
-        return value in s
+        return _set_key(value) in s
 
     def _set_remove(self, arguments: list[Any]) -> bool:
         """Remove *value* from the set; returns True if it was present."""
@@ -1792,8 +1834,9 @@ class CollectionBuiltins:
         s, value = arguments[0], arguments[1]
         if not isinstance(s, set):
             raise RuntimeErrorX("Set.remove expects a Set instance")
-        if value in s:
-            s.discard(value)
+        key = _set_key(value)
+        if key in s:
+            s.discard(key)
             return True
         return False
 
@@ -1832,50 +1875,63 @@ class CollectionBuiltins:
         s = arguments[0]
         if not isinstance(s, set):
             raise RuntimeErrorX("Set.toArray expects a Set instance")
-        return sorted(s, key=str)
+        return sorted(self._set_values(s), key=str)
 
-    def _set_union(self, arguments: list[Any]) -> set[Any]:
-        """Return a new set containing elements from both sets."""
+    def _set_values(self, s: set[Any]) -> list[Any]:
+        """Return the raw members of *s* (unwrapping internal hash keys)."""
+        return [item.value if isinstance(item, _SetKey) else item for item in s]
+
+    def _set_contains(self, s: set[Any], value: Any) -> bool:
+        """Membership test for the ``in`` operator against a Set value."""
+        return _set_key(value) in s
+
+    def _set_pair(self, arguments: list[Any], operation: str) -> tuple[set[Any], set[Any]]:
+        """Validate two Set arguments for the algebra operations."""
         if len(arguments) != 2:
-            raise RuntimeErrorX("Set.union expects exactly two Set arguments")
+            raise RuntimeErrorX(f"Set.{operation} expects exactly two Set arguments")
         s1 = arguments[0]
         s2 = arguments[1]
         # Allow the second arg to be an XCollectionInstance (instance dot-call pattern)
         if isinstance(s2, XCollectionInstance):
             s2 = s2._data
+        if isinstance(s1, XCollectionInstance):
+            s1 = s1._data
         if not isinstance(s1, set):
-            raise RuntimeErrorX("Set.union: first argument must be a Set instance")
+            raise RuntimeErrorX(f"Set.{operation}: first argument must be a Set instance")
         if not isinstance(s2, set):
-            raise RuntimeErrorX("Set.union: second argument must be a Set instance")
-        return s1 | s2
+            raise RuntimeErrorX(f"Set.{operation}: second argument must be a Set instance")
+        return ({_set_key(item) for item in s1}, {_set_key(item) for item in s2})
 
-    def _set_intersection(self, arguments: list[Any]) -> set[Any]:
+    def _set_union(self, arguments: list[Any]) -> Any:
+        """Return a new set containing elements from both sets."""
+        s1, s2 = self._set_pair(arguments, "union")
+        return self._set_algebra_result(s1 | s2)
+
+    def _set_intersection(self, arguments: list[Any]) -> Any:
         """Return a new set containing only elements present in both sets."""
-        if len(arguments) != 2:
-            raise RuntimeErrorX("Set.intersection expects exactly two Set arguments")
-        s1 = arguments[0]
-        s2 = arguments[1]
-        if isinstance(s2, XCollectionInstance):
-            s2 = s2._data
-        if not isinstance(s1, set):
-            raise RuntimeErrorX("Set.intersection: first argument must be a Set instance")
-        if not isinstance(s2, set):
-            raise RuntimeErrorX("Set.intersection: second argument must be a Set instance")
-        return s1 & s2
+        s1, s2 = self._set_pair(arguments, "intersection")
+        return self._set_algebra_result(s1 & s2)
 
-    def _set_difference(self, arguments: list[Any]) -> set[Any]:
+    def _set_difference(self, arguments: list[Any]) -> Any:
         """Return a new set with elements in *s1* that are not in *s2*."""
-        if len(arguments) != 2:
-            raise RuntimeErrorX("Set.difference expects exactly two Set arguments")
-        s1 = arguments[0]
-        s2 = arguments[1]
-        if isinstance(s2, XCollectionInstance):
-            s2 = s2._data
-        if not isinstance(s1, set):
-            raise RuntimeErrorX("Set.difference: first argument must be a Set instance")
-        if not isinstance(s2, set):
-            raise RuntimeErrorX("Set.difference: second argument must be a Set instance")
-        return s1 - s2
+        s1, s2 = self._set_pair(arguments, "difference")
+        return self._set_algebra_result(s1 - s2)
+
+    def _set_algebra_result(self, data: set[Any]) -> Any:
+        """Wrap a union/intersection/difference result so dot-calls keep working.
+
+        Without the wrapper ``a.union(b).size()`` reports "Value has no member
+        'size'" because the raw Python set carries no method table.
+        """
+        return XCollectionInstance("Set", data, self._set_instance_methods())
+
+    def _set_instance_methods(self) -> dict:
+        """Return the wrapped Set method table (built once per interpreter)."""
+        methods = getattr(self, "_set_instance_methods_cache", None)
+        if methods is None:
+            methods = self._make_collection_ns("Set", self._set_members())
+            self._set_instance_methods_cache = methods
+        return methods
 
     def _validate_argument_count(
         self, operation: str, arguments: list[Any], expected: int

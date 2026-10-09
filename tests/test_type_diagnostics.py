@@ -842,5 +842,217 @@ class DiagnosticHintTests(unittest.TestCase):
         self.assertEqual(caret_bar, hint_equals)
 
 
+class MultiDimensionalArrayTypeTests(unittest.TestCase):
+    """Array annotations must match the literal's nesting depth exactly."""
+
+    def test_rejects_flat_array_for_two_dimensional_annotation(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let int[][] wrong = [1, 2];
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("expected `integer[][]`, found `integer[]`", errors)
+
+    def test_rejects_array_for_scalar_annotation(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let int value = [1, 2];
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("expected `integer`, found `integer[]`", errors)
+
+    def test_rejects_shallow_array_for_three_dimensional_annotation(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let int[][][] cube = [[1, 2]];
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("expected `integer[][][]`, found `integer[][]`", errors)
+
+    def test_rejects_deep_array_for_one_dimensional_annotation(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let int[] wrong = [[1, 2]];
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("expected `integer[]`, found `integer[][]`", errors)
+
+    def test_accepts_literals_whose_depth_matches_the_annotation(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let int[][] grid = [[1, 2], [3, 4]];
+                let int[][][] cube = [[[1, 2]], [[3]]];
+                let int value = grid[0][1] + cube[0][0][1];
+                print(value);
+            }
+            """)
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+
+    def test_missing_let_reports_the_full_array_type(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                int[][] rows = [[1]];
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("write 'let int[][] rows = ...'", errors)
+
+
+class ConstMutationCheckTests(unittest.TestCase):
+    """``const`` bindings reject deep mutation during ``x check``."""
+
+    def test_element_write_through_const_is_reported(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                const numbers = [1, 2];
+                numbers[0] = 9;
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot modify element of constant 'numbers'", errors)
+        self.assertIn("declare 'numbers' with `let` instead of `const`", errors)
+
+    def test_member_write_through_const_is_reported(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                const config = {port: 1};
+                config.port = 2;
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot modify member of constant 'config'", errors)
+
+    def test_increment_through_const_is_reported(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                const counter = new Counter();
+                counter.value++;
+                const total = 0;
+                total++;
+            }
+            class Counter {
+                integer value = 0;
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot modify member of constant 'counter'", errors)
+        self.assertIn("Cannot reassign constant 'total'", errors)
+
+    def test_mutation_through_a_let_alias_is_allowed(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                const numbers = [1, 2];
+                let alias = numbers;
+                alias[0] = 9;
+                print(numbers[0]);
+            }
+            """)
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+
+
+class GenericSetAnnotationTests(unittest.TestCase):
+    """``Set<T>`` annotations type-check against ``new Set()`` values."""
+
+    def test_class_instances_may_be_stored_in_a_typed_set(self):
+        return_code, output, errors = check_source("""
+            class Employee {
+                string name;
+                public Employee(string name) { this.name = name; }
+            }
+            function main() {
+                let Set<Employee> staff = new Set();
+                staff.add(new Employee("Ann"));
+                print(staff.size());
+            }
+            """)
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+
+    def test_element_type_mismatch_is_reported(self):
+        return_code, output, errors = check_source("""
+            function main() {
+                let Set<int> numbers = new Set<string>();
+                print(numbers.size());
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot assign", errors)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TryWithResourcesCheckTests(unittest.TestCase):
+    """``try (let r = ...)`` bindings are checked like local variables."""
+
+    def test_annotation_mismatch_on_a_resource_is_reported(self):
+        return_code, output, errors = check_source("""
+            class Res {
+                public void close() { }
+            }
+            function main() {
+                try (let integer r = new Res()) {
+                    print(r);
+                }
+                finally {
+                    print("done");
+                }
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot assign 'Res' to 'r' of type 'integer'", errors)
+
+    def test_reassigning_a_const_resource_is_reported(self):
+        return_code, output, errors = check_source("""
+            class Res {
+                public void close() { }
+            }
+            function main() {
+                try (const r = new Res()) {
+                    r = new Res();
+                }
+                finally {
+                    print("done");
+                }
+            }
+            """)
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Cannot reassign constant 'r'", errors)
+
+    def test_strict_typing_requires_a_resource_annotation(self):
+        source = """
+            class Res {
+                public void close() { }
+            }
+            integer function work() {
+                try (let r = new Res()) {
+                    print(r);
+                }
+                finally {
+                    print("done");
+                }
+                return 0;
+            }
+            """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(dedent(source), encoding="utf-8")
+            config_file = Path(temporary_directory) / "x.toml"
+            config_file.write_text("strict_typing = true\n", encoding="utf-8")
+            output = io.StringIO()
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                return_code = cli_main(
+                    ["check", "--color", "never", str(source_file)]
+                )
+        self.assertEqual(return_code, 1, output.getvalue())
+        self.assertIn(
+            "Resource variable 'r' must have an explicit type", errors.getvalue()
+        )

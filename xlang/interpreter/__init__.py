@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from ._common import *  # noqa: F401,F403
+from ._native_builtins import DELETE_BUILTIN_NAME
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _EXCEPTION_PARENTS, _ARRAY_METHODS, _STRING_METHODS
 
 from ._math_builtins import MathBuiltins
@@ -50,18 +51,30 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         output: Callable[[str], None] = print,
         config: XConfig | None = None,
         environment: dict[str, str] | None = None,
+        *,
+        validate: bool = True,
+        auto_call_main: bool = True,
     ) -> None:
         self.config = config or XConfig()
         self.environment = dict(os.environ)
         if environment is not None:
             self.environment.update(environment)
         self.current_location: tuple[str | None, int | None, int | None] | None = None
+        #: End of the span diagnostics should underline (``end_line``,
+        #: ``end_column``), kept next to :attr:`current_location`.
+        self.current_span: tuple[int | None, int | None] | None = None
         self.warnings: list[SourceWarning] = []
         self._warning_keys: set[tuple[str, str | None, int | None, int | None]] = set()
         self.function_stack: list[XFunction] = []
         self.globals = Environment()
         self._builtin_bindings: dict[str, Any] = {}
         self.output = output
+        #: The REPL type-checks each entry against the whole session before
+        #: execution, so the per-program gate is skipped when this is False.
+        self.validate = validate
+        #: Skip the automatic ``main()`` invocation (the REPL runs entries as
+        #: they are typed and must never fire a previously defined ``main``).
+        self.auto_call_main = auto_call_main
         self._install_builtins(arguments or [])
 
     def _validate_declarations(self, program: Program) -> None:
@@ -150,7 +163,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         declarations[:0] = injected
 
     def _interpret_program(self, program: Program) -> Any:
-        if self.config.enabled("type_checker"):
+        if self.validate and self.config.enabled("type_checker"):
             self._validate_declarations(program)
         declarations = [declaration for declaration in program.declarations if declaration]
         self._inject_default_imports(declarations)
@@ -234,7 +247,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             else:
                 self._execute(declaration, self.globals)
 
-        if has_top_level_statements:
+        if has_top_level_statements or not self.auto_call_main:
             return None
         main_value = self.globals.values.get("main")
         if main_value is not None:
@@ -281,6 +294,11 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         self.globals.define("print", BuiltinFunction("print", self._builtin_print))
         self.globals.define("range", BuiltinFunction("range", self._builtin_range))
         self.globals.define("typeOf", BuiltinFunction("typeOf", self._builtin_type_of))
+        # delete(...) is the top-level spelling of Object.delete(...) — the
+        # Python-side declaration of its origin lives next to DELETE_BUILTIN_NAME.
+        self.globals.define(
+            "delete", BuiltinFunction(DELETE_BUILTIN_NAME, self._delete_indirect)
+        )
         if self.config.enabled("async"):
             self.globals.define("sleep", BuiltinFunction("sleep", self._builtin_sleep))
         if self.config.enabled("command_input"):
@@ -395,16 +413,23 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             # exception hierarchy so any node can be imported or named inline
             # in a catch clause.
             system_namespace.define("Throwable", self._exception_namespace("Throwable"))
-        environment_namespace = Environment(system_namespace)
-        environment_namespace.define(
-            "has", BuiltinFunction("Environment.has", self._environment_has)
-        )
-        environment_namespace.define(
-            "all", BuiltinFunction("Environment.all", self._environment_all)
-        )
+        # System.process holds everything that talks to the host process:
+        # environment variables and process termination.
+        process_namespace = Environment(system_namespace)
+        environment_namespace = Environment()
         for name, value in self.environment.items():
             environment_namespace.values[name] = value
-        system_namespace.define("Environment", environment_namespace)
+        environment_namespace.define(
+            "has", BuiltinFunction("process.Environment.has", self._environment_has)
+        )
+        environment_namespace.define(
+            "all", BuiltinFunction("process.Environment.all", self._environment_all)
+        )
+        process_namespace.define("Environment", environment_namespace)
+        process_namespace.define(
+            "exit", BuiltinFunction("process.exit", self._process_exit)
+        )
+        system_namespace.define("process", process_namespace)
         self.globals.define("System", system_namespace)
         self._builtin_bindings = dict(self.globals.values)
 
@@ -440,6 +465,21 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if arguments:
             raise RuntimeErrorX("Environment.all expects no arguments")
         return dict(self.environment)
+
+    def _process_exit(self, arguments: list[Any]) -> Any:
+        """``System.process.exit([code])`` stops the interpreter immediately."""
+        if len(arguments) > 1:
+            raise RuntimeErrorX("System.process.exit expects 0 or 1 argument")
+        if not arguments:
+            raise SystemExit(0)
+        code = arguments[0]
+        if isinstance(code, bool):
+            raise RuntimeErrorX("System.process.exit expects an integer exit code")
+        if isinstance(code, int):
+            raise SystemExit(code)
+        if isinstance(code, float) and code.is_integer():
+            raise SystemExit(int(code))
+        raise RuntimeErrorX("System.process.exit expects an integer exit code")
 
     def _builtin_input(self, arguments: list[Any]) -> Any:
         if len(arguments) > 2:
@@ -554,6 +594,25 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         
         return xclass
 
+    def _set_location(self, node: Any) -> None:
+        """Point the next diagnostic at *node*'s span.
+
+        Called before the operations that can fail (indexing, member access,
+        arithmetic, calls) so a runtime error underlines the offending
+        expression with ``^^^`` instead of the statement keyword.
+        """
+        line = getattr(node, "line", None)
+        if line is None:
+            return
+        self.current_location = (
+            getattr(node, "source_name", None),
+            line,
+            getattr(node, "column", None),
+        )
+        end_line = getattr(node, "end_line", None)
+        end_column = getattr(node, "end_column", None)
+        self.current_span = (end_line, end_column) if end_column is not None else None
+
     def annotate_error(self, error: RuntimeErrorX | ThrownValue) -> None:
         if self.current_location is None or error.line is not None:
             return
@@ -561,6 +620,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         error.source_name = source_name
         error.line = line
         error.column = column
+        if self.current_span is not None and getattr(error, "end_column", None) is None:
+            error.end_line, error.end_column = self.current_span
 
     def warn(self, message: str) -> None:
         """Record a yellow warning at the current source location.
@@ -930,72 +991,17 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         environment.define(declaration.name, enum_values)
 
     def _set_declaration_location(self, declaration: Any) -> None:
-        declaration_line = getattr(declaration, "line", None)
-        if declaration_line is None:
-            return
-        self.current_location = (
-            getattr(declaration, "source_name", None),
-            declaration_line,
-            getattr(declaration, "column", None),
-        )
+        self._set_location(declaration)
 
     def _execute(self, statement: Any, environment: Environment) -> None:
-        statement_line = getattr(statement, "line", None)
-        if statement_line is not None:
-            self.current_location = (
-                getattr(statement, "source_name", None),
-                statement_line,
-                getattr(statement, "column", None),
-            )
+        if getattr(statement, "line", None) is not None:
+            self._set_location(statement)
         if isinstance(statement, Block):
             self._execute_block(statement.statements, Environment(environment))
         elif isinstance(statement, FunctionDeclaration):
             self._define_function(statement, environment)
         elif isinstance(statement, VariableDeclaration):
-            value = None if statement.initializer is None else self._evaluate(statement.initializer, environment)
-            if statement.pattern is not None:
-                self._bind_destructuring(
-                    statement.pattern, value, environment, statement.constant
-                )
-            else:
-                array_type = (
-                    statement.type_name
-                    if statement.type_name is not None
-                    and statement.type_name.endswith("[]")
-                    else None
-                )
-                if array_type is not None and statement.initializer is not None:
-                    value = self._coerce_typed_array(
-                        array_type, value, f"variable '{statement.name}'"
-                    )
-                object_type = (
-                    statement.type_name
-                    if statement.type_name is not None
-                    and statement.type_name.startswith("object<")
-                    else None
-                )
-                if object_type is not None and statement.initializer is not None:
-                    value = self._coerce_typed_object(
-                        object_type, value, f"variable '{statement.name}'"
-                    )
-                value_type = (
-                    statement.type_name
-                    if statement.type_name is not None
-                    and self._needs_runtime_type_check(statement.type_name)
-                    else None
-                )
-                if value_type is not None and statement.initializer is not None:
-                    value = self._coerce_runtime_checked_type(
-                        value_type, value, f"variable '{statement.name}'"
-                    )
-                environment.define(
-                    statement.name,
-                    value,
-                    statement.constant,
-                    array_type=array_type,
-                    object_type=object_type,
-                    value_type=value_type,
-                )
+            self._define_variable(statement, environment)
         elif isinstance(statement, EnumDeclaration):
             self._define_enum(statement, environment)
         elif isinstance(statement, ExpressionStatement):
@@ -1036,6 +1042,59 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         for statement in statements:
             self._execute(statement, environment)
 
+    def _define_variable(
+        self, statement: VariableDeclaration, environment: Environment
+    ) -> None:
+        """Bind one ``let``/``const`` declaration, coercing typed initializers."""
+        value = (
+            None
+            if statement.initializer is None
+            else self._evaluate(statement.initializer, environment)
+        )
+        if statement.pattern is not None:
+            self._bind_destructuring(
+                statement.pattern, value, environment, statement.constant
+            )
+            return
+        array_type = (
+            statement.type_name
+            if statement.type_name is not None
+            and statement.type_name.endswith("[]")
+            else None
+        )
+        if array_type is not None and statement.initializer is not None:
+            value = self._coerce_typed_array(
+                array_type, value, f"variable '{statement.name}'"
+            )
+        object_type = (
+            statement.type_name
+            if statement.type_name is not None
+            and statement.type_name.startswith("object<")
+            else None
+        )
+        if object_type is not None and statement.initializer is not None:
+            value = self._coerce_typed_object(
+                object_type, value, f"variable '{statement.name}'"
+            )
+        value_type = (
+            statement.type_name
+            if statement.type_name is not None
+            and self._needs_runtime_type_check(statement.type_name)
+            else None
+        )
+        if value_type is not None and statement.initializer is not None:
+            value = self._coerce_runtime_checked_type(
+                value_type, value, f"variable '{statement.name}'"
+            )
+        environment.define(
+            statement.name,
+            value,
+            statement.constant,
+            array_type=array_type,
+            object_type=object_type,
+            value_type=value_type,
+        )
+
     def _execute_while(self, statement: WhileStatement, environment: Environment) -> None:
         while self._is_truthy(self._evaluate(statement.condition, environment)):
             try:
@@ -1060,14 +1119,21 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
 
     def _execute_for(self, statement: ForStatement, environment: Environment) -> None:
         iterable = self._evaluate(statement.iterable, environment)
+        if isinstance(iterable, XCollectionInstance) and isinstance(iterable._data, set):
+            # Sets store wrapped members internally; iterate the raw values.
+            iterable = self._set_values(iterable._data)
+        elif isinstance(iterable, set):
+            iterable = self._set_values(iterable)
         if statement.iteration_mode == "in":
             # Unwrap XCollectionInstance so we can iterate its raw _data
             if isinstance(iterable, XCollectionInstance):
                 iterable = iterable._data
             if isinstance(iterable, dict):
-                iterator = iter(iterable.keys())
+                # Snapshot the keys: `delete(obj[key])` inside the loop must
+                # not raise "dictionary changed size during iteration".
+                iterator = iter(list(iterable.keys()))
             elif isinstance(iterable, XInstance):
-                iterator = iter(iterable.fields.keys())
+                iterator = iter(list(iterable.fields.keys()))
             else:
                 try:
                     iterator = iter(iterable)
@@ -1127,9 +1193,20 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 self._evaluate(statement.increment, loop_environment)
 
     def _execute_try(self, statement: TryStatement, environment: Environment) -> None:
+        body_environment = Environment(environment)
+        resources = self._bind_resources(
+            statement.resources, environment, body_environment
+        )
+        body_failed = False
         pending_error: BaseException | None = None
         try:
-            self._execute_block(statement.body.statements, Environment(environment))
+            try:
+                self._execute_block(statement.body.statements, body_environment)
+            except BaseException:
+                body_failed = True
+                raise
+            finally:
+                self._close_resources(resources, environment, body_failed)
         except ThrownValue as thrown:
             self.annotate_error(thrown)
             if isinstance(thrown.value, XExceptionValue) and not thrown.value.stack:
@@ -1194,6 +1271,55 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if pending_error is not None:
             raise pending_error
 
+    def _bind_resources(
+        self,
+        bindings: list[Any],
+        environment: Environment,
+        body_environment: Environment,
+    ) -> list[tuple[str, Any]]:
+        """Evaluate ``try (let r = ...)`` bindings into the try block scope."""
+        resources: list[tuple[str, Any]] = []
+        for binding in bindings:
+            self._define_variable(
+                VariableDeclaration(
+                    binding.name, binding.type_name, binding.value, binding.constant
+                ),
+                body_environment,
+            )
+            resources.append((binding.name, body_environment.values[binding.name]))
+        return resources
+
+    def _close_resources(
+        self,
+        resources: list[tuple[str, Any]],
+        environment: Environment,
+        suppress_errors: bool,
+    ) -> None:
+        """Call ``close()`` on each resource, deepest last-in-first-out.
+
+        When the try block already failed, a broken ``close()`` must not mask
+        the original error, so those failures are swallowed.
+        """
+        for name, value in reversed(resources):
+            if value is None:
+                continue
+            try:
+                closer = self._get_member(
+                    value, "close", self._access_context(environment)
+                )
+            except RuntimeErrorX as error:
+                if suppress_errors:
+                    continue
+                raise RuntimeErrorX(
+                    f"Resource '{name}' has no close() method: {error.message}"
+                ) from None
+            try:
+                self._call(closer, [])
+            except BaseException:
+                if suppress_errors:
+                    continue
+                raise
+
     def _run_matching_catch(
         self,
         value: Any,
@@ -1216,12 +1342,18 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 or getattr(value.cause, "line", None),
                 getattr(source_error, "column", None)
                 or getattr(value.cause, "column", None),
+                getattr(source_error, "end_line", None)
+                or getattr(value.cause, "end_line", None),
+                getattr(source_error, "end_column", None)
+                or getattr(value.cause, "end_column", None),
             )
         raise ThrownValue(
             value,
             getattr(source_error, "source_name", None),
             getattr(source_error, "line", None),
             getattr(source_error, "column", None),
+            getattr(source_error, "end_line", None),
+            getattr(source_error, "end_column", None),
         )
 
     def _exception_matches(self, value: Any, type_name: str | None) -> bool:
@@ -1335,6 +1467,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 for part in expression.parts
             )
         if isinstance(expression, Identifier):
+            self._set_location(expression)
             value = self._lookup(environment, expression.name)
             if (
                 isinstance(value, list)
@@ -1392,10 +1525,18 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return self._evaluate_binary(expression, environment)
         if isinstance(expression, Assignment):
             value = self._evaluate(expression.value, environment)
+            self._set_location(expression)
             return self._assign(expression.target, expression.operator, value, environment)
         if isinstance(expression, Call):
+            # delete(target) must see the key expression itself, so it runs
+            # before arguments are evaluated (reading the value first would
+            # raise on an already-missing key and lose the container).
+            if self._resolve_delete_callee(expression.callee, environment) is not None:
+                self._set_location(expression)
+                return self._delete_builtin_call(expression.arguments, environment)
             callee = self._evaluate(expression.callee, environment)
             arguments = self._evaluate_call_arguments(expression.arguments, environment)
+            self._set_location(expression)
             return self._call(callee, arguments)
         if isinstance(expression, OptionalChain):
             return self._evaluate_optional_chain(expression, environment)
@@ -1415,10 +1556,12 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if isinstance(expression, Member):
             object_value = self._evaluate(expression.object, environment)
             access_context = self._access_context(environment)
+            self._set_location(expression)
             return self._get_member(object_value, expression.name, access_context)
         if isinstance(expression, Index):
             object_value = self._evaluate(expression.object, environment)
             index = self._evaluate(expression.index, environment)
+            self._set_location(expression)
             return self._read_indexed_value(object_value, index)
         raise RuntimeErrorX(f"Unsupported expression '{type(expression).__name__}'")
 
@@ -1667,6 +1810,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         raise RuntimeErrorX("Spread value must be an array, tuple, or string")
 
     def _evaluate_unary(self, expression: Unary, environment: Environment) -> Any:
+        self._set_location(expression)
         if expression.operator in ("++", "--"):
             current = self._read_target(expression.operand, environment)
             delta = 1 if expression.operator == "++" else -1
@@ -1679,6 +1823,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             self._write_target(expression.operand, updated, environment)
             return current if expression.postfix else updated
         operand = self._evaluate(expression.operand, environment)
+        self._set_location(expression)
         if expression.operator == "!":
             return not self._is_truthy(operand)
         try:
@@ -1704,6 +1849,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             selected = true_expression if self._is_truthy(left) else false_expression
             return self._evaluate(selected, environment)
         right = self._evaluate(expression.right, environment)
+        self._set_location(expression)
         try:
             if operator == "+":
                 if isinstance(left, str) or isinstance(right, str):
@@ -1734,6 +1880,13 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             if operator == ">=":
                 return left >= right
             if operator == "in":
+                target = right
+                if isinstance(target, XCollectionInstance) and isinstance(
+                    target._data, set
+                ):
+                    target = target._data
+                if isinstance(target, set):
+                    return self._set_contains(target, left)
                 return left in right
         except RuntimeErrorX:
             raise
@@ -1996,11 +2149,13 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             environment.assign(target.name, value)
             return
         if isinstance(target, Member):
+            self._guard_const_container(target, environment, "member")
             object_value = self._evaluate(target.object, environment)
             access_context = self._access_context(environment)
             self._set_member(object_value, target.name, value, access_context)
             return
         if isinstance(target, Index):
+            self._guard_const_container(target, environment, "element")
             self._write_indexed_value(
                 self._evaluate(target.object, environment),
                 self._evaluate(target.index, environment),
@@ -2008,6 +2163,27 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             )
             return
         raise RuntimeErrorX("Invalid assignment target")
+
+    @staticmethod
+    def _assignment_root_name(target: Any) -> str | None:
+        """Return the variable an assignment target ultimately writes into.
+
+        ``matrix[0][1]`` and ``settings.port`` both trace back to a single
+        binding; calls and ``this`` do not trace to a name at all.
+        """
+        while isinstance(target, (Member, Index)):
+            target = target.object
+        if isinstance(target, Identifier):
+            return target.name
+        return None
+
+    def _guard_const_container(
+        self, target: Any, environment: Environment, noun: str
+    ) -> None:
+        """Reject writes through a ``const`` binding (deep immutability)."""
+        root = self._assignment_root_name(target)
+        if root is not None and environment.is_constant(root):
+            raise RuntimeErrorX(f"Cannot modify {noun} of constant '{root}'")
 
     def _access_context(self, environment: Environment) -> XClass | None:
         current_environment: Environment | None = environment
@@ -2571,13 +2747,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
     ) -> Environment:
         field_environment = Environment(xclass.closure)
         field_environment.define("__x_current_class__", xclass)
-        member_line = getattr(member, "line", None)
-        if member_line is not None:
-            self.current_location = (
-                getattr(member, "source_name", None),
-                member_line,
-                getattr(member, "column", None),
-            )
+        if getattr(member, "line", None) is not None:
+            self._set_location(member)
         return field_environment
 
     def _call(self, callee: Any, arguments: list[Any]) -> Any:
@@ -3164,7 +3335,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         "{"
                         + ", ".join(
                             self._stringify_within(item, seen)
-                            for item in sorted(value, key=str)
+                            for item in sorted(self._set_values(value), key=str)
                         )
                         + "}"
                     )

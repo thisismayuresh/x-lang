@@ -28,7 +28,7 @@ default = ["System.utils.Math", "System.utils.JSON", "System.io.Console", "Syste
 # [imports]
 # default = [
 #   "System.concurrent.Async", "System.concurrent.Thread",
-#   "System.Environment",
+#   "System.process.Environment",
 #   "System.io.Console", "System.io.FileSystem", "System.io.Network",
 #   "System.io.Network.http", "System.io.Network.http.fetch",
 #   "System.Throwable", "System.Throwable.Error", "System.Throwable.Error.DatabaseError",

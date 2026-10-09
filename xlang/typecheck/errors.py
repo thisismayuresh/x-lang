@@ -23,6 +23,8 @@ class TypeCheckError(Exception):
         column: int | None = None,
         notes: Sequence[str] = (),
         helps: Sequence[str] = (),
+        end_line: int | None = None,
+        end_column: int | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -31,6 +33,12 @@ class TypeCheckError(Exception):
         self.column = column if column is not None else getattr(node, "column", None)
         self.notes: tuple[str, ...] = tuple(str(note) for note in notes)
         self.helps: tuple[str, ...] = tuple(str(hint) for hint in helps)
+        #: Last column of the underline: when the diagnostic knows which
+        #: expression it is about, the renderer draws ``^^^`` over it.
+        self.end_line = end_line if end_line is not None else getattr(node, "end_line", None)
+        self.end_column = (
+            end_column if end_column is not None else getattr(node, "end_column", None)
+        )
 
 
 class TypeCheckFailure(RuntimeErrorX):

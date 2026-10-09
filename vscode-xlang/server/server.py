@@ -23,6 +23,7 @@ from lsprotocol.types import (
     WORKSPACE_DID_CHANGE_WATCHED_FILES,
     CompletionItem,
     CompletionItemKind,
+    CompletionOptions,
     CompletionParams,
     DefinitionParams,
     Diagnostic,
@@ -43,6 +44,7 @@ from lsprotocol.types import (
     Range,
     ReferenceParams,
     TextDocumentSyncKind,
+    TextEdit,
 )
 
 from pygls.lsp.server import LanguageServer
@@ -249,9 +251,236 @@ KEYWORDS = [
 
 TYPES = ["int", "string", "float", "boolean", "void", "any", "null", "undefined"]
 
-BUILTINS = ["print", "range", "typeOf", "sleep", "input", "parseInt", "parseFloat"]
+BUILTINS = ["print", "range", "typeOf", "delete", "sleep", "input", "parseInt", "parseFloat"]
 
 IMPORT_LINE_RE = re.compile(r"^\s*import\s+(.*)$")
+DOTTED_EXPRESSION_RE = re.compile(
+    r"(?P<path>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\.$"
+)
+
+_SKIPPED_DIRECTORIES = {
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    "site-packages",
+}
+
+_EXPORT_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def _matches_consecutively(label_parts: list[str], typed_parts: list[str]) -> bool:
+    if len(label_parts) < len(typed_parts):
+        return False
+    return all(
+        label_parts[index].startswith(part)
+        for index, part in enumerate(typed_parts)
+    )
+
+
+def _module_matches(typed: str, label: str) -> bool:
+    """Segment-wise match between what was typed and a module path.
+
+    Typed segments line up with the leading segments of ``label``; only the
+    segment being typed may sit below skipped namespaces, so ``System.M``
+    still reaches ``System.utils.Math`` while ``System.io.`` stops offering
+    ``System.Throwable.Exception.IOException``.  VS Code re-filters with its
+    own fuzzy scorer, so this only has to avoid dropping candidates a human
+    would expect to see.
+    """
+    typed_lower = typed.lower()
+    if not typed_lower:
+        return True
+    typed_parts = typed_lower.split(".")
+    if typed_parts and typed_parts[-1] == "":
+        typed_parts.pop()
+        if not typed_parts:
+            return True
+        return _matches_consecutively(label.lower().split("."), typed_parts)
+
+    label_parts = label.lower().split(".")
+    if _matches_consecutively(label_parts, typed_parts):
+        return True
+    if len(typed_parts) == 1:
+        return any(part.startswith(typed_parts[0]) for part in label_parts)
+    if not _matches_consecutively(label_parts, typed_parts[:-1]):
+        return False
+    last = typed_parts[-1]
+    return any(
+        part.startswith(last) for part in label_parts[len(typed_parts) - 1 :]
+    )
+
+
+def _stdlib_candidates() -> set[str]:
+    """Every importable standard-library path plus its namespace prefixes."""
+    candidates: set[str] = set()
+    for path in ModuleLoader.STANDARD_LIBRARY_MODULES:
+        parts = path.split(".")
+        for depth in range(1, len(parts) + 1):
+            candidates.add(".".join(parts[:depth]))
+    return candidates
+
+
+def _exported_names(path: str, features: dict) -> list[str]:
+    """Names declared with ``export`` in a local ``.x`` file, cached by mtime."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    cached = _EXPORT_CACHE.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    names: list[str] = []
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        program = Parser(
+            Lexer(text, path, recover_errors=True).tokenize(),
+            features,
+            path,
+            recover_errors=True,
+        ).parse()
+    except Exception:
+        program = None
+
+    if program is not None:
+        for declaration in program.declarations:
+            if "export" not in getattr(declaration, "modifiers", set()):
+                continue
+            name = getattr(declaration, "name", None)
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+
+    _EXPORT_CACHE[path] = (mtime, names)
+    return names
+
+
+def _project_root(ls: XLanguageServer, uri: str) -> str | None:
+    try:
+        config = ls.project_config(uri)
+    except Exception:
+        return None
+    if config.path is None:
+        return None
+    return str(config.path.parent)
+
+
+def _local_modules(
+    ls: XLanguageServer, uri: str, directory: str, self_path: str
+) -> list[tuple[str, str, str]]:
+    """Importable local modules as ``(module_path, file_path, display)``.
+
+    Paths are reported relative to the document folder first (that is where
+    the module loader looks first) and then relative to the project root, so a
+    file outside the current folder still completes with a resolvable path.
+    """
+    roots: list[str] = []
+    if directory:
+        roots.append(directory)
+    project_root = _project_root(ls, uri)
+    if project_root and project_root not in roots:
+        roots.append(project_root)
+
+    self_path = os.path.abspath(self_path) if self_path else ""
+    found: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            walker = os.walk(root)
+            for folder, subfolders, names in walker:
+                subfolders[:] = sorted(
+                    name
+                    for name in subfolders
+                    if name not in _SKIPPED_DIRECTORIES and not name.startswith(".")
+                )
+                for name in sorted(names):
+                    if not name.endswith(".x"):
+                        continue
+                    full_path = os.path.join(folder, name)
+                    if os.path.abspath(full_path) == self_path:
+                        continue
+                    relative = os.path.relpath(full_path, root)
+                    if relative.startswith(".."):
+                        continue
+                    module_path = relative[:-2].replace(os.sep, ".").replace("/", ".")
+                    if not module_path or module_path in seen:
+                        continue
+                    seen.add(module_path)
+                    found.append((module_path, full_path, relative))
+        except (OSError, PermissionError):
+            continue
+    found.sort(key=lambda entry: entry[0])
+    return found
+
+
+def _module_completion_items(
+    ls: XLanguageServer,
+    uri: str,
+    typed: str,
+    line: int,
+    character: int,
+    start_col: int,
+    stdlib_paths: set[str],
+    include_local: bool = True,
+) -> list[CompletionItem]:
+    """Build completion items for a dotted module path ending at the cursor."""
+
+    def _edit(label: str) -> TextEdit:
+        return TextEdit(
+            range=Range(
+                start=Position(line=line, character=start_col),
+                end=Position(line=line, character=character),
+            ),
+            new_text=label,
+        )
+
+    items: list[CompletionItem] = []
+    typed_root = typed[:-1] if typed.endswith(".") else typed
+    seen: set[str] = set()
+
+    def _add(label: str, kind: CompletionItemKind, detail: str) -> None:
+        if label in seen or not _module_matches(typed, label):
+            return
+        if typed.endswith(".") and label.lower() == typed_root.lower():
+            return  # never replace "System." with the shorter "System"
+        seen.add(label)
+        items.append(
+            CompletionItem(
+                label=label,
+                kind=kind,
+                detail=detail,
+                filter_text=label,
+                text_edit=_edit(label),
+            )
+        )
+
+    for path in sorted(stdlib_paths):
+        _add(path, CompletionItemKind.Module, "standard library")
+
+    if not include_local:
+        return items
+
+    try:
+        fs_path = to_fs_path(uri)
+    except Exception:
+        fs_path = ""
+    directory = os.path.dirname(fs_path) if fs_path else ""
+    features = {}
+    try:
+        features = dict(ls.project_config(uri).features)
+    except Exception:
+        features = {}
+
+    for module_path, full_path, display in _local_modules(ls, uri, directory, fs_path):
+        _add(module_path, CompletionItemKind.File, display)
+        for name in _exported_names(full_path, features):
+            _add(f"{module_path}.{name}", CompletionItemKind.Function, display)
+    return items
 
 
 def _import_completions(
@@ -259,69 +488,62 @@ def _import_completions(
 ) -> list[CompletionItem] | None:
     """Return import target suggestions when the cursor sits after ``import``.
 
-    Offers every standard-library ``System.*`` module plus local ``.x`` files
-    (as dot-separated module paths), so TAB can complete imports the same way
-    a package manager completes dependency paths.  Returns ``None`` when the
-    cursor is not in an import statement.
+    Offers every standard-library ``System.*`` module, every local ``.x``
+    file (as a dot-separated module path) and the exported declarations of
+    those files, so ``import utils.`` can complete straight to ``utils.greet``.
+    Returns ``None`` when the cursor is not in an import statement.
     """
     lines = source.split("\n")
     if line >= len(lines):
         return None
     prefix = lines[line][:character]
-    if IMPORT_LINE_RE.match(prefix) is None:
+    match = IMPORT_LINE_RE.match(prefix)
+    if match is None:
         return None
 
-    items: list[CompletionItem] = []
-    for path in sorted(ModuleLoader.STANDARD_LIBRARY_MODULES):
-        items.append(
-            CompletionItem(label=path, kind=CompletionItemKind.Module, detail="standard library")
-        )
-
-    try:
-        fs_path = to_fs_path(uri)
-    except Exception:
-        fs_path = ""
-    directory = os.path.dirname(fs_path) if fs_path else os.getcwd()
-
-    seen: set[str] = set()
-    for candidate in _local_x_files(ls, uri, directory):
-        rel = os.path.relpath(candidate, directory)
-        if rel.startswith(".."):
-            continue
-        module_path = rel[:-2].replace(os.sep, ".").lstrip("./")
-        if not module_path or module_path in seen:
-            continue
-        seen.add(module_path)
-        items.append(
-            CompletionItem(label=module_path, kind=CompletionItemKind.File, detail=rel)
-        )
-    return items
+    typed = lines[line][match.start(1) : character].strip().strip('"').strip("'")
+    return _module_completion_items(
+        ls,
+        uri,
+        typed,
+        line,
+        character,
+        match.start(1),
+        stdlib_paths=ModuleLoader.STANDARD_LIBRARY_MODULES,
+        include_local=True,
+    )
 
 
-def _local_x_files(ls: XLanguageServer, uri: str, directory: str) -> list[str]:
-    """Resolve importable ``.x`` files near the document and in the project root."""
-    roots: list[str] = [directory]
-    try:
-        config = ls.project_config(uri)
-        if config.path is not None:
-            roots.insert(0, str(config.path.parent))
-    except Exception:
-        pass
+def _expression_completions(
+    ls: XLanguageServer, uri: str, source: str, line: int, character: int
+) -> list[CompletionItem] | None:
+    """Return ``System.*`` namespace suggestions after a dotted expression."""
+    lines = source.split("\n")
+    if line >= len(lines):
+        return None
+    match = DOTTED_EXPRESSION_RE.search(lines[line][:character])
+    if match is None:
+        return None
+    typed = match.group("path") + "."
+    if not typed.lower().startswith("system."):
+        return None
+    items = _module_completion_items(
+        ls,
+        uri,
+        typed,
+        line,
+        character,
+        match.start("path"),
+        stdlib_paths=_stdlib_candidates(),
+        include_local=False,
+    )
+    return items or None
 
-    found: list[str] = []
-    for root in roots:
-        try:
-            for entry in sorted(os.walk(root)):
-                folder = entry[0]
-                for name in sorted(entry[2]):
-                    if name.endswith(".x"):
-                        found.append(os.path.join(folder, name))
-        except (OSError, PermissionError):
-            continue
-    return found
 
-
-@server.feature(TEXT_DOCUMENT_COMPLETION)
+@server.feature(
+    TEXT_DOCUMENT_COMPLETION,
+    CompletionOptions(trigger_characters=["."]),
+)
 def completions(ls: XLanguageServer, params: CompletionParams):
     source = ls._source(str(params.text_document.uri))
     uri = str(params.text_document.uri)
@@ -329,7 +551,13 @@ def completions(ls: XLanguageServer, params: CompletionParams):
         ls, uri, source, params.position.line, params.position.character
     )
     if import_items is not None:
-        return import_items
+        return {"items": import_items, "isIncomplete": False}
+
+    expression_items = _expression_completions(
+        ls, uri, source, params.position.line, params.position.character
+    )
+    if expression_items:
+        return {"items": expression_items, "isIncomplete": False}
 
     items = [CompletionItem(label=kw, kind=CompletionItemKind.Keyword) for kw in KEYWORDS]
     items += [CompletionItem(label=t, kind=CompletionItemKind.Class) for t in TYPES]
@@ -347,13 +575,20 @@ def completions(ls: XLanguageServer, params: CompletionParams):
     ):
         items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Method))
 
-    return items
+    return {"items": items, "isIncomplete": False}
 
 
 HOVER_INFO = {
     "print": "print(value: any): void\n\nPrints a value to stdout.",
     "range": "range(start: int, end?: int, step?: int): int[]\n\nReturns an array of numbers.",
     "typeOf": "typeOf(value: any): string\n\nReturns the type name of a value.",
+    "delete": (
+        "delete(target: any): boolean\n\n"
+        "Removes one object key and its value, splices out one array element "
+        "(the array shrinks), or drops one field of a class instance. "
+        "Declared as Object.delete; returns true. Deleting a target that is "
+        "not there raises the same error reading it would raise."
+    ),
     "sleep": "sleep(ms: int): Promise<void>\n\nSleeps for the specified milliseconds.",
     "input": "input(prompt?: string): string\n\nReads a line from stdin.",
     "int": "Primitive integer type.",
