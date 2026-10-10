@@ -516,6 +516,9 @@ class XThreadHandle:
     thread: threading.Thread
     result_value: Any = None
     error: BaseException | None = None
+    #: ``System.process.exit`` requested inside the worker; Python threads
+    #: swallow ``SystemExit`` silently, so join() re-raises it here instead.
+    exit_stop: SystemExit | None = None
 
 
 @dataclass

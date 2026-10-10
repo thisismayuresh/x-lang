@@ -158,6 +158,16 @@ def _execute(
             config_path = Path(parsed.config_path)
         else:
             config_path = discover_config(current_directory)
+            if config_path is None:
+                source_argument = getattr(parsed, "source", None)
+                if (
+                    isinstance(source_argument, str)
+                    and source_argument.endswith(".x")
+                    and Path(source_argument).is_file()
+                ):
+                    config_path = discover_config(
+                        Path(source_argument).resolve().parent
+                    )
 
     try:
         config = load_config(
@@ -337,14 +347,17 @@ def _execute(
                 )
             return 0
 
-        env_file_directory = (
-            config.path.parent
-            if config.path is not None
-            else source_path.resolve().parent
+        script_directory = source_path.resolve().parent
+        config_directory = (
+            config.path.parent if config.path is not None else None
         )
-        env_file = env_file_directory / ".env"
-        state.files.add(env_file)
-        dotenv_environment = load_env_file(env_file)
+        dotenv_environment: dict[str, str] = {}
+        for directory in (config_directory, script_directory):
+            if directory is None:
+                continue
+            env_file = directory / ".env"
+            state.files.add(env_file)
+            dotenv_environment.update(load_env_file(env_file))
         environment = {
             key: value
             for key, value in dotenv_environment.items()

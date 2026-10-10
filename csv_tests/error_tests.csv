@@ -1,0 +1,1334 @@
+id,kind,phase,category,name,source,expected_stdout,expected_error,expected_exit,notes
+E0001,error,type,arith,division by zero literal,"function main() {
+  print(1 / 0);
+}",,Cannot divide by zero,,
+E0002,error,runtime,arith,division by zero variable,"function main() {
+  let a = 10;
+  let b = 0;
+  print(a / b);
+}",,Division by zero for '/',,
+E0003,error,runtime,arith,modulus by zero variable,"function main() {
+  let a = 10;
+  let b = 0;
+  print(a % b);
+}",,Division by zero for '%',,
+E0004,error,runtime,strings,string index out of range,"function main() {
+  print(""ab""[5]);
+}",,Cannot access index 5: out of range for string of length 2,,
+E0005,error,runtime,strings,string index before start,"function main() {
+  print(""abc""[-4]);
+}",,Cannot access index -4: out of range for string of length 3,,
+E0006,error,runtime,strings,split rejects a limit argument,"function main() {
+  print(""a b"".split("" "", 1));
+}",,String.split accepts at most one separator,,
+E0007,error,runtime,arrays,array index out of range,"function main() {
+  let a = [1, 2];
+  print(a[5]);
+}",,Cannot access index 5: out of range for array of length 2,,
+E0008,error,runtime,arrays,pop on empty array,"function main() {
+  let a = [];
+  print(a.pop());
+}",,Array.pop: array is empty,,
+E0009,error,runtime,functions,call to undefined function,"function main() {
+  missing();
+}",,Name 'missing' is not defined,,
+E0010,error,runtime,functions,read of undefined variable,"function main() {
+  print(nope);
+}",,Name 'nope' is not defined,,
+E0011,error,runtime,functions,value is not callable,"function main() {
+  let x = 1;
+  x();
+}",,Value is not callable,,
+E0012,error,type,functions,wrong argument count,"function f(integer a) {
+  return a;
+}
+function main() {
+  print(f());
+}",,No overload of 'f' accepts 0 argument(s),,
+E0013,error,runtime,functions,null is not indexable,"function main() {
+  print(null[0]);
+}",,Cannot access index 0: null values are not indexable,,
+E0014,error,runtime,control,break outside a loop,"function main() {
+  break;
+}",,'break' used outside of a loop,,
+E0015,error,runtime,control,break inside a switch case,"function main() {
+  switch (1) {
+    case 1: {
+      break;
+    }
+  }
+}",,'break' used outside of a loop,,
+E0016,error,parse,control,return outside a function,return 5;,,'return' is only valid inside a function,,
+E0017,error,parse,control,await outside an async function,"function main() {
+  await 1;
+}",,'await' is only valid inside an async function,,
+E0018,error,type,oop,private field accessed from outside,"class C {
+  private integer v;
+}
+function main() {
+  let C c = new C();
+  print(c.v);
+}",,Cannot access private field 'C.v',,
+E0019,error,parse,oop,constructor without a name,"function main() {
+  print(new 5);
+}",,Expected a name,,
+E0020,error,type,types,assign string to integer variable,"function main() {
+  let integer x = ""s"";
+  print(x);
+}",,Cannot assign 'string' to 'x' of type 'integer',,
+E0021,error,runtime,types,redeclare a variable,"function main() {
+  let x = 1;
+  let x = 2;
+  print(x);
+}",,'x' is already declared in this scope,,
+E0022,error,runtime,types,assign to undeclared name,"function main() {
+  x = 5;
+  print(x);
+}",,Cannot assign to undefined name 'x',,
+E0023,error,type,types,reassign a constant,"function main() {
+  const c = 1;
+  c = 2;
+  print(c);
+}",,Cannot reassign constant 'c',,
+E0024,error,runtime,runtime,recursion past the depth limit,"function down(integer n) {
+  return down(n + 1);
+}
+function main() {
+  print(down(0));
+}",,Maximum recursion depth exceeded; the program nests too deeply,,
+E0025,error,runtime,runtime,uncaught thrown string,"function main() {
+  throw ""boom"";
+}",,boom,,
+E0026,error,runtime,runtime,uncaught thrown number,"function main() {
+  throw 42;
+}",,42,,
+E0027,error,runtime,runtime,exit rejects a boolean code,"function main() {
+  System.process.exit(true);
+}",,System.process.exit expects an integer exit code,,
+E0028,error,runtime,runtime,exit rejects two arguments,"function main() {
+  System.process.exit(1, 2);
+}",,System.process.exit expects 0 or 1 argument,,
+E0029,error,lex,lex,unknown escape sequence,"function main() {
+  print(""\u0041"");
+}",,Unknown escape sequence \u,,
+E0030,error,lex,lex,unexpected ampersand,"function main() {
+  print(1 & 2);
+}",,Unexpected character '&',,
+E0031,error,parse,parse,scientific notation literal,"function main() {
+  print(1e15);
+}",,Expected ')' after arguments,,
+E0032,error,parse,parse,instanceof operator is unsupported,"function main() {
+  print(1 instanceof Number);
+}",,Expected ')' after arguments,,
+E0033,error,parse,parse,nullish coalescing is unsupported,"function main() {
+  print(null ?? ""d"");
+}",,Unexpected token '?'; expected an expression,,
+E0034,error,parse,parse,exponent operator is unsupported,"function main() {
+  print(2 ** 10);
+}",,Unexpected token '*'; expected an expression,,
+E0035,error,parse,parse,getter syntax is unsupported,"class C {
+  private integer v;
+  public C() {
+    this.v = 3;
+  }
+  public integer get v() {
+    return this.v;
+  }
+}
+function main() {
+  print(1);
+}",,Expected ';' after field declaration,,
+E0036,error,parse,parse,function typed parameter is unsupported,"function apply(integer n, integer f(integer value)) {
+  return f(n);
+}
+function main() {
+  print(1);
+}",,Expected ')' after parameters,,
+E0037,error,parse,parse,generic function parameters are unsupported,"function first<T>(list<T> items) {
+  return items[0];
+}
+function main() {
+  print(1);
+}",,Expected '(' before parameters,,
+E0038,error,parse,parse,record declaration keyword placement,"record Point(int x, int y);
+function main() {
+  print(1);
+}",,Declarations must start with 'let' or 'const'; write 'let record Point;',,
+E0039,error,load,imports,unknown bare import,"import NotAModule
+function main() {
+  print(1);
+}",,Imported source file 'NotAModule.x' does not exist,,
+E0040,error,parse,imports,missing local import path,"import ./nope.x
+function main() {
+  print(1);
+}",,Expected import path,,
+E0041,error,runtime,control,break directly in a switch case without a loop,"function main() {
+  let integer x = 1;
+  switch (x) {
+    case 1: { print(""one""); break; }
+    default: { print(""other""); }
+  }
+}",one,'break' used outside of a loop,,
+E0042,error,type,oop,private field is invisible outside its class,"class Wallet {
+  private integer balance = 100;
+  public integer get() { return this.balance; }
+}
+function main() {
+  let Wallet w = new Wallet();
+  print(w.balance);
+}",,Cannot access private field 'Wallet.balance',,
+E0043,error,type,oop,final class cannot be extended,"final class Ledger {}
+class Broken extends Ledger {}
+function main() { print(""never""); }",,Cannot extend final class 'Ledger',,
+E0044,error,parse,mutations,class drop token 0 (class)," Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected ';' after expression,,template class
+E0045,error,parse,mutations,class drop token 1 (IDENTIFIER),"class  {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected a type name,,template class
+E0046,error,parse,mutations,class drop token 2 ({),"class Point 
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected '{' before type body,,template class
+E0047,error,parse,mutations,class drop token 3 (IDENTIFIER),"class Point {
+   x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected a member name,,template class
+E0048,error,parse,mutations,class drop token 7 (IDENTIFIER),"class Point {
+  integer x;
+  public (integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected a name,,template class
+E0049,error,parse,mutations,class drop token 8 ((),"class Point {
+  integer x;
+  public Pointinteger x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected ';' after field declaration,,template class
+E0050,error,runtime,mutations,class drop token 10 (IDENTIFIER),"class Point {
+  integer x;
+  public Point(integer ) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Name 'x' is not defined,,template class
+E0051,error,parse,mutations,class drop token 11 ()),"class Point {
+  integer x;
+  public Point(integer x {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected ')' after parameters,,template class
+E0052,error,parse,mutations,class drop token 12 ({),"class Point {
+  integer x;
+  public Point(integer x) 
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected '{' before block,,template class
+E0053,error,parse,mutations,class drop token 13 (this),"class Point {
+  integer x;
+  public Point(integer x) {
+    .x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Unexpected token '.'; expected an expression,,template class
+E0054,error,runtime,mutations,class drop token 14 (.),"class Point {
+  integer x;
+  public Point(integer x) {
+    thisx = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Cannot assign to undefined name 'thisx',,template class
+E0055,error,parse,mutations,class drop token 15 (IDENTIFIER),"class Point {
+  integer x;
+  public Point(integer x) {
+    this. = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected member name after '.',,template class
+E0056,error,parse,mutations,class drop token 17 (IDENTIFIER),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = ;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Unexpected token ';'; expected an expression,,template class
+E0057,error,parse,mutations,class drop token 19 (}),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Unexpected token 'public'; expected an expression,,template class
+E0058,error,type,mutations,class drop token 26 (return),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+     this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Method 'get' must return a value of type 'integer',,template class
+E0059,error,runtime,mutations,class drop token 28 (.),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return thisx;
+  }
+}
+function main() {
+  print(new Point(4).get());
+}",,Name 'thisx' is not defined,,template class
+E0060,error,parse,mutations,class drop token 31 (}),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  
+}
+function main() {
+  print(new Point(4).get());
+}",,Expected '}' after type body,,template class
+E0061,error,parse,mutations,class drop token 34 (IDENTIFIER),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function () {
+  print(new Point(4).get());
+}",,Expected function name,,template class
+E0062,error,parse,mutations,class drop token 35 ((),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main) {
+  print(new Point(4).get());
+}",,Expected '(' before parameters,,template class
+E0063,error,parse,mutations,class drop token 39 ((),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  printnew Point(4).get());
+}",,Declarations must start with 'let' or 'const'; write 'let printnew Point;',,template class
+E0064,error,parse,mutations,class drop token 42 ((),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point4).get());
+}",,Expected '(' after type name,,template class
+E0065,error,type,mutations,class drop token 43 (NUMBER),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point().get());
+}",,No overload of 'Point' accepts 0 argument(s),,template class
+E0066,error,parse,mutations,class drop token 44 ()),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4.get());
+}",,Expected ')' after arguments,,template class
+E0067,error,parse,mutations,class drop token 51 (}),"class Point {
+  integer x;
+  public Point(integer x) {
+    this.x = x;
+  }
+  public integer get() {
+    return this.x;
+  }
+}
+function main() {
+  print(new Point(4).get());
+",,Unexpected end of file; expected '}' to close block,,template class
+E0068,error,parse,mutations,control drop token 0 (function)," main() {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected ';' after expression,,template control
+E0069,error,parse,mutations,control drop token 1 (IDENTIFIER),"function () {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected function name,,template control
+E0070,error,parse,mutations,control drop token 2 ((),"function main) {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected '(' before parameters,,template control
+E0071,error,parse,mutations,control drop token 3 ()),"function main( {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected a name,,template control
+E0072,error,parse,mutations,control drop token 4 ({),"function main() 
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected '{' before block,,template control
+E0073,error,parse,mutations,control drop token 5 (for),"function main() {
+   (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token 'let'; expected an expression,,template control
+E0074,error,parse,mutations,control drop token 6 ((),"function main() {
+  for let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected '(' after 'for',,template control
+E0075,error,runtime,mutations,control drop token 7 (let),"function main() {
+  for ( i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unsupported statement 'Assignment',,template control
+E0076,error,parse,mutations,control drop token 8 (IDENTIFIER),"function main() {
+  for (let  = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected variable name or type,,template control
+E0077,error,parse,mutations,control drop token 9 (=),"function main() {
+  for (let i  0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,"Expected ';', 'in', or 'of' in for loop",,template control
+E0078,error,parse,mutations,control drop token 10 (NUMBER),"function main() {
+  for (let i = ; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token ';'; expected an expression,,template control
+E0079,error,parse,mutations,control drop token 12 (IDENTIFIER),"function main() {
+  for (let i = 0;  < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token '<'; expected an expression,,template control
+E0080,error,parse,mutations,control drop token 13 (<),"function main() {
+  for (let i = 0; i  3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected ';' after for-loop condition,,template control
+E0081,error,parse,mutations,control drop token 16 (IDENTIFIER),"function main() {
+  for (let i = 0; i < 3; ++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token ')'; expected an expression,,template control
+E0082,error,parse,mutations,control drop token 18 ()),"function main() {
+  for (let i = 0; i < 3; i++ {
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected ')' after for-loop clauses,,template control
+E0083,error,parse,mutations,control drop token 19 ({),"function main() {
+  for (let i = 0; i < 3; i++) 
+    if (i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token '}'; expected an expression,,template control
+E0084,error,parse,mutations,control drop token 21 ((),"function main() {
+  for (let i = 0; i < 3; i++) {
+    if i == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected '(' after 'if',,template control
+E0085,error,parse,mutations,control drop token 22 (IDENTIFIER),"function main() {
+  for (let i = 0; i < 3; i++) {
+    if ( == 1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Unexpected token '=='; expected an expression,,template control
+E0086,error,parse,mutations,control drop token 23 (==),"function main() {
+  for (let i = 0; i < 3; i++) {
+    if (i  1) {
+      continue;
+    }
+    print(i);
+  }
+}",,Expected ')' after condition,,template control
+E0087,error,parse,mutations,control drop token 29 (}),"function main() {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    
+    print(i);
+  }
+}",,Unexpected end of file; expected '}' to close block,,template control
+E0088,error,parse,mutations,control drop token 33 ()),"function main() {
+  for (let i = 0; i < 3; i++) {
+    if (i == 1) {
+      continue;
+    }
+    print(i;
+  }
+}",,Expected ')' after arguments,,template control
+E0089,error,parse,mutations,switch drop token 0 (function)," main() {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected ';' after expression,,template switch
+E0090,error,parse,mutations,switch drop token 1 (IDENTIFIER),"function () {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected function name,,template switch
+E0091,error,parse,mutations,switch drop token 2 ((),"function main) {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected '(' before parameters,,template switch
+E0092,error,parse,mutations,switch drop token 3 ()),"function main( {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected a name,,template switch
+E0093,error,parse,mutations,switch drop token 4 ({),"function main() 
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected '{' before block,,template switch
+E0094,error,runtime,mutations,switch drop token 5 (let),"function main() {
+   x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Cannot assign to undefined name 'x',,template switch
+E0095,error,parse,mutations,switch drop token 6 (IDENTIFIER),"function main() {
+  let  = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected variable name or type,,template switch
+E0096,error,parse,mutations,switch drop token 7 (=),"function main() {
+  let x  2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,A variable without a type needs an initial value,,template switch
+E0097,error,parse,mutations,switch drop token 8 (NUMBER),"function main() {
+  let x = ;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Unexpected token ';'; expected an expression,,template switch
+E0098,error,parse,mutations,switch drop token 11 ((),"function main() {
+  let x = 2;
+  switch x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected '(' after 'switch',,template switch
+E0099,error,parse,mutations,switch drop token 12 (IDENTIFIER),"function main() {
+  let x = 2;
+  switch () {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Unexpected token ')'; expected an expression,,template switch
+E0100,error,parse,mutations,switch drop token 13 ()),"function main() {
+  let x = 2;
+  switch (x {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected ')' after switch expression,,template switch
+E0101,error,parse,mutations,switch drop token 14 ({),"function main() {
+  let x = 2;
+  switch (x) 
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected '{' after switch expression,,template switch
+E0102,error,parse,mutations,switch drop token 15 (case),"function main() {
+  let x = 2;
+  switch (x) {
+     1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected 'case' or 'default' in switch statement,,template switch
+E0103,error,parse,mutations,switch drop token 16 (NUMBER),"function main() {
+  let x = 2;
+  switch (x) {
+    case : {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Unexpected token ':'; expected an expression,,template switch
+E0104,error,parse,mutations,switch drop token 17 (:),"function main() {
+  let x = 2;
+  switch (x) {
+    case 1 {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected ':' after case value,,template switch
+E0105,error,parse,mutations,switch drop token 22 ()),"function main() {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"";
+    }
+    default: {
+      print(""other"");
+    }
+  }
+}",,Expected ')' after arguments,,template switch
+E0106,error,parse,mutations,switch drop token 24 (}),"function main() {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    
+    default: {
+      print(""other"");
+    }
+  }
+}",,Unexpected token 'default'; expected an expression,,template switch
+E0107,error,parse,mutations,switch drop token 26 (:),"function main() {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default {
+      print(""other"");
+    }
+  }
+}",,Expected ':' after 'default',,template switch
+E0108,error,parse,mutations,switch drop token 33 (}),"function main() {
+  let x = 2;
+  switch (x) {
+    case 1: {
+      print(""one"");
+    }
+    default: {
+      print(""other"");
+    
+  }
+}",,Unexpected end of file; expected '}' to close block,,template switch
+E0109,error,parse,mutations,match drop token 0 (function)," main() {
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected ';' after expression,,template match
+E0110,error,parse,mutations,match drop token 1 (IDENTIFIER),"function () {
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected function name,,template match
+E0111,error,parse,mutations,match drop token 2 ((),"function main) {
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected '(' before parameters,,template match
+E0112,error,parse,mutations,match drop token 3 ()),"function main( {
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected a name,,template match
+E0113,error,parse,mutations,match drop token 4 ({),"function main() 
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected '{' before block,,template match
+E0114,error,parse,mutations,match drop token 7 (match),"function main() {
+  print( 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected ')' after arguments,,template match
+E0115,error,parse,mutations,match drop token 8 (NUMBER),"function main() {
+  print(match  {
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected object field name,,template match
+E0116,error,parse,mutations,match drop token 9 ({),"function main() {
+  print(match 2 
+    1 => ""one"",
+    _ => ""other""
+  });
+}",,Expected '{' before match arms,,template match
+E0117,error,parse,mutations,match drop token 10 (NUMBER),"function main() {
+  print(match 2 {
+     => ""one"",
+    _ => ""other""
+  });
+}",,Expected a supported match pattern,,template match
+E0118,error,parse,mutations,match drop token 11 (=>),"function main() {
+  print(match 2 {
+    1  ""one"",
+    _ => ""other""
+  });
+}",,Expected '=>' after pattern,,template match
+E0119,error,parse,mutations,match drop token 12 (STRING),"function main() {
+  print(match 2 {
+    1 => ,
+    _ => ""other""
+  });
+}",,"Unexpected token ','; expected an expression",,template match
+E0120,error,parse,mutations,"match drop token 13 (,)","function main() {
+  print(match 2 {
+    1 => ""one""
+    _ => ""other""
+  });
+}",,"Expected ',' between match arms",,template match
+E0121,error,parse,mutations,match drop token 16 (STRING),"function main() {
+  print(match 2 {
+    1 => ""one"",
+    _ => 
+  });
+}",,Unexpected token '}'; expected an expression,,template match
+E0122,error,parse,mutations,match drop token 20 (}),"function main() {
+  print(match 2 {
+    1 => ""one"",
+    _ => ""other""
+  });
+",,Unexpected end of file; expected '}' to close block,,template match
+E0123,error,parse,mutations,strings drop token 0 (function)," main() {
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected ';' after expression,,template strings
+E0124,error,parse,mutations,strings drop token 1 (IDENTIFIER),"function () {
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected function name,,template strings
+E0125,error,parse,mutations,strings drop token 2 ((),"function main) {
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected '(' before parameters,,template strings
+E0126,error,parse,mutations,strings drop token 3 ()),"function main( {
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected a name,,template strings
+E0127,error,parse,mutations,strings drop token 4 ({),"function main() 
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected '{' before block,,template strings
+E0128,error,runtime,mutations,strings drop token 5 (let),"function main() {
+   s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Cannot assign to undefined name 's',,template strings
+E0129,error,parse,mutations,strings drop token 6 (IDENTIFIER),"function main() {
+  let  = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,Expected variable name or type,,template strings
+E0130,error,parse,mutations,strings drop token 7 (=),"function main() {
+  let s  ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+}",,A variable without a type needs an initial value,,template strings
+E0131,error,parse,mutations,strings drop token 8 (STRING),"function main() {
+  let s = ;
+  print(s.toUpperCase());
+  print(s.length);
+}",,Unexpected token ';'; expected an expression,,template strings
+E0132,error,parse,mutations,strings drop token 12 (IDENTIFIER),"function main() {
+  let s = ""hello"";
+  print(.toUpperCase());
+  print(s.length);
+}",,Unexpected token '.'; expected an expression,,template strings
+E0133,error,runtime,mutations,strings drop token 13 (.),"function main() {
+  let s = ""hello"";
+  print(stoUpperCase());
+  print(s.length);
+}",,Name 'stoUpperCase' is not defined,,template strings
+E0134,error,parse,mutations,strings drop token 14 (IDENTIFIER),"function main() {
+  let s = ""hello"";
+  print(s.());
+  print(s.length);
+}",,Expected member name after '.',,template strings
+E0135,error,parse,mutations,strings drop token 16 ()),"function main() {
+  let s = ""hello"";
+  print(s.toUpperCase();
+  print(s.length);
+}",,Expected ')' after arguments,,template strings
+E0136,error,parse,mutations,strings drop token 26 (}),"function main() {
+  let s = ""hello"";
+  print(s.toUpperCase());
+  print(s.length);
+",,Unexpected end of file; expected '}' to close block,,template strings
+E0137,error,parse,mutations,collections drop token 1 (IDENTIFIER),"import .utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected import path,,template collections
+E0138,error,load,mutations,collections drop token 2 (.),"import Systemutils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Imported source file 'Systemutils/Collections/HashMap.x' does not exist,,template collections
+E0139,error,parse,mutations,collections drop token 3 (IDENTIFIER),"import System..Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected name after '.',,template collections
+E0140,error,load,mutations,collections drop token 4 (.),"import System.utilsCollections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Imported source file 'System/utilsCollections/HashMap.x' does not exist,,template collections
+E0141,error,load,mutations,collections drop token 6 (.),"import System.utils.CollectionsHashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Imported source file 'System/utils/CollectionsHashMap.x' does not exist,,template collections
+E0142,error,parse,mutations,collections drop token 8 (function),"import System.utils.Collections.HashMap
+ main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected ';' after expression,,template collections
+E0143,error,parse,mutations,collections drop token 9 (IDENTIFIER),"import System.utils.Collections.HashMap
+function () {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected function name,,template collections
+E0144,error,parse,mutations,collections drop token 10 ((),"import System.utils.Collections.HashMap
+function main) {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected '(' before parameters,,template collections
+E0145,error,parse,mutations,collections drop token 11 ()),"import System.utils.Collections.HashMap
+function main( {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected a name,,template collections
+E0146,error,parse,mutations,collections drop token 12 ({),"import System.utils.Collections.HashMap
+function main() 
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected '{' before block,,template collections
+E0147,error,runtime,mutations,collections drop token 13 (let),"import System.utils.Collections.HashMap
+function main() {
+   m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Cannot assign to undefined name 'm',,template collections
+E0148,error,parse,mutations,collections drop token 14 (IDENTIFIER),"import System.utils.Collections.HashMap
+function main() {
+  let  = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected variable name or type,,template collections
+E0149,error,parse,mutations,collections drop token 15 (=),"import System.utils.Collections.HashMap
+function main() {
+  let m  new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,A variable without a type needs an initial value,,template collections
+E0150,error,runtime,mutations,collections drop token 16 (new),"import System.utils.Collections.HashMap
+function main() {
+  let m =  HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Value is not callable,,template collections
+E0151,error,parse,mutations,collections drop token 18 ((),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap)
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected '(' after type name,,template collections
+E0152,error,parse,mutations,collections drop token 19 ()),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap(
+  m.set(""k"", 1)
+  print(m.get(""k""))
+}",,Expected ')' after arguments,,template collections
+E0153,error,runtime,mutations,collections drop token 20 (IDENTIFIER),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  .set(""k"", 1)
+  print(m.get(""k""))
+}",,Cannot access member 'get' on null,,template collections
+E0154,error,runtime,mutations,collections drop token 21 (.),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  mset(""k"", 1)
+  print(m.get(""k""))
+}",,Name 'mset' is not defined,,template collections
+E0155,error,parse,mutations,collections drop token 22 (IDENTIFIER),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.(""k"", 1)
+  print(m.get(""k""))
+}",,Expected member name after '.',,template collections
+E0156,error,parse,mutations,collections drop token 24 (STRING),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(, 1)
+  print(m.get(""k""))
+}",,"Unexpected token ','; expected an expression",,template collections
+E0157,error,runtime,mutations,collections drop token 26 (NUMBER),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", )
+  print(m.get(""k""))
+}",,"HashMap.set expects hashmap, key, and value arguments",,template collections
+E0158,error,parse,mutations,collections drop token 30 (IDENTIFIER),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(.get(""k""))
+}",,Unexpected token '.'; expected an expression,,template collections
+E0159,error,runtime,mutations,collections drop token 31 (.),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(mget(""k""))
+}",,Name 'mget' is not defined,,template collections
+E0160,error,runtime,mutations,collections drop token 34 (STRING),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get())
+}",,HashMap.get expects key argument,,template collections
+E0161,error,parse,mutations,collections drop token 37 (}),"import System.utils.Collections.HashMap
+function main() {
+  let m = new HashMap()
+  m.set(""k"", 1)
+  print(m.get(""k""))
+",,Unexpected end of file; expected '}' to close block,,template collections
+E0162,error,type,examples,example errors/final_class_extension.x,"final class ImmutableBase {}
+
+class InvalidChild extends ImmutableBase {}
+
+any function main() {}
+",,Cannot extend final class 'ImmutableBase',,
+E0163,error,type,examples,example errors/private_access.x,"class Vault {
+    protected string secret;
+
+    public Vault() {
+        this.secret = ""classified"";
+    }
+}
+
+any function main() {
+    let Vault vault = new Vault();
+    print(vault.secret);
+}
+",,Cannot access protected field 'Vault.secret',,
+E0164,error,type,examples,example errors/runtime_error.x,"any function main() {
+    let integer result = 4 / 0;
+    print(result);
+}
+",,Cannot divide by zero,,
+E0165,error,parse,examples,example errors/syntax_error.x,"function main() {
+    let integer value = ;
+    print(value);
+}
+",,Unexpected token ';'; expected an expression,,
+E0166,error,type,examples,example errors/typed_array.x,"any function main() {
+    let integer[] values = [1, 2, ""name""];
+}
+",,Cannot assign '(integer|string)[]' to 'values' of type 'integer[]',,
+E0167,error,load,examples,example importstatement.x,"import System.x;
+
+",,Imported source file 'System/x.x' does not exist,,
+E0168,error,type,examples,example strict_typing_errors.x,"// ============================================
+// STRICT TYPING ERROR EXAMPLES
+// ============================================
+// Run with: python -m xlang examples/strict_typing_errors.x --strict_typing=true
+// ============================================
+
+// Error 1: Missing return type on function
+function add(a, b) {
+    return a + b;
+}
+
+// Error 2: Missing parameter types
+int function greet(name) {
+    return ""Hi "" + name;
+}
+
+// Error 3: Missing return type AND parameter types
+function terrible(a, b) {
+    return a + b;
+}
+
+// Error 4: Untyped variable declaration
+let untyped = 42;
+
+// Error 5: Untyped array
+let badArray = [1, 2, 3];
+
+// Error 6: Missing return type on constructor
+class BadClass {
+    BadClass() {}
+}
+
+// Error 7: Untyped class field
+class BadClass2 {
+    string name;
+}
+
+// Error 8: Untyped method parameter
+class BadClass3 {
+    void method(param) {}
+}
+
+int function main() { return 0; }",,Return type 'string' is not compatible with 'integer',,
+E0169,error,type,examples,example test/test_access_modifiers.x,"class Test {
+    private int x = 1
+    protected int y = 2
+    public int z = 3
+}
+
+let t = new Test()
+print(t.x)  // Should error - private
+print(t.y)  // Should error - protected
+print(t.z)  // Should work - public",,Cannot access private field 'Test.x',,
+E0170,error,type,examples,example test/test_constructor_return.x,"class Address {
+    string street;
+    string city;
+
+    public Address(string street, string city) {
+        this.street = street;
+        this.city = city;
+
+        return ""hello""
+    }
+}
+
+let Address addr = new Address(""123 Main St"", ""New York"")
+print(addr)",,Constructors cannot return a value,,
+E0171,error,parse,examples,example test/test_constructor_return_type.x,"class Address {
+    string street;
+    string city;
+
+    public string Address(string street, string city) {
+        this.street = street;
+        this.city = city;
+
+        return ""hello""
+    }
+}
+
+let Address addr = new Address(""123 Main St"", ""New York"")
+print(addr)",,Constructor 'Address' must not have a return type (not even 'void'),,
+E0172,error,parse,examples,example test/test_constructor_return_type2.x,"class Address {
+    string street;
+    string city;
+
+    public string Address(string street, string city) {
+        this.street = street;
+        this.city = city;
+    }
+}
+
+let Address addr = new Address(""123 Main St"", ""New York"")
+print(addr)",,Constructor 'Address' must not have a return type (not even 'void'),,
+E0173,error,type,examples,example test/test_interface.x,"interface Person{
+    string getGender()
+}
+
+class Animal implements Person{
+
+}",,Class 'Animal' does not implement 'getGender()' from interface 'Person',,
+E0174,error,type,examples,example test/test_interface_no_return.x,"interface Person{
+    string getGender()
+}
+
+class Animal implements Person{
+    string getGender(){
+        print(""hello"")
+    }
+}
+
+let animal = new Animal();
+print(""getGender"", animal.getGender())",,Method 'getGender' must return a value of type 'string',,
+E0175,error,type,examples,example test/test_interface_return.x,"interface Person{
+    string getGender()
+}
+
+class Animal implements Person{
+    string getGender(){
+        return 1
+    }
+}
+
+let animal = new Animal();
+print(""getGender"", animal.getGender())",,Return type 'integer' is not compatible with 'string',,
+E0176,error,parse,examples,example test/test_missing_let.x,"int x = 1
+string y = ""hello""",,Declarations must start with 'let' or 'const'; write 'let int x = ...',,
+E0177,error,type,examples,example test/test_multiple_errors.x,"any function foo(intsssssx a) {
+    return a;
+}
+
+any function bar(invalidtype b) {
+    return b;
+}
+
+let x = 1
+let y = 2",,Unknown type 'intsssssx',,

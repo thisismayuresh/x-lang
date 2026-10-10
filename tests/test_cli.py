@@ -162,6 +162,94 @@ class CommandLineTests(unittest.TestCase):
         )
         self.assertEqual(errors, "")
 
+    def test_env_file_next_to_the_script_is_read_when_config_lives_elsewhere(self):
+        with (
+            tempfile.TemporaryDirectory() as config_directory,
+            tempfile.TemporaryDirectory() as script_directory,
+        ):
+            config_root = Path(config_directory)
+            script_root = Path(script_directory)
+            (config_root / "x.toml").write_text(
+                '[cli]\ncolor = "never"\n', encoding="utf-8"
+            )
+            (config_root / ".env").write_text(
+                "X_SIDE_BY_SIDE=root-value\nX_ROOT_ONLY=root-only\n",
+                encoding="utf-8",
+            )
+            (script_root / ".env").write_text(
+                "X_SIDE_BY_SIDE=script-value\nX_SCRIPT_ONLY=script-only\n",
+                encoding="utf-8",
+            )
+            source_file = script_root / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print(System.process.Environment.X_SIDE_BY_SIDE)
+                    print(System.process.Environment.X_ROOT_ONLY)
+                    print(System.process.Environment.X_SCRIPT_ONLY)
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            original_directory = Path.cwd()
+            os.chdir(config_root)
+            try:
+                return_code, output, errors = self.run_cli(
+                    ["run", str(source_file)]
+                )
+            finally:
+                os.chdir(original_directory)
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            output.splitlines(),
+            ["script-value", "root-only", "script-only"],
+        )
+        self.assertEqual(errors, "")
+
+    def test_config_and_env_are_discovered_from_the_script_when_cwd_has_none(self):
+        with (
+            tempfile.TemporaryDirectory() as launch_directory,
+            tempfile.TemporaryDirectory() as project_directory,
+        ):
+            launch_root = Path(launch_directory)
+            project_root = Path(project_directory)
+            (project_root / "x.toml").write_text(
+                '[cli]\ncolor = "never"\n'
+                "[run.environment]\nX_DISCOVERED_CONFIG = \"from-script-toml\"\n",
+                encoding="utf-8",
+            )
+            (project_root / ".env").write_text(
+                "X_DISCOVERED_ENV=from-project-dotenv\n", encoding="utf-8"
+            )
+            source_file = project_root / "main.x"
+            source_file.write_text(
+                """
+                function main() {
+                    print(System.process.Environment.X_DISCOVERED_CONFIG)
+                    print(System.process.Environment.X_DISCOVERED_ENV)
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            original_directory = Path.cwd()
+            os.chdir(launch_root)
+            try:
+                return_code, output, errors = self.run_cli(
+                    ["run", str(source_file)]
+                )
+            finally:
+                os.chdir(original_directory)
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            output.splitlines(),
+            ["from-script-toml", "from-project-dotenv"],
+        )
+        self.assertEqual(errors, "")
+
     def test_system_process_exit_sets_the_process_exit_code(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source_file = Path(temporary_directory) / "main.x"

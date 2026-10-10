@@ -2855,6 +2855,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         handle.thread.join(timeout)
         if handle.thread.is_alive():
             return None
+        if handle.exit_stop is not None:
+            raise handle.exit_stop
         if handle.error is not None:
             # Convert Python exceptions to X language errors to avoid exposing implementation details
             error_message = str(handle.error)

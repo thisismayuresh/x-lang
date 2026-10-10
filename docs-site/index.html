@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>X language documentation</title>
+    <link rel="icon" href="data:,">
+    <meta name="description" content="Documentation for the X programming language: syntax, standard library, and toolchain. Rendered from README.md.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+    <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="sidebar">Menu</button>
+    <a class="topbar-title" href="#top">X <span class="version">documentation</span></a>
+    <span class="topbar-spacer"></span>
+    <button class="theme-toggle" id="theme-toggle" type="button">Dark mode</button>
+</header>
+
+<div class="overlay" id="overlay"></div>
+
+<nav class="sidebar" id="sidebar" aria-label="Documentation sections">
+    <div class="nav-label">Documentation</div>
+    <div id="doc-nav"></div>
+    <div class="nav-status" id="doc-status"></div>
+</nav>
+
+<main class="content">
+<div class="content-inner" id="top">
+
+    <div class="fetch-error" id="fetch-error">
+        <p><strong>Could not load <code>README.md</code>.</strong>
+        This page renders <code>docs-site/README.md</code> over HTTP. Serve
+        the repository root (for example <code>python3 -m http.server</code>
+        in the project folder) and open <code>/docs-site/</code> &mdash;
+        opening the file directly from disk (<code>file://</code>) cannot
+        fetch it.</p>
+    </div>
+
+    <article class="md-view" id="doc-view"></article>
+
+</div>
+<aside class="doc-toc" id="doc-toc" aria-label="On this page"></aside>
+</main>
+
+<script src="markdown.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
