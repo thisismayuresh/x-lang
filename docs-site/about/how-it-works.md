@@ -91,6 +91,15 @@ works; nothing has to be built first. The playground in particular needs a real
 HTTP origin (its module worker and Pyodide/wheel `fetch` calls do not work from
 `file://`).
 
+## Publishing
+
+`.github/workflows/deploy-docs.yml` publishes `docs-site/` to GitHub Pages on
+pushes to `main`/`development` (and on manual dispatch). It uploads the folder
+as the Pages **artifact** — the branch-based picker only offers `/ (root)` or
+`/docs`, so a folder named `docs-site/` is not selectable there. Select
+**Settings → Pages → Source = GitHub Actions** once. `docs-site/.nojekyll` keeps
+Pages from running Jekyll over the vendored assets.
+
 ## The playground
 
 `playground.html` is the interactive editor linked from the top bar and the

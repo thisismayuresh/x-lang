@@ -1,0 +1,49 @@
+name: Deploy docs site
+
+# Publishes the contents of docs-site/ (docs + WebAssembly playground) to
+# GitHub Pages. This is what lets the folder keep its name: the "Deploy from a
+# branch" picker only offers / (root) or /docs, but an Actions deploy can point
+# the Pages artifact at any path.
+
+on:
+  push:
+    branches: [main, development]
+    paths:
+      - "docs-site/**"
+      - ".github/workflows/deploy-docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deploy at a time; newer pushes cancel queued ones.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Strip Python build cruft
+        run: find docs-site -name __pycache__ -type d -prune -exec rm -rf {} +
+
+      - name: Upload docs-site as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

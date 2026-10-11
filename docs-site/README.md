@@ -90,6 +90,31 @@ Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
 build; only the interpreter wheel has to be rebuilt with `x playground` after
 `xlang/` changes.
 
+### Publishing to GitHub Pages
+
+The site is static, so it deploys as-is. GitHub Pages' **Deploy from a branch**
+setting only offers `/ (root)` or `/docs`, which is why a folder named
+`docs-site/` never appears in that picker. Keep the name and publish through
+**GitHub Actions** instead:
+
+1. Push the repository — the workflow lives at
+   `.github/workflows/deploy-docs.yml`.
+2. On GitHub: **Settings → Pages → Build and deployment → Source = GitHub
+   Actions**.
+3. Merge to `main` (or `development`), or run the **Deploy docs site** workflow
+   manually. It uploads `docs-site/` as the Pages artifact and deploys it, so
+   the whole playground ships too.
+
+Because the playground loads Pyodide, the interpreter wheel, and a module
+worker, it needs a real HTTP(S) origin — GitHub Pages qualifies. The committed
+`docs-site/.nojekyll` keeps Pages from running Jekyll, so the vendored
+CodeMirror/Pyodide assets are served verbatim.
+
+The published URL is `https://<user>.github.io/<repo>/` for a project site, or
+`https://<user>.github.io/` for a `<user>.github.io` repository. If you would
+rather use branch-based deploys, rename `docs-site/` to `docs/` and select
+`/docs` in the picker.
+
 ## Setup
 
 Create and activate the virtual environment, then install the local package:
