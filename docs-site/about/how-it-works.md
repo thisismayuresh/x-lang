@@ -17,6 +17,8 @@ no dependencies.
 | `script.js` | Everything the page does after render: theme, mobile menu, table of contents, scroll spy, syntax highlighting, copy buttons. |
 | `styles.css` | All styling, light and dark themes, responsive layout. |
 | `about/` | Extra pages like this one, each a plain markdown file. |
+| `playground.html` | The interactive playground (editor + output). Separate shell from the docs pages. |
+| `playground/` | Playground assets: Web Worker, CodeMirror X mode, examples, and the interpreter wheel built by `build.py`. |
 
 ## From README.md to the page
 
@@ -80,11 +82,73 @@ x run example.x
 From the repository root:
 
 ```sh
-python3 -m http.server
+python3 -m http.server 8080
 ```
 
-Then open `http://localhost:8000/docs-site/`. Any static file server works;
-nothing has to be built first.
+Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
+`http://127.0.0.1:8080/docs-site/playground.html`. Any static file server
+works; nothing has to be built first. The playground in particular needs a real
+HTTP origin (its module worker and Pyodide/wheel `fetch` calls do not work from
+`file://`).
+
+## The playground
+
+`playground.html` is the interactive editor linked from the top bar and the
+docs intro. It is still dependency-free HTML/CSS/JS, with **vendored**
+CodeMirror (no CDN) and a **vendored** WebAssembly runtime:
+
+1. The page spawns an **ES-module** Web Worker (`playground/worker.js` with
+   `{ type: "module" }`) so a runaway program can be terminated without
+   freezing the tab. Pyodide ≥ 314 refuses classic workers
+   (`importScripts`), so the worker never uses them.
+2. The worker `import()`s **Pyodide** — CPython compiled to WebAssembly — from
+   `playground/pyodide/` (checked into the site so no CDN is required at
+   runtime). If those files are absent it falls back to jsDelivr.
+3. It then installs the local `x-language` wheel with `micropip`. That
+   wheel is a pure-Python build of `xlang/` (the same interpreter the
+   `x` CLI uses) — **Pyodide is the WASM build**; there is no separate
+   C→WASM compile of the language. After changing anything under `xlang/`:
+
+   ```sh
+   x playground            # one-shot rebuild of the wheel
+   x playground-watch      # rebuild automatically on every xlang/ edit
+   x playground-check      # CI-friendly staleness check
+   ```
+
+   Equivalent: `.venv/bin/python docs-site/playground/build.py [--watch|--check]`.
+   The script fingerprints `xlang/**` + `pyproject.toml`, skips work when
+   unchanged, writes `wheels/x_language-*.whl` + `wheels/manifest.json`,
+   and copies (or downloads) Pyodide into `playground/pyodide/` once.
+   The worker appends `?v=<fingerprint>` to the wheel URL so a browser
+   reload after rebuild always fetches the new interpreter.
+4. **Run** (or Ctrl+Enter) posts the editor’s files to the worker, which
+   calls `xlang.playground.run_files` and returns JSON: printed lines,
+   typed errors with line/file/column, and wall-clock duration. It runs with
+   the interpreter’s default feature set — features come from `x.toml` for
+   the CLI, never from a browser control. A 15s
+   timeout restarts the worker if the program hangs. **Format** (Ctrl+S)
+   calls `xlang.playground.format_file` (same pipeline as `x format`).
+   Fatal infrastructure failures (WASM boot, worker crash) render in the
+   **fatal bar** under the output pane; program errors stay in `#errors`.
+5. The editor is CodeMirror 5 with a hand-written X mode
+   (`playground/x-mode.js`), bracket colours (guide lines off by default),
+   auto-close brackets/quotes, and autocomplete (`playground/completions.js`).
+   **Ctrl+Space** lists keywords/types/snippets and the names declared in the
+   current buffer — `collectDeclarations` in `playground.js` scans for
+   variables, parameters, functions, types/classes/interfaces/enums and
+   imports; after `.` it uses a simple
+   type inference (`inferVarType` in `playground.js`) so string/list locals
+   offer the right members. CodeMirror and its addons are vendored under
+   `playground/codemirror/` — no CDN. Up to five files live under a virtual
+   `playground/` folder; the splitter between panes is draggable. Matching
+   brackets use underline/bold only — no bar.
+
+See the main README section
+[Browser playground (WebAssembly)](../README.md) for the full technology
+stack and how interpreter edits are republished to WASM.
+
+Sandbox notes: there is no network or OS-thread support inside Pyodide, so
+`System.io.Network` and thread demos will not run in the browser.
 
 ## Editing rules
 
@@ -93,6 +157,10 @@ nothing has to be built first.
 - `index.html`, `markdown.js`, `script.js`, and `styles.css` are the shell.
   They only change when the behaviour of the site itself changes.
 - Keep examples honest: run them, paste the real output underneath.
+- **Documentation is part of the change.** Feature additions, bug fixes,
+  architecture changes, and other user-visible work must update the
+  concerned README (and its parent README) in the same change — see
+  `AGENTS.md` at the repository root for the full mapping.
 
 ## Extra pages and the ?page= parameter
 
