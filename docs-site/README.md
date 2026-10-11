@@ -13,6 +13,83 @@ Curious how this page turns a README into a website? See
 [How this site is built](?page=about/how-it-works.md) and the
 [project ideas](?page=about/project-ideas.md) behind it.
 
+Want to try a snippet without leaving the browser? Open the
+[playground](playground.html) — an editor with X syntax highlighting and
+code suggestions on the left, live output on the right. The same interpreter
+you run with `x run` executes in WebAssembly inside a Web Worker, so nothing
+is sent to a server.
+
+## Browser playground (WebAssembly)
+
+The [playground](playground.html) runs the **real** X interpreter in your
+browser. There is no second implementation and no code generation step that
+turns X into JavaScript.
+
+### Technologies
+
+| Piece | Role |
+| --- | --- |
+| **Pyodide** | CPython (the same language family as the `xlang` interpreter) compiled to **WebAssembly**. Vendored under `docs-site/playground/pyodide/`. |
+| **Pure-Python wheel** | `docs-site/playground/wheels/x_language-*.whl` — a packaging of the `xlang/` package. Installed into Pyodide with **micropip**. |
+| **ES-module Web Worker** | `docs-site/playground/worker.js` loads Pyodide off the main thread so an infinite loop can be terminated without freezing the tab. It must be spawned as a **module** worker (`{ type: "module" }`) — Pyodide ≥ 314 rejects classic workers that use `importScripts`. |
+| **CodeMirror 5** | Editor: X mode, auto-close brackets/quotes (`(` → `()`), bracket colours (guides off by default), autocomplete. Matching brackets are underline/bold only — no bar or outline. CodeMirror + addons are **vendored** under `docs-site/playground/codemirror/` (no CDN). |
+| **Completions** | **Ctrl+Space** (or as you type): keywords, types, builtins, snippets **plus names declared in the current buffer** (variables, parameters, functions, classes/interfaces/enums, imports). After `.` the member list is picked from the receiver’s inferred type (`let s = "hi"` → string methods, `let xs = [1]` → list methods). Static catalog: `playground/completions.js`; declared-name scan: `collectDeclarations` in `playground.js`. |
+| **`xlang.playground`** | Thin API (`run_files`, `run_source`, `format_file`) that the worker calls via `pyodide.runPython`. It always runs with the interpreter’s default feature set — language features are configured through `x.toml` for the CLI, not toggled in the browser. |
+
+### How interpreter changes reach WASM
+
+Pyodide’s `.wasm` binary is **CPython** — it does not change when you edit
+`xlang/`. The language implementation is plain Python shipped as a wheel:
+
+```
+xlang/**/*.py  ──build.py──▶  wheels/x_language-*.whl  ──micropip──▶  Pyodide (WASM)
+```
+
+After changing anything under `xlang/`:
+
+```sh
+x playground           # rebuild the wheel once
+x playground-watch     # rebuild automatically on every xlang/ edit
+x playground-check     # exit 1 if the wheel is stale (CI)
+```
+
+Or: `.venv/bin/python docs-site/playground/build.py [--watch|--check]`.
+
+The build fingerprints `xlang/**` + `pyproject.toml`, writes the fingerprint
+into `wheels/manifest.json`, and the worker loads the wheel with
+`?v=<fingerprint>` so a browser reload always fetches the new interpreter.
+
+### Multi-file projects, format, layout
+
+- Up to **5 files** under the `playground/` virtual folder (entry is
+  `main.x`). `import util.greet` in `main.x` loads `util.x`, same as the CLI.
+- **Format** (or **Ctrl+S**) runs `x format` / `xlang.formatter.format_source`
+  on the active file inside the worker.
+- Drag the vertical splitter between the editor and the output pane.
+- Code and file layout persist in `localStorage`.
+- The strip under the output pane is reserved for **fatal errors** (WASM
+  boot failure, worker crash). Ordinary program errors stay in the
+  `#errors` box above it.
+
+Network and OS threads are not available inside the sandbox, so
+`System.io.Network` and thread demos will not run in the browser.
+
+### Serving the playground locally
+
+The playground is plain static files, but it **must be served over HTTP**: the
+worker `fetch`es the Pyodide runtime and the interpreter wheel and is loaded as
+an ES module, neither of which works from a `file://` URL. Serve the repository
+root with any static server:
+
+```sh
+python3 -m http.server 8080
+```
+
+Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
+`http://127.0.0.1:8080/docs-site/playground.html`. The site itself needs no
+build; only the interpreter wheel has to be rebuilt with `x playground` after
+`xlang/` changes.
+
 ## Setup
 
 Create and activate the virtual environment, then install the local package:
@@ -89,7 +166,51 @@ feature values in TOML. The supported features are `access_modifiers`,
 `spread`, `static_methods`, `switch`, `threads`, `type_checker`, and
 `unions`. They all default to enabled. The experimental `url_imports`,
 `package_manager`, and `strict_typing` features are also supported but
-default to disabled.
+default to disabled. The `primitive_aliases` feature is also **off by
+default**; enabling it makes built-in type spellings case-insensitive (see
+[Type names are case-sensitive by default](#type-names-are-case-sensitive-by-default)).
+
+### Turning language features on and off
+
+Feature flags are a core part of the language: every optional syntax and
+standard-library area is gated by a boolean in `[features]`, so a project can
+restrict itself to exactly the subset it needs. Disabling a feature makes its
+syntax a **compile-time** diagnostic, reported before any statement executes.
+
+```toml
+[features]
+classes = false
+pattern_matching = false
+primitive_aliases = true
+```
+
+Resolution runs in three layers, later ones winning:
+
+1. **Interpreter defaults** (the values the WASM playground and a bare
+   `x run` use): most features are on; the experimental `url_imports`,
+   `package_manager` and `strict_typing` are off, as is `primitive_aliases`.
+2. **`[features]` in `x.toml`**, discovered upward from the working directory
+   (or the source file's directory), overrides those defaults.
+3. **`--feature NAME=on|off`** on the command line overrides TOML. Repeat the
+   flag for several features; it applies to `run`, `check`, `build`, `repl`,
+   and `format`.
+
+Values must be TOML booleans (`true` / `false`). An unknown feature name
+fails with the list of supported features, and a program that uses a disabled
+feature is stopped with a diagnostic naming the feature:
+
+```text
+error: Language feature 'classes' is disabled in x.toml
+ --> main.x:1:1
+  |
+1 | class Point {
+  | ^^^^^ Language feature 'classes' is disabled in x.toml
+```
+
+`--no-config` ignores `x.toml` entirely (defaults only) and
+`--config path/to/file.toml` selects a specific file, so a single project can
+keep several feature profiles. The browser playground is intentionally not a
+place to toggle features: it always runs the interpreter's default set.
 
 The repository's [x.toml](./x.toml) demonstrates the schema:
 
@@ -223,7 +344,8 @@ print(n);
 
 `let` binds a variable, `const` binds one that cannot be reassigned. Both
 take an optional type before the name; leave it out and the type is
-inferred from the value.
+inferred from the value. The TypeScript-style colon form
+(`let count: integer = 3;`, `const region: string = "eu";`) is accepted too.
 
 ```x variables.x
 function main() {
@@ -281,9 +403,58 @@ interfaces describe method contracts (see [Interfaces](#interfaces)).
 The full rules for annotated values live in
 [Runtime types and typed objects](#runtime-types-and-typed-objects).
 
-### any vs var
+### Type names are case-sensitive by default
 
- `any` and `var` are two spellings of the same escape hatch. The checker
+Built-in type spellings are **case-sensitive**. By default you must write the
+canonical lowercase primitive names — `string`, `object`, `integer`, `float`,
+`boolean`, `char`, `byte`, `float`, `any`, `var` — and lowercasing a class name
+is not accepted. (`Object` and `Function` are the two long-standing capitals
+that are still accepted as aliases of `object` and `function`.)
+
+Enable the `primitive_aliases` feature to match built-in type names
+case-insensitively, so `String`, `Integer`, `OBJECT`, `Boolean`, `Double`,
+`Char`, `Any` and friends all resolve to their canonical lowercase type. Set
+it in `x.toml`:
+
+```toml
+[features]
+primitive_aliases = true
+```
+
+or pass `--feature primitive_aliases=on` on the command line. The rewrite is
+purely a spelling convenience: the checker canonicalises the name before
+comparison, and runtime overload/catch matching folds it too.
+
+- Only **built-in** primitive/alias spellings are folded. User-defined
+  classes, interfaces, enums, type aliases and generic parameters keep their
+  exact casing — a class named `Palette` is still `Palette`, and `palette`
+  is still unknown.
+- With the feature **off** (the default), `String` is rejected with
+  `Unknown type 'String'` and a `did you mean `string`?` suggestion.
+
+```x primitive-aliases.x
+function describe(String text) {
+    return "text:" + text;
+}
+function describe(Integer count) {
+    return "count:" + count;
+}
+function main() {
+    let Object<String, Integer> sizes = { small: 1, large: 2 };
+    print(describe("s"), describe(2));
+    print(sizes.small, sizes.large);
+}
+```
+
+```output
+text:s count:2
+1 2
+```
+
+The example requires `primitive_aliases = true` in `x.toml` (or
+`--feature primitive_aliases=on`).
+
+### any vs var The checker
 maps both to one `any` type — diagnostics print `any` for either spelling —
 and both are accepted in every annotation position: locals, parameters,
 fields, return types, arrays (`any[]` / `var[]`), and nullable forms
@@ -2104,6 +2275,42 @@ Annotations come **before** the variable name (`let Point p = ...`). The
 checker knows the alias and reports `Unknown type 'profile'` for a type it
 does not have — an object literal is not automatically a type name.
 
+A type alias is exportable and importable like any other declaration, so a
+project can keep its types in one file and use them elsewhere (see
+[`examples/settings_types/`](./examples/settings_types/)). A union of string
+literals pins a type to a fixed set of values, and the generic object form
+`object<K, V>` names the key and value types:
+
+<!-- verify: skip -->
+```x
+// settings_types.x
+export type SettingsKey = "theme" | "backup_interval_min" | "last_backup_at";
+
+export const object<SettingsKey, string> DEFAULT_SETTINGS = {
+    theme: "system",
+    backup_interval_min: "0",
+    last_backup_at: "0"
+};
+```
+
+A string that is not one of the literal members is rejected, and so is a plain
+`string` value: the compiler only accepts a value it can see is a member.
+
+<!-- verify: skip -->
+```x
+// main.x
+import settings_types.{SettingsKey, DEFAULT_SETTINGS}
+
+function main() {
+    let SettingsKey key = "theme";
+    print(DEFAULT_SETTINGS[key]); // system
+}
+```
+
+Annotations normally come **before** the name, but the TypeScript-style colon
+form is also accepted for variables and fields: `let SettingsKey key = "theme";`
+may be written `let key: SettingsKey = "theme";`.
+
 ## Project module imports
 
 Each named import first resolves to a source file beside the importing file;
@@ -2138,6 +2345,12 @@ function main() {
     print(greeting.message());
 }
 ```
+
+The `export` keyword marks a declaration as public. It may prefix the
+declaration — `export type`, `export const`, `export let`, `export function`,
+`export class`, `export enum` — or be written as a bulk list,
+`export { name, other as alias };`, which also exports variables. A file cannot
+re-export a name it only imported; declare it in the file where it is used.
 
 Grouped imports are also supported:
 
@@ -2466,8 +2679,9 @@ For a dictionary whose keys and values are both strings, write
 `let object<string, string> user = ...`; the key and value types are checked
 when the value is created or assigned, passed to a typed parameter, or
 mutated. This generic object type describes key/value types, not a fixed set
-of named properties. X does not currently support TypeScript's
-`let user: object<string, string>` annotation syntax.
+of named properties. The TypeScript-style colon form
+(`let user: object<string, string> = ...`) is also accepted for variables and
+fields.
 
 Run the complete sample with:
 
@@ -3757,6 +3971,7 @@ examples/
 ├── namespaces/nested_classes.x
 ├── objects/destructuring.x
 ├── pattern_matching/match.x
+├── settings_types/main.x
 └── payment_project/main.x
 ```
 
@@ -3770,9 +3985,19 @@ x run examples/filesystem_async_demo.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x
 x run examples/pattern_matching/match.x
+x run examples/settings_types/main.x
 x run examples/payment_project/main.x
 x run --profile feature-tour examples/configuration/configured_args.x
 ```
+
+The [`examples/settings_types/`](./examples/settings_types/) project declares
+types in one file, imports them into a second, and uses them from a third — the
+X equivalent of a TypeScript `export type`/`export const` settings module. The
+shared key type is a union of string literals (`type SettingsKey = "theme" |
+"backup_interval_min" | "last_backup_at"`), the defaults object uses the
+`object<SettingsKey, string>` form, and the middle file exposes a generic
+lookup, `lookup<KeyT, ValueT>(object<KeyT, ValueT> store, KeyT key)`, next to
+the concrete settings helpers.
 
 The [`examples/dsa/`](./examples/dsa/README.md) folder contains 20 standalone
 algorithm demonstrations grouped by common interview patterns, including
@@ -3856,7 +4081,9 @@ Implemented and currently demonstrated features:
       `print` evaluates any number of arguments and separates their string forms
       with spaces.
 - [x] `let` variables, `const` constants, inferred and explicit variable types,
-      `int` as an alias for `integer`, array literals/indexing, JavaScript-like
+      `int` as an alias for `integer` (built-in type spellings are
+      case-sensitive; the optional `primitive_aliases` feature makes them
+      case-insensitive), array literals/indexing, JavaScript-like
       object literals, array/object destructuring declarations and assignments,
       defaults, rest properties, and object spread.
 - [x] `delete(target)` removes an object key _and_ its value, splices out an
@@ -3904,8 +4131,10 @@ of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
       array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
       statements, record type aliases (`type Point = record { int x; int y; };`),
-      array `.push(...)`, bulk `export { ... };` lists, and typed `input()`
-      validation when `enhanced_input` is enabled.
+      string-literal union type aliases (`type SettingsKey = "theme" | "backup";`)
+      with value checking, the TypeScript-style colon annotation
+      (`let n: integer = 1;`), array `.push(...)`, bulk `export { ... };` lists,
+      and typed `input()` validation when `enhanced_input` is enabled.
 - [x] `try`/`catch`/`finally` and `throw`.
 - [x] Automatic statement terminators at line breaks, closing braces, and EOF.
 - [x] JavaScript-like `==` coercion for supported primitive values and strict
