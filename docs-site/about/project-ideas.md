@@ -28,8 +28,10 @@ What this documentation project set out to do, and what could come next.
 
 - **Search** across the rendered README (build a heading + text index client
   side, no server).
-- **A playground** that sends an example to a local `x run` endpoint (or a
-  WASM build) so readers can edit and run blocks in place.
+- **Playground polish** — the first version shipped as
+  [`playground.html`](playground.html) (CodeMirror editor + Pyodide/WASM
+  worker). Next: shareable URLs for snippets, multi-file projects, and
+  per-example **Run** buttons wired to the same worker.
 - **Version switcher** for docs of released language versions.
 - **Diff view** for examples that changed between releases.
 - **`x doc serve`** — a toolchain command that starts a static server on
