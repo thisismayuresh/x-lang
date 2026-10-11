@@ -4,6 +4,20 @@ This repository is the X language prototype: a Python interpreter (`xlang/`),
 CLI (`x`), examples, and a static docs site (`docs-site/`) with a browser
 playground that runs the real interpreter in WebAssembly (Pyodide).
 
+## Privacy and fabricated details
+
+The user may fabricate or alter personal details — account names, repository
+names, URLs, hostnames, tokens in logs — purely to protect their privacy.
+Treat user-supplied identifiers as illustrative: a mismatch between what they
+say and what you can observe is expected, not something to "correct". Do not
+go hunting for the user's real accounts or identity to reconcile it; take the
+details they give at face value and work with those.
+
+Never access, collect, infer, or expose the user's personal data. Do not look
+up personal accounts, profiles, emails, or other identifying information. If a
+task genuinely needs personal data, ask for explicit permission first and use
+only what the user provides.
+
 ## Always verify interpreter changes
 
 Two checks are **mandatory whenever anything under `xlang/` changes** — treat a
@@ -81,6 +95,15 @@ python3 -m http.server 8080
 # http://127.0.0.1:8080/docs-site/
 # http://127.0.0.1:8080/docs-site/playground.html
 ```
+
+## Committing and pushing
+
+**Never commit or push changes unless the user explicitly asks you to.** The
+user wants to review the file changes first. Leave your edits uncommitted in
+the working tree and stop — do not stage, commit, amend, or push on your own
+initiative. When the user does ask for a commit, follow the conventions they
+state (for example one logical change per commit and conventional commit
+messages).
 
 ## What “done” means
 
