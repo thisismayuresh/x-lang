@@ -82,7 +82,49 @@ feature values in TOML. The supported features are `access_modifiers`,
 `spread`, `static_methods`, `switch`, `threads`, `type_checker`, and
 `unions`. They all default to enabled. The experimental `url_imports`,
 `package_manager`, and `strict_typing` features are also supported but
-default to disabled.
+default to disabled. `primitive_aliases` is also off by default; enabling it
+makes built-in type spellings case-insensitive (`String` → `string`).
+
+### Turning language features on and off
+
+Feature flags are a core part of the language: every optional syntax and
+standard-library area is gated by a boolean in `[features]`, so a project can
+restrict itself to exactly the subset it needs. Disabling a feature makes its
+syntax a **compile-time** diagnostic, reported before any statement executes.
+
+```toml
+[features]
+classes = false
+pattern_matching = false
+primitive_aliases = true
+```
+
+Resolution runs in three layers, later ones winning:
+
+1. **Interpreter defaults**: most features are on; the experimental
+   `url_imports`, `package_manager` and `strict_typing` are off, as is
+   `primitive_aliases`.
+2. **`[features]` in `x.toml`**, discovered upward from the working directory
+   (or the source file's directory), overrides those defaults.
+3. **`--feature NAME=on|off`** on the command line overrides TOML. Repeat the
+   flag for several features; it applies to `run`, `check`, `build`, `repl`,
+   and `format`.
+
+Values must be TOML booleans (`true` / `false`). An unknown feature name
+fails with the list of supported features, and a program that uses a disabled
+feature is stopped with a diagnostic naming the feature:
+
+```text
+error: Language feature 'classes' is disabled in x.toml
+ --> main.x:1:1
+  |
+1 | class Point {
+  | ^^^^^ Language feature 'classes' is disabled in x.toml
+```
+
+`--no-config` ignores `x.toml` entirely (defaults only) and
+`--config path/to/file.toml` selects a specific file, so a single project can
+keep several feature profiles.
 
 The repository's [x.toml](./x.toml) demonstrates the schema:
 
@@ -171,7 +213,9 @@ Implemented and currently demonstrated features:
   `print` evaluates any number of arguments and separates their string forms
   with spaces.
 - [x] `let` variables, `const` constants, inferred and explicit variable types,
-  `int` as an alias for `integer`, array literals/indexing, JavaScript-like
+  `int` as an alias for `integer` (built-in type spellings are case-sensitive;
+  the optional `primitive_aliases` feature makes them case-insensitive),
+  array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
   defaults, rest properties, and object spread.
 - [x] `delete(target)` removes an object key *and* its value, splices out an
@@ -219,8 +263,12 @@ Implemented and currently demonstrated features:
   array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
   statements, record type aliases (`type Point = record { int x; int y; };`),
-  array `.push(...)`, bulk `export { ... };` lists, and typed `input()`
-  validation when `enhanced_input` is enabled.
+  string-literal union type aliases (`type SettingsKey = "theme" | "backup";`)
+  with value checking, the TypeScript-style colon annotation
+  (`let n: integer = 1;`), array `.push(...)`, an `export` prefix on
+  declarations (`export type`, `export const`, `export let`, `export function`,
+  `export class`, `export enum`), bulk `export { ... };` lists, and typed
+  `input()` validation when `enhanced_input` is enabled.
 - [x] `try`/`catch`/`finally` and `throw`.
 - [x] Automatic statement terminators at line breaks, closing braces, and EOF.
 - [x] JavaScript-like `==` coercion for supported primitive values and strict
@@ -377,8 +425,10 @@ For a dictionary whose keys and values are both strings, write
 `let object<string, string> user = ...`; the key and value types are checked
 when the value is created or assigned, passed to a typed parameter, or
 mutated. This generic object type describes key/value types, not a fixed set
-of named properties. X does not currently support TypeScript's
-`let user: object<string, string>` annotation syntax.
+of named properties. The TypeScript-style colon form
+(`let user: object<string, string> = ...`) is also accepted for variables and
+fields, and a union of string literals (`type SettingsKey = "theme" |
+"backup";`) pins the value to its members.
 
 Run the complete sample with:
 
@@ -534,6 +584,13 @@ function main() {
     print(greeting.message());
 }
 ```
+
+`export` marks a declaration as public. It may prefix the declaration —
+`export type`, `export const`, `export let`, `export function`, `export class`,
+`export enum` — or be a bulk list, `export { name, other as alias };`, which
+also exports variables. A file cannot re-export a name it only imported. The
+[settings types example](./examples/settings_types/) declares types in one file,
+imports them into a second, and uses them from a third.
 
 Grouped imports are also supported:
 
@@ -2356,6 +2413,23 @@ Python's worker-thread executor. `Thread.start` instead creates a dedicated
 `threading.Thread` handle. Both concurrency APIs are prototype runtime
 facilities, not a static concurrency or memory-safety model.
 
+## Documentation site and browser playground
+
+`docs-site/` is a static website (no build step) whose playground runs the
+**real** interpreter compiled to WebAssembly through Pyodide. Because the
+playground `fetch`es the Pyodide runtime and the interpreter wheel and loads a
+module Web Worker, it must be served over **HTTP** — opening the files with
+`file://` will not work. Serve the repository root with any static server:
+
+```sh
+python3 -m http.server 8080
+```
+
+Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
+`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build;
+after changing anything under `xlang/`, rebuild the wheel the playground loads
+with `x playground` (verify with `x playground-check`).
+
 ## Tests
 
 There are two test suites: the interpreter test suite under `tests/`, and the
@@ -2435,6 +2509,7 @@ examples/
 ├── namespaces/nested_classes.x
 ├── objects/destructuring.x
 ├── pattern_matching/match.x
+├── settings_types/main.x
 └── payment_project/main.x
 ```
 
@@ -2448,9 +2523,19 @@ x run examples/filesystem_async_demo.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x
 x run examples/pattern_matching/match.x
+x run examples/settings_types/main.x
 x run examples/payment_project/main.x
 x run --profile feature-tour examples/configuration/configured_args.x
 ```
+
+The [`examples/settings_types/`](./examples/settings_types/) project declares
+types in one file, imports them into a second, and uses them from a third — the
+X equivalent of a TypeScript `export type`/`export const` settings module. The
+shared key type is a union of string literals (`type SettingsKey = "theme" |
+"backup_interval_min" | "last_backup_at"`), the defaults object uses the
+`object<SettingsKey, string>` form, and the middle file exposes a generic
+lookup, `lookup<KeyT, ValueT>(object<KeyT, ValueT> store, KeyT key)`, next to
+the concrete settings helpers.
 
 The [`examples/dsa/`](./examples/dsa/README.md) folder contains 20 standalone
 algorithm demonstrations grouped by common interview patterns, including
