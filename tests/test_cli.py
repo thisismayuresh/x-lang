@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from xlang.cli import main
-from xlang.config import ConfigError, discover_config, load_config
+from xlang.config import FEATURE_DEFAULTS, ConfigError, discover_config, load_config
 
 
 class CommandLineTests(unittest.TestCase):
@@ -724,6 +724,18 @@ class CommandLineTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ConfigError, "Unknown key"):
                 load_config(config_path)
+
+    def test_primitive_aliases_feature_defaults_to_off(self):
+        self.assertIs(FEATURE_DEFAULTS["primitive_aliases"], False)
+        config = load_config(None)
+        self.assertFalse(config.enabled("primitive_aliases"))
+        config_path = None
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "x.toml"
+            config_path.write_text(
+                "[features]\nprimitive_aliases = true\n", encoding="utf-8"
+            )
+            self.assertTrue(load_config(config_path).enabled("primitive_aliases"))
 
     def test_config_discovery_walks_up_from_nested_project_directories(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
