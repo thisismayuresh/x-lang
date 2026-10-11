@@ -2430,6 +2430,13 @@ Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
 after changing anything under `xlang/`, rebuild the wheel the playground loads
 with `x playground` (verify with `x playground-check`).
 
+The site is published to GitHub Pages by
+`.github/workflows/deploy-docs.yml`, which uploads `docs-site/` as the Pages
+artifact. GitHub Pages' branch-based picker only offers `/` or `/docs`, so
+`docs-site/` is not selectable there — the Actions deploy is what ships the
+folder and its WebAssembly playground. Enable it once under **Settings → Pages
+→ Source = GitHub Actions**.
+
 ## Tests
 
 There are two test suites: the interpreter test suite under `tests/`, and the
