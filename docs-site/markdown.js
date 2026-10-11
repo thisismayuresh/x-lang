@@ -48,6 +48,11 @@
         if (url.charAt(0) === "/") {
             return ".." + url;
         }
+        // Sibling pages inside docs-site/ (playground.html, …) stay put;
+        // repository-relative paths still climb out of the site folder.
+        if (/^[^./][^:]*\.html?$/i.test(url)) {
+            return url;
+        }
         return "../" + url.replace(/^\.\//, "");
     }
 
