@@ -264,7 +264,9 @@ class Parser:
         if self._check("let") or self._check("const"):
             if decorators:
                 raise ParseError("Variable decorators are not implemented yet", self._peek())
-            declaration = self._variable_declaration(require_semicolon=True)
+            declaration = self._variable_declaration(
+                require_semicolon=True, modifiers=modifiers
+            )
             return declaration
         if modifiers:
             raise ParseError("Expected a declaration after modifiers", self._peek())
@@ -739,7 +741,9 @@ class Parser:
         self,
         require_semicolon: bool,
         allow_uninitialized: bool = False,
+        modifiers: set[str] | None = None,
     ) -> VariableDeclaration:
+        modifiers = set(modifiers) if modifiers else set()
         constant = self._match("const")
         if not constant:
             self._consume("let", "Expected 'let' or 'const'")
@@ -754,7 +758,12 @@ class Parser:
             if require_semicolon:
                 self._consume_statement_terminator("Expected ';' after variable declaration")
             return VariableDeclaration(
-                "", None, initializer, constant=constant, pattern=pattern
+                "",
+                None,
+                initializer,
+                constant=constant,
+                modifiers=modifiers,
+                pattern=pattern,
             )
         if self._is_record_type_start():
             record_type = self._record_type()
@@ -770,11 +779,29 @@ class Parser:
                 self._consume_statement_terminator(
                     "Expected ';' after variable declaration"
                 )
-            return VariableDeclaration(name, record_type, initializer, constant)
+            return VariableDeclaration(name, record_type, initializer, constant, modifiers)
         first = self._consume(
             "IDENTIFIER" if not self._check("function") else "function",
             "Expected variable name or type",
         )
+        if self._check(":"):
+            self._advance()
+            type_name = self._parse_type()
+            name = first.value
+            initializer = self._expression() if self._match("=") else None
+            if initializer is None and not allow_uninitialized:
+                raise ParseError(
+                    "A variable without a type needs an initial value",
+                    self._peek(),
+                    self.source_name,
+                )
+            if require_semicolon:
+                self._consume_statement_terminator(
+                    "Expected ';' after variable declaration"
+                )
+            return VariableDeclaration(
+                name, type_name, initializer, constant, modifiers
+            )
         type_suffix = ""
         type_name_parts = [first.value]
         while self._match("."):
@@ -811,7 +838,7 @@ class Parser:
             raise ParseError("A variable without a type needs an initial value", self._peek())
         if require_semicolon:
             self._consume_statement_terminator("Expected ';' after variable declaration")
-        return VariableDeclaration(name, type_name, initializer, constant)
+        return VariableDeclaration(name, type_name, initializer, constant, modifiers)
 
     def _binding_pattern(self) -> Any:
         self._require_feature("destructuring", self._peek())
@@ -1795,6 +1822,10 @@ class Parser:
             type_name = "Function"
         elif self._is_record_type_start():
             type_name = self._record_type()
+        elif self._check("STRING"):
+            token = self._advance()
+            escaped = str(token.value).replace("\\", "\\\\").replace('"', '\\"')
+            type_name = f'"{escaped}"'
         else:
             type_name = self._qualified_name()
             if self._match("<"):
