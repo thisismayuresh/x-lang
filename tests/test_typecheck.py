@@ -263,6 +263,79 @@ class TypeCheckCliTests(unittest.TestCase):
             """
         )
 
+    def test_check_accepts_string_literal_union_member(self):
+        self.assertClean(
+            """
+            type SettingsKey = "theme" | "backup";
+            function main() {
+                let SettingsKey key = "theme";
+                print(key);
+            }
+            """
+        )
+
+    def test_check_rejects_string_literal_union_nonmember(self):
+        self.assertTypeError(
+            """
+            type SettingsKey = "theme" | "backup";
+            function main() {
+                let SettingsKey key = "nope";
+                print(key);
+            }
+            """,
+            'Cannot assign \'string\' to \'key\' of type \'("theme"|"backup")\'',
+        )
+
+    def test_check_rejects_plain_string_for_literal_union(self):
+        self.assertTypeError(
+            """
+            type SettingsKey = "theme" | "backup";
+            function main() {
+                let string raw = "theme";
+                let SettingsKey key = raw;
+                print(key);
+            }
+            """,
+            'Cannot assign \'string\' to \'key\' of type \'("theme"|"backup")\'',
+        )
+
+    def test_check_accepts_literal_union_argument(self):
+        self.assertClean(
+            """
+            type SettingsKey = "theme" | "backup";
+            string function describe(SettingsKey key) {
+                return key;
+            }
+            function main() {
+                print(describe("backup"));
+            }
+            """
+        )
+
+    def test_check_object_with_literal_key_type(self):
+        self.assertClean(
+            """
+            type SettingsKey = "theme" | "backup";
+            export const object<SettingsKey, string> DEFAULT_SETTINGS = {
+                theme: "system",
+                backup: "0"
+            };
+            function main() {
+                print(DEFAULT_SETTINGS.theme);
+            }
+            """
+        )
+
+    def test_check_colon_annotation(self):
+        self.assertClean(
+            """
+            function main() {
+                let count: integer = 3;
+                print(count);
+            }
+            """
+        )
+
     def test_check_reports_division_by_zero_outside_try(self):
         self.assertTypeError(
             """
@@ -867,6 +940,252 @@ class StrictTypingCliTests(unittest.TestCase):
         self.assertIn(f"{source_path}: syntax is valid", output)
         self.assertIn(f"{source_path}: types are valid", output)
         self.assertEqual(errors, "")
+
+
+class PrimitiveAliasCaseTests(unittest.TestCase):
+    """The ``primitive_aliases`` feature makes built-in type spellings
+    case-insensitive (``String``/``INTEGER``/``Object`` → ``string``/…).
+
+    It is **off by default**: capitalized spellings like ``String`` are unknown
+    types unless the feature is enabled, by ``x.toml`` or ``--feature``.
+    """
+
+    def run_cli(self, arguments):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            return_code = main(arguments)
+        return return_code, output.getvalue(), errors.getvalue()
+
+    def check_source(self, source, *extra):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(dedent(source), encoding="utf-8")
+            return self.run_cli(
+                ["check", "--no-config", "--color", "never", *extra, str(source_file)]
+            )
+
+    def run_source(self, source, *extra):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_file = Path(temporary_directory) / "main.x"
+            source_file.write_text(dedent(source), encoding="utf-8")
+            return self.run_cli(
+                ["run", "--no-config", "--color", "never", *extra, str(source_file)]
+            )
+
+    # -- defaults ---------------------------------------------------------
+
+    def test_lowercase_primitives_remain_accepted(self):
+        return_code, output, errors = self.check_source(
+            """
+            integer function add(integer a, integer b) {
+                return a + b;
+            }
+            function main() {
+                let string name = "x";
+                let object<string, integer> counts = { a: 1 };
+                print(add(1, 2), name, counts);
+            }
+            """
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+        self.assertEqual(errors, "")
+
+    def test_capitalized_builtin_types_are_unknown_by_default(self):
+        for spelling in (
+            "String",
+            "Integer",
+            "Int",
+            "Float",
+            "Double",
+            "Number",
+            "Boolean",
+            "Bool",
+            "Char",
+            "Byte",
+            "Any",
+        ):
+            return_code, output, errors = self.check_source(
+                f"function probe({spelling} value) {{}}\n"
+            )
+            self.assertEqual(return_code, 1, f"{spelling}: {output}{errors}")
+            self.assertIn(f"Unknown type '{spelling}'", errors, spelling)
+
+    def test_unknown_type_suggestion_is_lowercase(self):
+        return_code, _, errors = self.check_source(
+            "function probe(String value) {}\n"
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("did you mean `string`?", errors)
+
+    # -- enabled by CLI flag ---------------------------------------------
+
+    def test_feature_flag_accepts_capitalized_builtin_types(self):
+        for spelling in (
+            "String",
+            "Integer",
+            "Int",
+            "Float",
+            "Double",
+            "Number",
+            "Boolean",
+            "Bool",
+            "Char",
+            "Byte",
+            "Any",
+            "OBJECT",
+        ):
+            return_code, output, errors = self.check_source(
+                f"function probe({spelling} value) {{}}\n",
+                "--feature",
+                "primitive_aliases=on",
+            )
+            self.assertEqual(return_code, 0, f"{spelling}: {output}{errors}")
+            self.assertIn("types are valid", output, spelling)
+
+    def test_any_case_matches_are_canonicalised(self):
+        return_code, output, errors = self.check_source(
+            """
+            STRING function shout(INTEGER times) {
+                return "x";
+            }
+            function main() {
+                let sTRing name = "hi";
+                let oBject<string, integer> counts = { a: 1 };
+                print(shout(2), name, counts);
+            }
+            """,
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 0, errors)
+
+    def test_generic_arguments_are_case_insensitive_when_enabled(self):
+        return_code, output, errors = self.check_source(
+            "function probe(List<String> names) {}\n",
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 0, errors)
+
+    def test_generic_arguments_rejected_by_default(self):
+        return_code, _, errors = self.check_source(
+            "function probe(List<String> names) {}\n"
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("Unknown type 'String'", errors)
+
+    # -- runtime ----------------------------------------------------------
+
+    def test_overload_resolution_matches_capitalized_types_at_runtime(self):
+        return_code, output, errors = self.run_source(
+            """
+            function describe(String text) {
+                return "S:" + text;
+            }
+            function describe(Integer count) {
+                return "I:" + count;
+            }
+            function main() {
+                print(describe("x"), describe(3));
+            }
+            main();
+            """,
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertEqual(output, "S:x I:3\n")
+
+    def test_capitalized_annotations_run_end_to_end(self):
+        return_code, output, errors = self.run_source(
+            """
+            Object<STRING, INTEGER> function counts() {
+                return { a: 1, b: 2 };
+            }
+            function main() {
+                let Int total = 0;
+                let Boolean okay = true;
+                print(counts(), total, okay);
+            }
+            main();
+            """,
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("true", output)
+
+    # -- interaction with user types -------------------------------------
+
+    def test_user_types_are_not_case_folded(self):
+        return_code, _, errors = self.check_source(
+            """
+            class Widget {}
+            function probe(widget value) {}
+            """,
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("Unknown type 'widget'", errors)
+
+    def test_user_type_with_capitalized_name_still_resolves(self):
+        return_code, output, errors = self.check_source(
+            """
+            class Palette {}
+            function probe(Palette value) {}
+            """,
+            "--feature",
+            "primitive_aliases=on",
+        )
+        self.assertEqual(return_code, 0, errors)
+
+    # -- configuration ----------------------------------------------------
+
+    def test_feature_enabled_from_config_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            config_path = project_root / "x.toml"
+            config_path.write_text(
+                "[features]\nprimitive_aliases = true\n", encoding="utf-8"
+            )
+            source_file = project_root / "main.x"
+            source_file.write_text(
+                "function probe(String value) {}\n", encoding="utf-8"
+            )
+            return_code, output, errors = self.run_cli(
+                ["check", "--config", str(config_path), "--color", "never", str(source_file)]
+            )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+
+    def test_cli_flag_overrides_config_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            config_path = project_root / "x.toml"
+            config_path.write_text(
+                "[features]\nprimitive_aliases = true\n", encoding="utf-8"
+            )
+            source_file = project_root / "main.x"
+            source_file.write_text(
+                "function probe(String value) {}\n", encoding="utf-8"
+            )
+            return_code, output, errors = self.run_cli(
+                [
+                    "check",
+                    "--config",
+                    str(config_path),
+                    "--feature",
+                    "primitive_aliases=off",
+                    "--color",
+                    "never",
+                    str(source_file),
+                ]
+            )
+        self.assertEqual(return_code, 1, output)
+        self.assertIn("Unknown type 'String'", errors)
 
 
 if __name__ == "__main__":
