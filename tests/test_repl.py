@@ -1,8 +1,10 @@
 """Tests for the ``x repl`` interactive session."""
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from xlang.config import XConfig
+from xlang.config import XConfig, load_config
 from xlang.repl import run_repl
 
 
@@ -142,6 +144,86 @@ class ReplSessionTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 3)
         self.assertTrue(any("process exited with code 3" in line for line in output))
+
+    def test_exit_call_with_code_stops_the_session_with_its_code(self):
+        exit_code, output, errors = run_session(
+            [
+                "1 + 1",
+                "exit(3)",
+                "2 + 2",
+            ]
+        )
+
+        self.assertEqual(exit_code, 3)
+        self.assertTrue(any("process exited with code 3" in line for line in output))
+        self.assertNotIn("4", output)
+
+    def test_quit_call_with_code_stops_the_session_with_its_code(self):
+        exit_code, output, errors = run_session(["quit(2)"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertTrue(any("process exited with code 2" in line for line in output))
+
+    def test_exit_call_defers_to_a_user_defined_exit(self):
+        exit_code, output, errors = run_session(
+            [
+                "function exit(int code) { return code * 2; }",
+                "exit(3)",
+            ]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(errors, [])
+        self.assertIn("6", output)
+        self.assertFalse(any("process exited" in line for line in output))
+
+    def test_env_file_and_run_environment_are_loaded_for_the_session(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "x.toml").write_text(
+                '[cli]\ncolor = "never"\n'
+                "[run.environment]\nX_REPL_TOML_ENV = \"toml-value\"\n",
+                encoding="utf-8",
+            )
+            (project_root / ".env").write_text(
+                "X_REPL_DOTENV_ENV=dotenv-value\n",
+                encoding="utf-8",
+            )
+            config = load_config(project_root / "x.toml")
+
+            exit_code, output, errors = run_session(
+                [
+                    "System.process.Environment.X_REPL_DOTENV_ENV",
+                    "System.process.Environment.X_REPL_TOML_ENV",
+                    ".exit",
+                ],
+                config=config,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(errors, [])
+        self.assertIn("dotenv-value", output)
+        self.assertIn("toml-value", output)
+
+    def test_malformed_env_file_reports_and_the_session_still_starts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "x.toml").write_text(
+                '[cli]\ncolor = "never"\n', encoding="utf-8"
+            )
+            (project_root / ".env").write_text(
+                "BROKEN LINE\n", encoding="utf-8"
+            )
+            config = load_config(project_root / "x.toml")
+
+            exit_code, output, errors = run_session(
+                ["1 + 1", ".exit"],
+                config=config,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("2", output)
+        self.assertTrue(any(".env" in line for line in errors))
 
     def test_main_is_never_invoked_by_the_session(self):
         exit_code, output, errors = run_session(

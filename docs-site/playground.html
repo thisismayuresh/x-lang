@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>X playground</title>
+    <link rel="icon" href="data:,">
+    <meta name="description" content="Try the X programming language in your browser. Multi-file editor with format, live output. The interpreter runs as WebAssembly via Pyodide.">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="playground/playground.css">
+    <link rel="stylesheet" href="playground/codemirror/codemirror.min.css">
+    <link rel="stylesheet" href="playground/codemirror/addon/hint/show-hint.min.css">
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem("x-docs-theme");
+                if (theme === "dark" || theme === "light") {
+                    document.documentElement.setAttribute("data-theme", theme);
+                }
+            } catch (error) { /* private mode */ }
+        })();
+    </script>
+</head>
+<body class="playground-body">
+
+<header class="topbar">
+    <a class="topbar-title" href="./">X <span class="version">playground</span></a>
+    <div class="playground-toolbar">
+        <label class="run-hint" for="examples">Example</label>
+        <select id="examples" aria-label="Load an example program">
+            <option value="" selected>Examples…</option>
+        </select>
+        <button class="run-btn" id="run" type="button" disabled>Run</button>
+        <button class="theme-toggle" id="format" type="button" title="Format the active file (canonical X style)">Format</button>
+        <button class="theme-toggle" id="theme-toggle" type="button">Dark mode</button>
+        <button class="theme-toggle" id="reset" type="button">Reset</button>
+        <span class="run-hint" id="run-status" data-tone="busy" role="status">Starting…</span>
+    </div>
+    <span class="topbar-spacer"></span>
+    <a class="topbar-link" href="./">Docs</a>
+</header>
+
+<main class="playground-main" id="playground-main">
+    <section class="playground-pane pane-editor" aria-label="Editor">
+        <div class="file-bar" id="file-bar" role="tablist" aria-label="Project files"></div>
+        <div class="pane-head">
+            <span>Editor — <span id="active-file-name">main.x</span></span>
+            <span class="run-hint">Ctrl+Enter run · Ctrl+S format · Ctrl+Space hints</span>
+        </div>
+        <div class="pane-body editor-wrap">
+            <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
+        </div>
+    </section>
+
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"
+         aria-label="Resize editor and output" title="Drag to resize"></div>
+
+    <section class="playground-pane pane-output" aria-label="Output">
+        <div class="pane-head">
+            <span>Output</span>
+        </div>
+        <div class="pane-body">
+            <pre class="output-body" id="output" aria-live="polite"></pre>
+            <pre class="errors-body" id="errors" aria-live="polite"></pre>
+        </div>
+        <div class="playground-fatal" id="fatal-bar" role="alert" hidden></div>
+    </section>
+</main>
+
+<script src="playground/codemirror/codemirror.min.js"></script>
+<script src="playground/codemirror/addon/edit/close-brackets.min.js"></script>
+<script src="playground/codemirror/addon/edit/matchbrackets.min.js"></script>
+<script src="playground/codemirror/addon/selection/active-line.min.js"></script>
+<script src="playground/codemirror/addon/hint/show-hint.min.js"></script>
+<script src="playground/x-mode.js"></script>
+<script src="playground/bracket-guides.js"></script>
+<script src="playground/completions.js"></script>
+<script src="playground/examples.js"></script>
+<script src="playground/playground.js"></script>
+</body>
+</html>

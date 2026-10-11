@@ -34,6 +34,7 @@
 - bulk_export
 - array_push
 - command_input
+- primitive_aliases
 - strict_typing
 - enhanced_input
 

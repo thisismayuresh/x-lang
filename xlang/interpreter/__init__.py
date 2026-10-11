@@ -2855,6 +2855,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         handle.thread.join(timeout)
         if handle.thread.is_alive():
             return None
+        if handle.exit_stop is not None:
+            raise handle.exit_stop
         if handle.error is not None:
             # Convert Python exceptions to X language errors to avoid exposing implementation details
             error_message = str(handle.error)
@@ -2946,8 +2948,21 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return argument_count >= required_count
         return required_count <= argument_count <= len(parameters)
 
+    def _fold_primitive_type_name(self, type_name: str) -> str:
+        from ..typecheck.types import canonical_primitive_alias
+
+        base, separator, rest = type_name.partition("<")
+        canonical = canonical_primitive_alias(base.strip())
+        if canonical is None:
+            return type_name
+        return canonical + (separator + rest if separator else "")
+
     def _type_match_score(self, type_name: str | None, value: Any) -> int | None:
-        if type_name is None or type_name == "var":
+        if type_name is None:
+            return 0
+        if self.config.enabled("primitive_aliases"):
+            type_name = self._fold_primitive_type_name(type_name)
+        if type_name == "var":
             return 0
         if type_name.casefold() == "any":
             return 1
@@ -2955,6 +2970,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             if value is None or value is UNDEFINED:
                 return 3
             type_name = type_name[:-1]
+            if self.config.enabled("primitive_aliases"):
+                type_name = self._fold_primitive_type_name(type_name)
         if value is UNDEFINED:
             return 1 if type_name in ("undefined", "Object", "object") else None
         if value is None:

@@ -7,7 +7,10 @@ environment so definitions survive from one entry to the next.
 
 from __future__ import annotations
 
+import os
+import re
 import sys
+from pathlib import Path
 from typing import Any, Callable
 
 from .ast_nodes import (
@@ -16,7 +19,7 @@ from .ast_nodes import (
     ImportNamespaceAlias,
     Program,
 )
-from .config import XConfig
+from .config import ConfigError, XConfig, load_env_file
 from .lexer import LexError, Lexer
 from .parser import ParseError, Parser
 from .runtime import Interpreter, RuntimeErrorX
@@ -34,6 +37,7 @@ HELP_TEXT = """\
 REPL commands:
   .help, .?   show this help
   .exit       leave the REPL (.quit, exit, quit and Ctrl-D also work)
+  exit(code)  leave with that process exit status; quit(code) also works
 
 An entry continues onto the next line while brackets are still open, so
 functions, classes and blocks can be typed over several lines.  Expressions
@@ -49,6 +53,9 @@ _BINDING_ATTRIBUTES = (
 )
 
 _DOT_COMMANDS = {".help", ".?"}
+
+#: ``exit(3)`` / ``quit(0)`` typed at the prompt route to ``System.process.exit``.
+_EXIT_CALL_PATTERN = re.compile(r"(exit|quit)\s*\((.*)\)")
 
 
 def run_repl(
@@ -78,6 +85,7 @@ def run_repl(
         config=config,
         validate=False,
         auto_call_main=False,
+        environment=_session_environment(config, error_output),
     )
     history: list[str] = []
     buffer: list[str] = []
@@ -104,7 +112,13 @@ def run_repl(
                 stripped
             ) is None:
                 return 0
-            if not stripped:
+            exit_call = _EXIT_CALL_PATTERN.fullmatch(stripped)
+            if (
+                exit_call is not None
+                and interpreter.globals.values.get(exit_call.group(1)) is None
+            ):
+                line = f"System.process.exit({exit_call.group(2)})"
+            if not line.strip():
                 continue
 
         buffer.append(line)
@@ -122,6 +136,40 @@ def run_repl(
         )
         if exit_code is not None:
             return exit_code
+
+
+def _session_environment(
+    config: XConfig, error_output: Callable[[str], None]
+) -> dict[str, str]:
+    """Environment values for a REPL session, mirroring ``x run`` ordering.
+
+    Operating-system variables beat ``.env`` keys, a project-root ``.env``
+    beats one in the current directory, and ``[run.environment]`` from
+    ``x.toml`` overrides both.  A malformed ``.env`` is reported and skipped
+    so the session still starts.
+    """
+    dotenv_environment: dict[str, str] = {}
+    directories = [Path.cwd()]
+    if config.path is not None and config.path.parent not in directories:
+        directories.append(config.path.parent)
+    for directory in directories:
+        env_file = directory / ".env"
+        if not env_file.is_file():
+            continue
+        try:
+            values = load_env_file(env_file)
+        except ConfigError as error:
+            location = error.path
+            if error.line is not None:
+                suffix = f":{error.line}:{error.column or 1}"
+                location = f"{location}{suffix}"
+            error_output(f"error: {location}: {error.message}")
+            continue
+        for key, value in values.items():
+            if key not in os.environ:
+                dotenv_environment[key] = value
+    dotenv_environment.update(config.environment)
+    return dotenv_environment
 
 
 def _evaluate_program(

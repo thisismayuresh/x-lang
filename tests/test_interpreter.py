@@ -1165,6 +1165,23 @@ line three`);
         self.assertIsNone(result)
         self.assertEqual(output, ["42", "false", "42"])
 
+    def test_exit_inside_worker_thread_stops_the_process_on_join(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.run_x("""
+                import System.concurrent.Thread
+
+                function bail() {
+                    System.process.exit(7);
+                }
+
+                function main() {
+                    let ThreadHandle worker = Thread.start(bail);
+                    worker.join();
+                    print("unreachable");
+                }
+                """)
+        self.assertEqual(caught.exception.code, 7)
+
     def test_new_runs_constructor_and_super_calls_parent_constructor(self):
         result, output = self.run_x("""
             class Parent {

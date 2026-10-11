@@ -1090,6 +1090,25 @@ integer | string function parse(string value) {
 }
 ```
 
+A union may also be built from string literals, pinning the type to a fixed
+set of values:
+
+```
+type SettingsKey = "theme" | "backup_interval_min" | "last_backup_at";
+```
+
+A value assigned to a string-literal union must be one of its members; a plain
+`string` is rejected because the checker cannot prove it is a member. The key
+type is normally used with the generic object form, and variables and fields
+may use the TypeScript-style colon annotation as well as the type-before-name
+order:
+
+```
+export const object<SettingsKey, string> DEFAULT_SETTINGS = {
+    theme: "system"
+};
+```
+
 ---
 
 # 41\. Nullable Types
@@ -3718,7 +3737,11 @@ promising all ECMAScript, TypeScript, Java, or Rust semantics.
 ### A.9.1 Integer alias and automatic statement termination
 
 `int` and `integer` are accepted as numeric type names and receive the same
-runtime overload score. A statement may omit `;` when the next token begins on
+runtime overload score. Type names are otherwise case-sensitive: `String`,
+`Integer` and `OBJECT` are unknown by default. The `primitive_aliases` feature
+(off by default) makes built-in type spellings case-insensitive, canonicalising
+`String` → `string`, `INTEGER` → `integer`, `Object` → `object`, and so on;
+user-defined types and generic parameters are never folded. A statement may omit `;` when the next token begins on
 a later source line, when the next token is `}`, or at EOF. Semicolons are
 still required between the clauses of a classic `for` loop. This is a
 statement-boundary rule, not a full ECMAScript ASI implementation. In

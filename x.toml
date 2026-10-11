@@ -4,6 +4,9 @@ color = "auto"
 
 [features]
 strict_typing = false
+# Allow capitalized/any-case spellings of built-in type names (String,
+# INTEGER, Object, ...). Off by default: lowercase is required.
+primitive_aliases = false
 
 [run]
 args = []
@@ -36,3 +39,9 @@ default = [
 # so it can be anything: 'x --watch run main.x', 'npm test', etc.
 [scripts]
 dev = "x --watch format"
+# Rebuild the docs-site playground wheel from the current xlang/ sources.
+playground = ".venv/bin/python docs-site/playground/build.py"
+# Same, but keep rebuilding whenever the interpreter changes.
+playground-watch = ".venv/bin/python docs-site/playground/build.py --watch"
+# Exit non-zero if the playground wheel is stale vs xlang/.
+playground-check = ".venv/bin/python docs-site/playground/build.py --check"

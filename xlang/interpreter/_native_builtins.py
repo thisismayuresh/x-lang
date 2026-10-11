@@ -349,6 +349,10 @@ class NativeBuiltins:
                 if inspect.isawaitable(thread_result):
                     thread_result = asyncio.run(self._await_result(thread_result))
                 handle.result_value = thread_result
+            except SystemExit as stop:
+                # Python threads discard SystemExit without a trace; record it
+                # so the joining thread can continue the process exit.
+                handle.exit_stop = stop
             except Exception as error:
                 handle.error = error
 

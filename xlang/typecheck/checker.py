@@ -70,6 +70,7 @@ from .types import (
     TypeScope,
     XType,
     _strip_array,
+    canonical_primitive_alias,
     is_compatible,
     parse_type,
     split_union,
@@ -619,8 +620,8 @@ class TypeChecker:
                 self._error(self._void_return_message(), declaration)
                 return
             expected = self._expected_return
-            if expected is not None and not is_compatible(
-                actual, expected, relations=self
+            if expected is not None and not self._value_matches(
+                declaration.value, actual, expected
             ):
                 self._error(
                     f"Return type '{actual.display()}' is not compatible with "
@@ -642,7 +643,7 @@ class TypeChecker:
                 annotated = self._resolve_annotation(binding.type_name)
                 if binding.value is not None:
                     actual = self._infer(binding.value, body_scope)
-                    if not is_compatible(actual, annotated, relations=self):
+                    if not self._value_matches(binding.value, actual, annotated):
                         self._error(
                             f"Cannot assign '{actual.display()}' to "
                             f"'{binding.name}' of type '{annotated.display()}'",
@@ -1108,7 +1109,7 @@ class TypeChecker:
         assigned = declaration.initializer is not None or force_assigned
         if declaration.initializer is not None:
             actual = self._infer(declaration.initializer, scope)
-            if not is_compatible(actual, annotated, relations=self):
+            if not self._value_matches(declaration.initializer, actual, annotated):
                 self._error(
                     f"Cannot assign '{actual.display()}' to '{declaration.name}' "
                     f"of type '{annotated.display()}'",
@@ -1131,6 +1132,9 @@ class TypeChecker:
     # Type resolution
     # ------------------------------------------------------------------
 
+    def _primitive_aliases_enabled(self) -> bool:
+        return self._config is not None and self._config.enabled("primitive_aliases")
+
     def _resolve_annotation(
         self,
         type_name: str | None,
@@ -1149,6 +1153,8 @@ class TypeChecker:
         self, type_value: XType, generics: set[str], seen: set[str]
     ) -> XType:
         if type_value.is_any:
+            return type_value
+        if type_value.literal is not None:
             return type_value
         if type_value.union_parts:
             return XType(
@@ -1220,6 +1226,19 @@ class TypeChecker:
                 is_any=type_value.is_any,
                 dimensions=type_value.dimensions,
             )
+        if self._primitive_aliases_enabled():
+            canonical = canonical_primitive_alias(name)
+            if canonical is not None:
+                return XType(
+                    canonical,
+                    arguments,
+                    is_array=type_value.is_array,
+                    is_nullable=type_value.is_nullable,
+                    union_parts=type_value.union_parts,
+                    record_fields=fields,
+                    is_any=canonical == "any" or type_value.is_any,
+                    dimensions=type_value.dimensions,
+                )
         return ANY
 
     def _signature_type(
@@ -1557,7 +1576,9 @@ class TypeChecker:
                         ],
                     )
                 elif expression.operator == "=":
-                    if not is_compatible(value_type, target_type, relations=self):
+                    if not self._value_matches(
+                        expression.value, value_type, target_type
+                    ):
                         self._error(
                             f"Cannot assign '{value_type.display()}' to "
                             f"'{target.name}' of type '{target_type.display()}'",
@@ -1582,7 +1603,9 @@ class TypeChecker:
             self._infer(target.index, scope)
             if container.is_array:
                 element = _strip_array(container)
-                if not is_compatible(value_type, element, relations=self):
+                if not self._value_matches(
+                    expression.value, value_type, element
+                ):
                     self._error(
                         f"Cannot assign '{value_type.display()}' to array element "
                         f"of type '{element.display()}'",
@@ -1640,7 +1663,7 @@ class TypeChecker:
                 return
             self._check_visibility(found, owner, target, kind="field", verb="modify")
             field_type = self._resolve_annotation(found.type_name)
-            if not is_compatible(value_type, field_type, relations=self):
+            if not self._value_matches(node.value, value_type, field_type):
                 self._error(
                     f"Cannot assign '{value_type.display()}' to "
                     f"'{owner}.{target.name}' of type '{field_type.display()}'",
@@ -1654,7 +1677,7 @@ class TypeChecker:
         if object_type.record_fields:
             for field_name, field_type in object_type.record_fields:
                 if field_name == target.name:
-                    if not is_compatible(value_type, field_type, relations=self):
+                    if not self._value_matches(node.value, value_type, field_type):
                         self._error(
                             f"Cannot assign '{value_type.display()}' to "
                             f"'{target.name}' of type '{field_type.display()}'",
@@ -1933,6 +1956,46 @@ class TypeChecker:
             return STRING
         return ANY
 
+    @staticmethod
+    def _string_literal_type(expression: Any) -> XType | None:
+        """Return the literal-string type for a string literal, else ``None``."""
+        if isinstance(expression, Literal) and isinstance(expression.value, str):
+            return XType("string", literal=expression.value)
+        return None
+
+    @staticmethod
+    def _references_literal(type_value: XType) -> bool:
+        """Whether an annotation contains any string-literal member."""
+        if type_value.literal is not None:
+            return True
+        if any(TypeChecker._references_literal(part) for part in type_value.union_parts):
+            return True
+        if any(TypeChecker._references_literal(arg) for arg in type_value.arguments):
+            return True
+        if any(
+            TypeChecker._references_literal(field_type)
+            for _, field_type in type_value.record_fields
+        ):
+            return True
+        return False
+
+    def _value_matches(
+        self,
+        expression: Any,
+        inferred: XType,
+        target: XType,
+    ) -> bool:
+        """Compatibility for a concrete expression against *target*.
+
+        When the target names string-literal members, a literal expression is
+        compared by value (``"theme"`` only fits ``"theme"``); otherwise the
+        inferred type is used as before.
+        """
+        literal = self._string_literal_type(expression)
+        if literal is not None and self._references_literal(target):
+            return is_compatible(literal, target, relations=self)
+        return is_compatible(inferred, target, relations=self)
+
     # ------------------------------------------------------------------
     # Overload resolution
     # ------------------------------------------------------------------
@@ -1964,7 +2027,11 @@ class TypeChecker:
                 else list(declaration.generic_parameters or [])
             )
             failures = self._argument_failures(
-                declaration, argument_types, generic_parameters, explicit
+                declaration,
+                argument_types,
+                generic_parameters,
+                explicit,
+                getattr(node, "arguments", []),
             )
             if not failures:
                 return self._signature_type(
@@ -1997,7 +2064,17 @@ class TypeChecker:
             expected = self._signature_type(
                 parameter.type_name, generic_parameters, explicit
             )
-            if not is_compatible(actual, expected, relations=self):
+            expression = (
+                node.arguments[index]
+                if index < len(getattr(node, "arguments", []))
+                else None
+            )
+            matched = (
+                self._value_matches(expression, actual, expected)
+                if expression is not None
+                else is_compatible(actual, expected, relations=self)
+            )
+            if not matched:
                 self._error(
                     f"Argument {index + 1} of '{name}' has type "
                     f"'{actual.display()}', expected '{expected.display()}'",
@@ -2011,8 +2088,10 @@ class TypeChecker:
         argument_types: list[XType],
         generic_parameters: list[str],
         explicit: list[XType],
+        arguments: list[Any] | None = None,
     ) -> list[int]:
         failures: list[int] = []
+        arguments = arguments or []
         for index, actual in enumerate(argument_types):
             parameter = self._parameter_for(declaration, index)
             if parameter is None:
@@ -2021,7 +2100,13 @@ class TypeChecker:
             expected = self._signature_type(
                 parameter.type_name, generic_parameters, explicit
             )
-            if not is_compatible(actual, expected, relations=self):
+            expression = arguments[index] if index < len(arguments) else None
+            matched = (
+                self._value_matches(expression, actual, expected)
+                if expression is not None
+                else is_compatible(actual, expected, relations=self)
+            )
+            if not matched:
                 failures.append(index)
         return failures
 
@@ -2389,6 +2474,8 @@ class TypeChecker:
                 candidate = candidate[:-2].strip()
             if not candidate:
                 continue
+            if len(candidate) >= 2 and candidate[0] == '"' and candidate[-1] == '"':
+                continue
             if candidate.startswith("record"):
                 remainder = candidate[len("record"):].lstrip()
                 if remainder.startswith("{"):
@@ -2423,6 +2510,11 @@ class TypeChecker:
                 stack.append(current)
                 continue
             if candidate in known:
+                continue
+            if (
+                self._primitive_aliases_enabled()
+                and canonical_primitive_alias(candidate) is not None
+            ):
                 continue
             # Exception-hierarchy paths are exact: a typo'd intermediate
             # segment would otherwise fall through to the leaf-name rule

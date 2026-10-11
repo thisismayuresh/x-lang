@@ -62,11 +62,15 @@ x help
 - Commands listed in the `[scripts]` table of `x.toml` run with `x <name>`,
   similar to `pnpm start` and package.json scripts.
 - The process exit code is taken from an integer returned by `main`; a `void`
-  or inferred-void `main` returns success.
+  or inferred-void `main` returns success. `System.process.exit(code)` stops
+  immediately with that status from anywhere — in the REPL, `exit(code)` and
+  `quit(code)` do the same. Inside a thread the exit takes effect when the
+  thread handle is joined.
 
 ## Project configuration
 
-The CLI discovers `x.toml` in the current directory by default. Pass
+The CLI discovers `x.toml` in the current directory by default, falling back
+to the source file's directory when the current directory has none. Pass
 `--config path/to/file.toml` to select another file, or `--no-config` to
 disable discovery. Command-line `--feature NAME=on|off` settings override
 feature values in TOML. The supported features are `access_modifiers`,
@@ -78,7 +82,49 @@ feature values in TOML. The supported features are `access_modifiers`,
 `spread`, `static_methods`, `switch`, `threads`, `type_checker`, and
 `unions`. They all default to enabled. The experimental `url_imports`,
 `package_manager`, and `strict_typing` features are also supported but
-default to disabled.
+default to disabled. `primitive_aliases` is also off by default; enabling it
+makes built-in type spellings case-insensitive (`String` → `string`).
+
+### Turning language features on and off
+
+Feature flags are a core part of the language: every optional syntax and
+standard-library area is gated by a boolean in `[features]`, so a project can
+restrict itself to exactly the subset it needs. Disabling a feature makes its
+syntax a **compile-time** diagnostic, reported before any statement executes.
+
+```toml
+[features]
+classes = false
+pattern_matching = false
+primitive_aliases = true
+```
+
+Resolution runs in three layers, later ones winning:
+
+1. **Interpreter defaults**: most features are on; the experimental
+   `url_imports`, `package_manager` and `strict_typing` are off, as is
+   `primitive_aliases`.
+2. **`[features]` in `x.toml`**, discovered upward from the working directory
+   (or the source file's directory), overrides those defaults.
+3. **`--feature NAME=on|off`** on the command line overrides TOML. Repeat the
+   flag for several features; it applies to `run`, `check`, `build`, `repl`,
+   and `format`.
+
+Values must be TOML booleans (`true` / `false`). An unknown feature name
+fails with the list of supported features, and a program that uses a disabled
+feature is stopped with a diagnostic naming the feature:
+
+```text
+error: Language feature 'classes' is disabled in x.toml
+ --> main.x:1:1
+  |
+1 | class Point {
+  | ^^^^^ Language feature 'classes' is disabled in x.toml
+```
+
+`--no-config` ignores `x.toml` entirely (defaults only) and
+`--config path/to/file.toml` selects a specific file, so a single project can
+keep several feature profiles.
 
 The repository's [x.toml](./x.toml) demonstrates the schema:
 
@@ -142,7 +188,10 @@ x run examples/configuration/configured_args.x
 Read values directly as `System.process.Environment.VARIABLE_NAME`; no import or
 `get()` call is needed. `.env` assignments support `KEY=VALUE`, optional
 `export`, blank lines, full-line comments, and single- or double-quoted values.
-The file is not loaded for `check` or `build`. Existing operating-system
+The file is not loaded for `check` or `build`. When the script lives outside
+the config root, `x run` also reads a `.env` next to the script, and those
+values win over the project-root file; `x repl` loads the same files for the
+session. Existing operating-system
 variables take precedence over matching `.env` values; TOML run environment
 settings and then the selected profile override both. `.env` is ignored by
 Git, so keep credentials and machine-specific values there, never in the
@@ -164,7 +213,9 @@ Implemented and currently demonstrated features:
   `print` evaluates any number of arguments and separates their string forms
   with spaces.
 - [x] `let` variables, `const` constants, inferred and explicit variable types,
-  `int` as an alias for `integer`, array literals/indexing, JavaScript-like
+  `int` as an alias for `integer` (built-in type spellings are case-sensitive;
+  the optional `primitive_aliases` feature makes them case-insensitive),
+  array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
   defaults, rest properties, and object spread.
 - [x] `delete(target)` removes an object key *and* its value, splices out an
@@ -197,7 +248,9 @@ Implemented and currently demonstrated features:
   extended.
 - [x] Function, class, constructor, and method decorators. The built-in `@trace`
   decorator logs calls/construction; custom decorators can transform a
-  function or class by returning the target they receive.
+  function or class by returning the target they receive. The accepted forms
+  and how to write your own are documented in
+  [Decorators](#decorators).
 - [x] Enums with implicit ordinal values, valid at module, class, function, and
   nested block scope.
 - [x] Arithmetic, comparison, equality, logical, assignment, and increment/
@@ -210,8 +263,12 @@ Implemented and currently demonstrated features:
   array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
   statements, record type aliases (`type Point = record { int x; int y; };`),
-  array `.push(...)`, bulk `export { ... };` lists, and typed `input()`
-  validation when `enhanced_input` is enabled.
+  string-literal union type aliases (`type SettingsKey = "theme" | "backup";`)
+  with value checking, the TypeScript-style colon annotation
+  (`let n: integer = 1;`), array `.push(...)`, an `export` prefix on
+  declarations (`export type`, `export const`, `export let`, `export function`,
+  `export class`, `export enum`), bulk `export { ... };` lists, and typed
+  `input()` validation when `enhanced_input` is enabled.
 - [x] `try`/`catch`/`finally` and `throw`.
 - [x] Automatic statement terminators at line breaks, closing braces, and EOF.
 - [x] JavaScript-like `==` coercion for supported primitive values and strict
@@ -290,6 +347,48 @@ by the single line `x: found 2 type error(s)`. The excerpt is dropped by
 `--color never`, or `NO_COLOR` control whether the block carries ANSI
 colours.
 
+## The any and var annotations
+
+ `any` and `var` are two spellings of the same escape hatch. The checker
+maps both to one `any` type — diagnostics print `any` for either spelling —
+and both are accepted in every annotation position: locals, parameters,
+fields, return types, arrays (`any[]` / `var[]`), and nullable forms
+(`any?` / `var?`).
+
+```x any-vs-var.x
+function store(any value) {
+    return typeOf(value);
+}
+
+function main() {
+    let var a = null;   // null leaves the variable open
+    let any b;          // no initializer: stays any
+    a = 5;
+    a = "text";
+    b = true;
+    b = [1, 2];
+    print(typeOf(a), typeOf(b));
+    print(store(42), store("s"));
+}
+```
+
+```output
+string Array
+number string
+```
+
+One sharp edge applies to **both**: a local initialized with a concrete,
+non-null value narrows to that type for every later assignment —
+`let var x = 5; x = "text";` fails with
+`Cannot assign 'string' to 'x' of type 'integer'`. Declare the local
+without an initializer, or start it from `null`, to keep it fully dynamic.
+Parameters and fields are never narrowed: a `var`/`any` parameter or field
+accepts every value you store through it.
+
+They are interchangeable everywhere — `var` reads like "variable of any
+type", `any` matches the TypeScript habit. Pick one and use it consistently;
+internally there is no other difference.
+
 ## Runtime types and typed objects
 
 `typeOf(value)` is a built-in and needs no import. It returns JavaScript-style
@@ -326,8 +425,10 @@ For a dictionary whose keys and values are both strings, write
 `let object<string, string> user = ...`; the key and value types are checked
 when the value is created or assigned, passed to a typed parameter, or
 mutated. This generic object type describes key/value types, not a fixed set
-of named properties. X does not currently support TypeScript's
-`let user: object<string, string>` annotation syntax.
+of named properties. The TypeScript-style colon form
+(`let user: object<string, string> = ...`) is also accepted for variables and
+fields, and a union of string literals (`type SettingsKey = "theme" |
+"backup";`) pins the value to its members.
 
 Run the complete sample with:
 
@@ -483,6 +584,13 @@ function main() {
     print(greeting.message());
 }
 ```
+
+`export` marks a declaration as public. It may prefix the declaration —
+`export type`, `export const`, `export let`, `export function`, `export class`,
+`export enum` — or be a bulk list, `export { name, other as alias };`, which
+also exports variables. A file cannot re-export a name it only imported. The
+[settings types example](./examples/settings_types/) declares types in one file,
+imports them into a second, and uses them from a third.
 
 Grouped imports are also supported:
 
@@ -1634,6 +1742,319 @@ Typed arrays validate their elements when initialized or passed to a typed
 parameter. Their element type is also enforced by indexed writes and `add()`;
 for example, `integer[] values = [1, 2, "name"]` reports the invalid string.
 
+## Decorators
+
+Decorators attach behaviour to a function, class, constructor, or method.
+Write `@` and a decorator expression directly above the declaration; the
+`decorators` feature (enabled by default) turns them on. Four syntactic forms
+are accepted, from a plain lower-case name to a parametrised call on a nested
+member path:
+
+```x
+function mydecorator(var target) {
+    return target;
+}
+
+function Mydecorator(var target) {
+    return target;
+}
+
+function MyDecorator() {
+    return (target) => target;
+}
+
+@mydecorator                    // 1. lower-case, no parentheses
+function greet() {
+    return "hi";
+}
+
+@Mydecorator                    // 2. capitalised, no parentheses
+function save() {
+    return "saved";
+}
+
+@MyDecorator()                  // 3. with parentheses
+function sync() {
+    return 1;
+}
+
+function main() {
+    print(greet());
+    print(save());
+    print(sync());
+}
+```
+
+```x
+function load_test_cases() {
+    return ["a", "b"];
+}
+
+class MyDecorator {
+    static var foo = {bar: {parametrizedDecorator: (name, cases) => (target) => target}};
+}
+
+@MyDecorator.foo.bar.parametrizedDecorator("case", load_test_cases())  // 4. dotted path + arguments
+function demo() {
+    return 0;
+}
+
+function main() {
+    print(demo());
+}
+```
+
+The grammar behind those shapes:
+
+- `@name` — a bare identifier. Capitalisation is purely a naming choice; X is
+  case-sensitive, so the spelling must match a declaration in scope.
+- `@a.b.c.name` — a dotted member chain. Each segment is an identifier.
+- `@decorator(...)` — at most one argument list. Arguments are ordinary
+  expressions (literals, arrays, dictionaries, and calls such as
+  `load_test_cases()`) evaluated **once when the declaration runs** — that is,
+  at program load, before `main` starts. `@dec()()` (two argument lists) is a
+  parse error.
+
+### What a custom decorator must do
+
+A decorator is an ordinary function that receives the decorated declaration
+and **must return the replacement**. Returning anything that is not a
+function (or a class, for class decorators) fails when the declaration loads:
+
+```x
+function identity(var target) {
+    return target;
+}
+
+@identity
+function twice(integer n) {
+    return n * 2;
+}
+
+function main() {
+    print(twice(21)); // 42
+}
+```
+
+For a function, method, or constructor the return value must be a function
+(`Decorator for 'f' must return a function`); for a class it must be a class
+(`Decorator for class 'Thing' must return a class`). A decorator without a
+`return` produces the same error because it returns `null`.
+
+### Wrapping the original
+
+To change what the decorated function does, return an arrow function that
+closes over the value you received (X has no anonymous `function`
+expressions, so arrows are the tool for wrappers):
+
+```x
+function logged(var target) {
+    return (a, b) => {
+        print("calling add(" + a + ", " + b + ")");
+        return target(a, b);
+    };
+}
+
+@logged
+function add(integer a, integer b) {
+    return a + b;
+}
+
+function main() {
+    print(add(2, 3)); // calling add(2, 3) then 5
+}
+```
+
+### Parametrised decorators (factories)
+
+`@dec(args...)` evaluates `dec(args...)` first and uses whatever it returns
+as the decorator. A function that returns the real decorator is therefore a
+factory — and because arguments are evaluated at load time, the factory runs
+once, before `main`:
+
+```x
+function load_test_cases() {
+    return ["login", "checkout"];
+}
+
+function suite(string name, string[] cases) {
+    return (target) => {
+        print("running " + name + " (" + cases.length + " cases)");
+        return target;
+    };
+}
+
+@suite("smoke", load_test_cases())
+function example() {
+    return "ok";
+}
+
+function main() {
+    print(example()); // running smoke (2 cases), then ok
+}
+```
+
+### Dotted paths
+
+The chain can resolve through static class fields, static class methods, and
+namespace members. Class fields need an explicit type — use `var` for
+dictionaries — and class methods need an explicit return type. This is the
+full parametrised form:
+
+```x
+function load_test_cases() {
+    return ["a", "b"];
+}
+
+class MyDecorator {
+    static var foo = {bar: {parametrizedDecorator: (name, cases) => (target) => {
+        print("suite " + name + " with " + cases.length + " cases");
+        return target;
+    }}};
+}
+
+@MyDecorator.foo.bar.parametrizedDecorator("case", load_test_cases())
+function demo() {
+    return 0;
+}
+
+function main() {
+    print(demo()); // suite case with 2 cases, then 0
+}
+```
+
+Namespaces work the same way:
+
+```x
+namespace Suite {
+    function parametrized(string name) {
+        return (target) => {
+            print("checking " + name);
+            return target;
+        };
+    }
+}
+
+@Suite.parametrized("case")
+function demo() {
+    return 0;
+}
+
+function main() {
+    print(demo()); // checking case, then 0
+}
+```
+
+### Placement
+
+Decorators may appear above a top-level `function` (including `async`
+functions), above a `class`, and above methods and constructors inside a
+class — the decorator line comes before `public`, `static`, and the other
+modifiers:
+
+```x
+function deco(var target) {
+    return target;
+}
+
+class Widget {
+    @deco
+    public Widget() {}
+
+    @deco
+    public integer count() {
+        return 1;
+    }
+
+    @deco
+    static integer total() {
+        return 2;
+    }
+}
+
+function main() {
+    print(new Widget().count()); // 1
+    print(Widget.total());       // 2
+}
+```
+
+Enums, type aliases, and variables do not accept decorators and raise a
+parse error such as `Enum decorators are not implemented yet` or
+`Variable decorators are not implemented yet`.
+
+### Stacking
+
+Several decorators may stack; they are applied bottom-up, so the one closest
+to the declaration runs first:
+
+```x
+function audit(var target) {
+    print("audit applies");
+    return target;
+}
+
+function memoize(var target) {
+    print("memoize applies");
+    return target;
+}
+
+@audit
+@memoize
+function compute() {
+    return 42;
+}
+
+function main() {
+    print(compute());
+    // memoize applies
+    // audit applies
+    // 42
+}
+```
+
+### The built-in `@trace`
+
+With the `decorators` feature enabled, `trace` is predefined: it flags a
+function so every call logs `Calling <name>`, and flags a class so every
+construction logs `Constructing <name>`:
+
+```x
+@trace
+function greet() {
+    return "hello";
+}
+
+@trace
+class Greeter {
+    public Greeter() {}
+}
+
+function main() {
+    print(greet()); // Calling greet, hello
+    let g = new Greeter(); // Constructing Greeter
+    print("built");
+}
+```
+
+Common mistakes and the exact failures they produce:
+
+- Decorator name not in scope — `Name 'nope' is not defined`.
+- Using a plain function where a factory is needed (`@Logged()` with
+  `function Logged(var target)`) — `No overload of 'Logged' accepts 0
+  argument(s)`.
+- Forgetting to return the target — `Decorator for 'f' must return a
+  function` or `Decorator for class 'Thing' must return a class`.
+- Decorating an enum or a variable — a parse error, see Placement above.
+
+A larger, fully commented example combining factories with arguments,
+stateful `memoize` caching, validation guards, multi-argument wrappers,
+load-time side effects, and stacking order lives in
+[`examples/decorators/complex.x`](./examples/decorators/complex.x):
+
+```sh
+x run examples/decorators/complex.x
+```
+
 ## Strings, templates, and print
 
 Single- and double-quoted strings remain single-line strings. Backticks create
@@ -1658,6 +2079,233 @@ Run the complete example with:
 
 ```sh
 x run examples/templates_and_print.x
+```
+
+## Loops
+
+Three loop forms plus the iterating pair. `break` leaves the nearest loop,
+`continue` starts the next iteration.
+
+```x loops.x
+function main() {
+    for (let i = 0; i < 3; i = i + 1) {
+        print("tick", i);
+    }
+
+    let remaining = 2;
+    while (remaining > 0) {
+        print("wait", remaining);
+        remaining = remaining - 1;
+    }
+
+    for (let step of ["start", "stop"]) {
+        print(step);
+    }
+}
+```
+
+```output
+tick 0
+tick 1
+tick 2
+wait 2
+wait 1
+start
+stop
+```
+
+`do ... while` runs the body at least once; `for ... in` walks an object's
+keys, an array's elements, or a range's values:
+
+```x iteration.x
+function main() {
+    let integer n = 0;
+    do {
+        print("do", n);
+        n = n + 1;
+    } while (n < 2);
+
+    for (let k in {a: 1, b: 2}) {
+        print("in", k);
+    }
+
+    for (let v in ["x", "y"]) {
+        print("v", v);
+    }
+}
+```
+
+```output
+do 0
+do 1
+in a
+in b
+v x
+v y
+```
+
+`range(start, end, step)` is an end-exclusive range you can iterate — it
+prints as `range(0, 5)` because it is a lazy sequence, not an array:
+
+```x range.x
+function main() {
+    print(range(0, 5));
+    for (let i of range(0, 6, 2)) {
+        print("r", i);
+    }
+}
+```
+
+```output
+range(0, 5)
+r 0
+r 2
+r 4
+```
+
+Because `for ... in` over an object walks a snapshot of the keys, deleting
+inside the loop is safe.
+
+`for ... in` works the same way over a range — it yields the values:
+
+```x for-in-range.x
+function main() {
+    for (let i in range(0, 3)) {
+        print("in", i);
+    }
+}
+```
+
+```output
+in 0
+in 1
+in 2
+```
+
+`break` leaves the nearest loop early and `continue` skips to the next
+iteration:
+
+```x break-continue.x
+function main() {
+    for (let i = 0; i < 5; i = i + 1) {
+        if (i == 2) {
+            continue;
+        }
+        if (i == 4) {
+            break;
+        }
+        print("i", i);
+    }
+
+    let integer first = -1;
+    for (let n of range(1, 100)) {
+        if (n > 10) {
+            first = n;
+            break;
+        }
+    }
+    print(first);
+}
+```
+
+```output
+i 0
+i 1
+i 3
+11
+```
+
+## Switch statements
+
+`switch` runs case bodies starting from the first `case` whose value equals
+the scrutinee, then continues through every following body to the closing
+brace. Each body is a block — `case` and `default` require `{ ... }`:
+
+```x
+function main() {
+    let integer code = 2;
+    switch (code) {
+        case 1: {
+            print("one");
+        }
+        case 2: {
+            print("two");
+        }
+        default: {
+            print("other");
+        }
+    }
+    print("after");
+}
+// two
+// other
+// after
+```
+
+The rules, each covered by the regression corpus:
+
+- Scanning is **positional**: execution starts at the first matching `case`,
+  or at `default` when `default` appears first. A `default` placed before the
+  matching case therefore wins, and a later matching case still runs its body
+  after the default's body.
+- From the start point, execution **falls through to the end** of the switch —
+  every following body runs, including `default`. Order cases so the likely
+  match comes last, or accept the fallthrough.
+- There is no switch-level `break`. `break` only ever leaves a **loop**, so
+  `break` directly inside a switch fails at runtime with
+  `'break' used outside of a loop`. Inside a loop, `break` in a switch case
+  exits the enclosing loop — that is the only early exit.
+- Case values are ordinary expressions, compared with exact type matching
+  (`1.0` does not match `1`). With no match and no `default`, nothing runs.
+
+Bodies nest arbitrarily deep. This six-level example and its fallthrough
+output are pinned by the corpus row `six level nested switch runs every
+following body`:
+
+```x
+function main() {
+    let integer a = 1;
+    let integer b = 6;
+    switch (a) {
+        case 1: {
+            print("level 1");
+            switch (b) {
+                case 6: {
+                    print("level 2");
+                    switch (b) {
+                        case 6: {
+                            print("level 3");
+                        }
+                        default: { print("inner other"); }
+                    }
+                }
+                default: { print("mid other"); }
+            }
+        }
+        default: { print("outer other"); }
+    }
+}
+// level 1
+// level 2
+// level 3
+// inner other
+// mid other
+// outer other
+```
+
+To stop early, wrap the switch in a loop and break the loop:
+
+```x
+function main() {
+    let integer result = 0;
+    for (let i = 0; i < 5; i = i + 1) {
+        switch (i) {
+            case 3: { result = 100; break; }
+            default: { result = i; }
+        }
+    }
+    print(result); // 100
+}
 ```
 
 ## Runnable examples
@@ -1707,6 +2355,24 @@ These examples demonstrate `new`, overloaded constructor dispatch, explicit
 `super` calls, rest/spread parameters and values, concurrent `Async.all`, and
 OS thread creation and joining.
 
+The multi-file [payment project](./examples/payment_project/) exercises the
+whole object model in one runnable program: an `interface` (`Gateway`), an
+`abstract class` (`AbstractPayment` with abstract `makePayment` and concrete
+`configurePaymentGateway`), `private` fields holding configuration read from
+the project `.env` file, `extends`/`super` constructor chaining,
+`virtual`/`override` dispatch, a `static` registry counter, a `final` class,
+a custom `Exception` thrown and caught, an `enum` status, and polymorphic
+`for ... of` iteration over mixed subclasses:
+
+```sh
+x run examples/payment_project/main.x
+x check examples/payment_project/main.x
+```
+
+Copy `examples/payment_project/.env.example` to
+`examples/payment_project/.env` to feed the demo credentials through the
+loader; the program runs with safe fallback values either way.
+
 ## Interpreter architecture
 
 The execution pipeline is:
@@ -1747,9 +2413,38 @@ Python's worker-thread executor. `Thread.start` instead creates a dedicated
 `threading.Thread` handle. Both concurrency APIs are prototype runtime
 facilities, not a static concurrency or memory-safety model.
 
+## Documentation site and browser playground
+
+`docs-site/` is a static website (no build step) whose playground runs the
+**real** interpreter compiled to WebAssembly through Pyodide. Because the
+playground `fetch`es the Pyodide runtime and the interpreter wheel and loads a
+module Web Worker, it must be served over **HTTP** — opening the files with
+`file://` will not work. Serve the repository root with any static server:
+
+```sh
+python3 -m http.server 8080
+```
+
+Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
+`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build;
+after changing anything under `xlang/`, rebuild the wheel the playground loads
+with `x playground` (verify with `x playground-check`).
+
 ## Tests
 
-Run the interpreter tests from the project root:
+There are two test suites: the interpreter test suite under `tests/`, and the
+CSV regression corpus under `csv_tests/`.
+
+### Running the interpreter tests
+
+From the project root (with the virtual environment activated, or prefix the
+commands with `.venv/bin/`):
+
+```sh
+python -m pytest tests/ -q
+```
+
+The equivalent standard-library command is:
 
 ```sh
 python -m unittest discover -s tests -v
@@ -1761,6 +2456,44 @@ exceptions, all loop forms, pattern matching, destructuring, ASI, equality,
 objects, project configuration and feature flags, source diagnostics and
 type diagnostics, string indexing, grouped project imports, filesystem
 operations, rest/spread, async/await, and OS threads.
+
+### Running the CSV test corpus
+
+[`csv_tests/`](./csv_tests/) holds 1381 generated regression rows split across
+four CSV files (`run_tests.csv`, `check_tests.csv`, `error_tests.csv`,
+`format_tests.csv`). Each row is one source program plus its expected stdout,
+error, or formatted output, and the runner executes every row as a subtest:
+
+```sh
+python -m pytest csv_tests/test_corpus.py -q
+```
+
+The runner also works without pytest:
+
+```sh
+python csv_tests/test_corpus.py
+```
+
+Keep a subset of rows with `X_CORPUS_FILTER`, which matches against the row
+id, file, category, or name:
+
+```sh
+X_CORPUS_FILTER=switch python csv_tests/test_corpus.py
+```
+
+Rows are generated, not hand-written. Regenerating rewrites all four CSVs and
+aborts if any authored expectation disagrees with what the interpreter
+actually produces:
+
+```sh
+python csv_tests/generate_corpus.py            # regenerate and verify
+python csv_tests/generate_corpus.py --sample 5 # print sample rows per kind
+python csv_tests/generate_corpus.py --no-verify # write without verifying
+```
+
+Regeneration is deterministic: running the generator twice produces
+byte-identical CSVs, so a diff after regeneration means the corpus or the
+interpreter changed.
 
 ## Feature examples
 
@@ -1775,7 +2508,9 @@ examples/
 ├── exceptions/try_catch_finally.x
 ├── namespaces/nested_classes.x
 ├── objects/destructuring.x
-└── pattern_matching/match.x
+├── pattern_matching/match.x
+├── settings_types/main.x
+└── payment_project/main.x
 ```
 
 For example:
@@ -1788,8 +2523,19 @@ x run examples/filesystem_async_demo.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x
 x run examples/pattern_matching/match.x
+x run examples/settings_types/main.x
+x run examples/payment_project/main.x
 x run --profile feature-tour examples/configuration/configured_args.x
 ```
+
+The [`examples/settings_types/`](./examples/settings_types/) project declares
+types in one file, imports them into a second, and uses them from a third — the
+X equivalent of a TypeScript `export type`/`export const` settings module. The
+shared key type is a union of string literals (`type SettingsKey = "theme" |
+"backup_interval_min" | "last_backup_at"`), the defaults object uses the
+`object<SettingsKey, string>` form, and the middle file exposes a generic
+lookup, `lookup<KeyT, ValueT>(object<KeyT, ValueT> store, KeyT key)`, next to
+the concrete settings helpers.
 
 The [`examples/dsa/`](./examples/dsa/README.md) folder contains 20 standalone
 algorithm demonstrations grouped by common interview patterns, including
@@ -1869,6 +2615,8 @@ remaining implementation goals and documented constraints:
 
 ### Language / Compiler
 
+- [ ] `??` nullish coalescing — the JS-style operator does not parse
+  (`a ?? b` is a syntax error); use `a == null ? b : a` until it lands
 - [ ] Native or bytecode compilation — `build` validates syntax, imports, and
   types, then reports that no executable was produced
 - [ ] Generic type checking and type-parameter substitution — generic
@@ -1892,6 +2640,9 @@ remaining implementation goals and documented constraints:
 
 ### Known correctness edges
 
+- `&&` and `||` always produce a boolean (`0 || "x"` is `true`, not `"x"`),
+  unlike JavaScript's operand-returning operators — conditions themselves do
+  accept truthy values (see the documentation site's truthiness table)
 - `/` performs floating-point division — code needing an integer index must ensure the calculation is integral
 - String indexing counts Unicode code points, not grapheme clusters or UTF-16 code units
 - Parser recovery reports multiple recoverable errors but malformed constructs can prevent discovery of later errors; runtime failures stop at the first failure
