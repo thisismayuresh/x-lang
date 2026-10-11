@@ -323,6 +323,40 @@ let total = 0;
             self.assertIsInstance(declaration, expected[name])
             self.assertIn("export", declaration.modifiers, name)
 
+    def test_export_keyword_marks_variable_declarations(self):
+        program, errors = parse("""
+export const string APP_NAME = "X";
+export let total = 0;
+""")
+        self.assertEqual(errors, [])
+        variables = {
+            declaration.name: declaration
+            for declaration in program.declarations
+            if isinstance(declaration, VariableDeclaration)
+        }
+        self.assertEqual(set(variables), {"APP_NAME", "total"})
+        for name, declaration in variables.items():
+            self.assertIn("export", declaration.modifiers, name)
+
+    def test_exported_const_is_importable_from_another_module(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "config.x").write_text("""
+export const string APP_NAME = "X";
+""", encoding="utf-8")
+            entry_file = project_root / "main.x"
+            entry_file.write_text("""
+import config.{APP_NAME}
+function main() {
+    print(APP_NAME);
+}
+""", encoding="utf-8")
+            program = ModuleLoader(project_root).load_program(entry_file)
+            output = []
+            result = Interpreter(output=output.append).interpret(program)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["X"])
+
     def test_export_alias_is_recorded_on_the_declaration(self):
         program, errors = parse("""
 export { greet as hello };
@@ -410,6 +444,39 @@ class Counter { public int n = 0; }
             self.assertEqual(
                 sorted(loader._exported_names(resolved)), ["Counter", "greet"]
             )
+
+
+class LiteralUnionTypeTests(unittest.TestCase):
+    def test_string_literal_union_type_declaration_parses(self):
+        program, errors = parse("""
+type SettingsKey = "theme" | "backup_interval_min" | "last_backup_at";
+""")
+        self.assertEqual(errors, [])
+        declaration = next(
+            declaration for declaration in program.declarations
+            if isinstance(declaration, TypeDeclaration)
+        )
+        self.assertEqual(declaration.name, "SettingsKey")
+        self.assertEqual(
+            declaration.type_name,
+            '"theme"|"backup_interval_min"|"last_backup_at"',
+        )
+
+    def test_colon_annotation_parses(self):
+        program, errors = parse("""
+export const DEFAULT_SETTINGS: object<SettingsKey, string> = {
+    theme: "system"
+};
+""")
+        self.assertEqual(errors, [])
+        declaration = next(
+            declaration for declaration in program.declarations
+            if isinstance(declaration, VariableDeclaration)
+        )
+        self.assertEqual(declaration.name, "DEFAULT_SETTINGS")
+        self.assertEqual(declaration.type_name, "object<SettingsKey,string>")
+        self.assertIn("export", declaration.modifiers)
+        self.assertTrue(declaration.constant)
 
 
 def lex_errors(source, recover=True, source_name="test.x"):
