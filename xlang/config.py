@@ -36,6 +36,7 @@ FEATURE_DEFAULTS = {
     "network": True,
     "object_literals": True,
     "pattern_matching": True,
+    "primitive_aliases": False,
     "records": True,
     "spread": True,
     "static_methods": True,
