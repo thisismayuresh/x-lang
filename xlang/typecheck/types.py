@@ -33,6 +33,23 @@ PRIMITIVE_ALIASES = {
 #: Names that always refer to a known built-in type rather than a user type.
 KNOWN_TYPE_NAMES = frozenset(PRIMITIVE_ALIASES.values())
 
+#: Case-insensitive lookup for primitive aliases, enabling the optional
+#: ``primitive_aliases`` feature (``String`` / ``INTEGER`` / ``Object`` →
+#: ``string`` / ``integer`` / ``object``).  Values are the canonical
+#: lowercase spellings.
+PRIMITIVE_ALIASES_CASEFOLD = {
+    alias.casefold(): canonical for alias, canonical in PRIMITIVE_ALIASES.items()
+}
+
+
+def canonical_primitive_alias(name: str) -> str | None:
+    """Return the canonical primitive type for a case-insensitive spelling.
+
+    ``None`` means the name is not a built-in primitive alias, so callers
+    should fall back to their normal resolution.
+    """
+    return PRIMITIVE_ALIASES_CASEFOLD.get(name.casefold())
+
 #: Every builtin type-name spelling accepted in X annotations.
 #:
 #: Includes primitive aliases (``int``/``integer``/``bool``/...), collection
@@ -116,6 +133,7 @@ class XType:
     record_fields: tuple[tuple[str, "XType"], ...] = ()
     is_any: bool = False
     dimensions: int = 0
+    literal: str | None = None
 
     def __post_init__(self) -> None:
         depth = self.dimensions
@@ -129,6 +147,8 @@ class XType:
         """Return a readable type name."""
         if self.is_any:
             return "any"
+        if self.literal is not None:
+            return f'"{self.literal}"'
         if self.union_parts:
             text = "|".join(part.display() for part in self.union_parts)
             if len(self.union_parts) > 1:
@@ -180,6 +200,8 @@ def parse_type(type_name: str | None) -> XType:
             "union",
             union_parts=tuple(parse_type(part) for part in union_parts),
         )
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return XType("string", literal=_unescape_literal(text[1:-1]))
     nullable = text.endswith("?")
     if nullable:
         text = text[:-1]
@@ -197,6 +219,7 @@ def parse_type(type_name: str | None) -> XType:
             record_fields=inner.record_fields,
             is_any=inner.is_any,
             dimensions=inner.dimensions + 1,
+            literal=inner.literal,
         )
     generic_name, arguments = _split_generic(text)
     normalized = PRIMITIVE_ALIASES.get(generic_name, generic_name)
@@ -207,6 +230,11 @@ def parse_type(type_name: str | None) -> XType:
         is_nullable=nullable,
         is_any=is_any,
     )
+
+
+def _unescape_literal(inner: str) -> str:
+    """Decode a string-literal type body (``"a\\"b"`` -> ``a"b``)."""
+    return inner.replace('\\"', '"').replace("\\\\", "\\")
 
 
 def split_union(type_name: str) -> list[str]:
@@ -234,6 +262,8 @@ def split_union(type_name: str) -> list[str]:
 def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
     """Replace type parameters using ``mapping``."""
     if type_value.is_any:
+        return type_value
+    if type_value.literal is not None:
         return type_value
     if type_value.union_parts:
         return XType(
@@ -271,6 +301,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
         ),
         is_any=type_value.is_any,
         dimensions=type_value.dimensions,
+        literal=type_value.literal,
     )
 
 
@@ -286,6 +317,7 @@ def _strip_array(type_value: XType) -> XType:
         record_fields=type_value.record_fields,
         is_any=type_value.is_any,
         dimensions=depth,
+        literal=type_value.literal,
     )
 
 
@@ -299,6 +331,7 @@ def _strip_nullable(type_value: XType) -> XType:
         record_fields=type_value.record_fields,
         is_any=type_value.is_any,
         dimensions=type_value.dimensions,
+        literal=type_value.literal,
     )
 
 
@@ -311,10 +344,23 @@ def is_compatible(
     """Return whether a value of ``source`` may be used where ``target`` is expected."""
     if target.is_any or source.is_any:
         return True
+    if source.union_parts:
+        return all(
+            is_compatible(part, target, relations=relations)
+            for part in source.union_parts
+        )
     if target.union_parts:
         return any(
             is_compatible(source, part, relations=relations)
             for part in target.union_parts
+        )
+    if target.literal is not None or source.literal is not None:
+        if target.literal is not None:
+            if source.literal is None:
+                return False
+            return source.literal == target.literal and source.name == target.name
+        return is_compatible(
+            XType(source.name, source.arguments), target, relations=relations
         )
     if source.is_nullable:
         return target.is_nullable or is_compatible(
@@ -332,11 +378,6 @@ def is_compatible(
         element_target = _strip_array(target)
         element_source = _strip_array(source)
         return is_compatible(element_source, element_target, relations=relations)
-    if source.union_parts:
-        return all(
-            is_compatible(part, target, relations=relations)
-            for part in source.union_parts
-        )
     if target.record_fields:
         source_fields = {
             name: field_type for name, field_type in source.record_fields
