@@ -2151,7 +2151,9 @@ function` or `Decorator for class 'Thing' must return a class`.
 
 A larger, fully commented example combining factories with arguments,
 stateful `memoize` caching, validation guards, multi-argument wrappers,
-load-time side effects, and stacking order lives in
+load-time side effects, stacking order, composing one decorator out of
+another (`@retry` over `@flaky`), method decorators, and class decorators
+lives in
 [`examples/decorators/complex.x`](./examples/decorators/complex.x):
 
 ```sh
