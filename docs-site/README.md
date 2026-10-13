@@ -66,10 +66,14 @@ into `wheels/manifest.json`, and the worker loads the wheel with
 - **Format** (or **Ctrl+S**) runs `x format` / `xlang.formatter.format_source`
   on the active file inside the worker.
 - Drag the vertical splitter between the editor and the output pane.
-- Code and file layout persist in `localStorage`.
+- Every launch starts clean on the **Hello, world** example — the playground
+  no longer restores a previous session from `localStorage`. **Reset** at any
+  time returns to the same starter program.
 - The strip under the output pane is reserved for **fatal errors** (WASM
   boot failure, worker crash). Ordinary program errors stay in the
-  `#errors` box above it.
+  `#errors` box above it, rendered like the CLI’s rustc-style blocks:
+  `-->` location, the offending source line, a `^^^` caret, and any
+  `= note:` / `= help:` follow-ups the checker produced.
 
 Network and OS threads are not available inside the sandbox, so
 `System.io.Network` and thread demos will not run in the browser.
@@ -2147,7 +2151,9 @@ function` or `Decorator for class 'Thing' must return a class`.
 
 A larger, fully commented example combining factories with arguments,
 stateful `memoize` caching, validation guards, multi-argument wrappers,
-load-time side effects, and stacking order lives in
+load-time side effects, stacking order, composing one decorator out of
+another (`@retry` over `@flaky`), method decorators, and class decorators
+lives in
 [`examples/decorators/complex.x`](./examples/decorators/complex.x):
 
 ```sh

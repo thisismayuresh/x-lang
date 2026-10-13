@@ -5,7 +5,6 @@
 "use strict";
 
 (function () {
-  var STORAGE_KEY = "x-playground-project-v1";
   var RUN_TIMEOUT_MS = 15000;
   var MAX_FILES = 5;
   var DEFAULT_ENTRY = "main.x";
@@ -93,13 +92,6 @@
       return;
     }
     project.files[project.active].content = editor.getValue();
-  }
-
-  function saveProject() {
-    syncActiveFromEditor();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
-    } catch (error) { /* ignore */ }
   }
 
   function safeFileName(raw) {
@@ -196,7 +188,6 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
@@ -212,7 +203,6 @@
     editor.setValue(activeFile().content);
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
@@ -231,7 +221,6 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
   }
 
   function collectFilesForRun() {
@@ -283,37 +272,10 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
   function loadInitialCode() {
-    var stored = null;
-    try {
-      stored = localStorage.getItem(STORAGE_KEY);
-    } catch (error) {
-      stored = null;
-    }
-    if (stored) {
-      try {
-        var parsed = JSON.parse(stored);
-        if (parsed && Array.isArray(parsed.files) && parsed.files.length) {
-          project.files = parsed.files.slice(0, MAX_FILES).map(function (file, i) {
-            return {
-              name: safeFileName(file && file.name ? file.name : (i === 0 ? DEFAULT_ENTRY : "file-" + (i + 1) + ".x")),
-              content: typeof (file && file.content) === "string" ? file.content : ""
-            };
-          });
-          var active = Number(parsed.active) || 0;
-          project.active = Math.min(Math.max(0, active), project.files.length - 1);
-          suppressChange = true;
-          editor.setValue(activeFile().content || "");
-          suppressChange = false;
-          renderFileBar();
-          return;
-        }
-      } catch (error) { /* fall through to example */ }
-    }
     if (window.X_PLAYGROUND_EXAMPLES && window.X_PLAYGROUND_EXAMPLES[0]) {
       loadExample(window.X_PLAYGROUND_EXAMPLES[0]);
     }
@@ -342,6 +304,92 @@
     editor.setGutterMarker(line - 1, "errors", marker);
   }
 
+  /* ---------- rustc-style diagnostics ----------
+     Mirrors xlang/diagnostics.py::render_diagnostic so the browser shows
+     the same block the CLI prints: header, --> location, code frame with
+     a ^^^ caret, then = note: / = help: follow-ups. */
+
+  function fileContentFor(name) {
+    var files = project.files || [];
+    for (var i = 0; i < files.length; i++) {
+      if (files[i].name === name) {
+        return files[i].content || "";
+      }
+    }
+    return editor ? editor.getValue() : "";
+  }
+
+  function expandTabs(text) {
+    var out = "";
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] === "\t") {
+        var width = 4 - (out.length % 4);
+        out += " ".repeat(width);
+      } else {
+        out += text[i];
+      }
+    }
+    return out;
+  }
+
+  function hintLines(notes, helps, gutter) {
+    var lines = [];
+    var prefix = gutter ? gutter + " " : "";
+    var continuation = gutter ? gutter + "   " : "  ";
+    [["note", notes], ["help", helps]].forEach(function (pair) {
+      (pair[1] || []).forEach(function (item) {
+        String(item).split("\n").forEach(function (text, index) {
+          if (index === 0) {
+            lines.push(text ? prefix + "= " + pair[0] + ": " + text
+                            : prefix + "= " + pair[0] + ":");
+          } else {
+            lines.push(text ? continuation + text : continuation.replace(/ +$/, ""));
+          }
+        });
+      });
+    });
+    return lines;
+  }
+
+  function renderDiagnostic(error) {
+    var name = error.file || activeFile().name;
+    var sourceText = fileContentFor(error.file);
+    var sourceLines = sourceText ? sourceText.split("\n") : [];
+    var lines = ["error: " + error.message];
+    var gutter = "";
+    if (error.line != null) {
+      gutter = " ".repeat(String(error.line).length);
+      var location = name + ":" + error.line;
+      if (error.column != null) {
+        location += ":" + error.column;
+      }
+      lines.push(gutter + "--> " + location);
+    } else {
+      lines.push("--> " + name);
+    }
+    if (error.line != null && error.line >= 1 && error.line <= sourceLines.length) {
+      var rawLine = sourceLines[error.line - 1];
+      var column = Math.max(1, error.column || 1);
+      var endColumn = (error.endLine === error.line && error.endColumn != null)
+        ? Math.max(column + 1, error.endColumn)
+        : column + 1;
+      var caretStart = expandTabs(rawLine.slice(0, column - 1)).length;
+      var caretLength = Math.max(
+        1,
+        expandTabs(rawLine.slice(column - 1, endColumn - 1)).length
+      );
+      lines.push(gutter + " |");
+      lines.push(String(error.line) + " | " + expandTabs(rawLine));
+      lines.push(
+        gutter + " | " +
+        " ".repeat(caretStart) + "^".repeat(caretLength) + " " + error.message
+      );
+    }
+    return lines
+      .concat(hintLines(error.notes, error.helps, gutter))
+      .join("\n");
+  }
+
   function renderOutput(result) {
     els.output.textContent = "";
     els.errors.textContent = "";
@@ -354,23 +402,13 @@
 
     clearLinters();
     if (result.errors && result.errors.length) {
-      var lines = result.errors.map(function (error) {
-        var where = "";
-        if (error.file) {
-          where += " [" + error.file + "]";
+      var blocks = result.errors.map(function (error) {
+        if (!error.file || error.file === activeFile().name) {
+          markErrorLine(error.line);
         }
-        if (error.line != null) {
-          where += " at line " + error.line;
-          if (error.column != null) {
-            where += ", column " + error.column;
-          }
-          if (!error.file || error.file === activeFile().name) {
-            markErrorLine(error.line);
-          }
-        }
-        return "[" + error.kind + "]" + where + ": " + error.message;
+        return renderDiagnostic(error);
       });
-      els.errors.textContent = lines.join("\n\n");
+      els.errors.textContent = blocks.join("\n\n");
     }
 
     var ms = typeof result.durationMs === "number" ? result.durationMs : null;
@@ -453,7 +491,6 @@
     if (!worker) {
       spawnWorker();
     }
-    saveProject();
     if (runTimer) {
       clearTimeout(runTimer);
       runTimer = null;
@@ -502,7 +539,6 @@
       editor.setValue(formatted);
       editor.setCursor(cursor);
       syncActiveFromEditor();
-      saveProject();
       suppressChange = false;
       setStatus("Formatted " + activeFile().name, "ok");
       els.errors.textContent = "";
@@ -1080,7 +1116,6 @@
     editor.on("change", function () {
       if (!suppressChange) {
         syncActiveFromEditor();
-        saveProject();
       }
     });
 

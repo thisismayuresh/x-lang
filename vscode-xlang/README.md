@@ -55,11 +55,20 @@ Full TextMate grammar for `.x` files covering:
 - Supports strict typing mode
 
 ### Code Completion (Ctrl+Space)
-- Keywords
-- Built-in types
-- Built-in functions (`print`, `range`, `typeOf`, `sleep`, `input`, etc.)
-- Classes and interfaces from current document
-- Context-aware (basic implementation)
+- Keywords, built-in types and built-in functions
+- Classes, interfaces, enums and type aliases from the current document
+- **Every `let`/`const`/`var` binding, with its type in the detail popup** —
+  `let count = 0` suggests `count  let integer count`, and `let raw: string = "x"`
+  suggests `raw  let string raw`. For an un-annotated binding the type is
+  inferred from the initializer: literals (`0`, `"x"`, `3.14`, `true`), `[...]`,
+  `{...}`, `new Ctor(...)`, and identifier-to-identifier copy (`let b = a;`
+  resolves `a`'s type, transitively up to 4 hops).
+- **Type-aware `receiver.` suggestions** — after `let p = new Point();` the
+  popup for `p.` offers only `Point`'s fields and methods, each tagged with its
+  declaring class (`Point.x`, `Point.mag(...)`). The receiver's type is
+  resolved from its annotation or from `new Ctor(...)` in the initializer.
+- Import path completion: after `import ` and after `import System.`, paths are
+  filtered to what actually exists on disk.
 
 ### Hover (Type Information)
 Hover over symbols to see:

@@ -7,11 +7,11 @@ window.X_PLAYGROUND_EXAMPLES = [
     id: "hello",
     label: "Hello, world",
     code: [
-      "function greet(name) {",
-      "    return `Hello, {name}!`;",
+      "string function hello() {",
+      "    return \"hello world\";",
       "}",
       "",
-      "print(greet(\"world\"));"
+      "print(hello());"
     ].join("\n")
   },
   {
@@ -108,10 +108,10 @@ window.X_PLAYGROUND_EXAMPLES = [
       "    print(`- {names.get(i)}`);",
       "}",
       "",
-      "let scores = new HashMap();",
-      "scores.put(\"ada\", 10);",
-      "scores.put(\"grace\", 20);",
-      "print(scores.get(\"grace\"));"
+      "let scores = HashMap.create();",
+      "HashMap.set(scores, \"ada\", 10);",
+      "HashMap.set(scores, \"grace\", 20);",
+      "print(HashMap.get(scores, \"grace\"));"
     ].join("\n")
   },
   {

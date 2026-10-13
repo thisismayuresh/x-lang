@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .config import XConfig
 from .formatter import format_source
@@ -261,6 +261,11 @@ def _error(
     line: int | None,
     column: int | None,
     file: str | None = None,
+    *,
+    notes: Sequence[str] = (),
+    helps: Sequence[str] = (),
+    end_line: int | None = None,
+    end_column: int | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -268,6 +273,10 @@ def _error(
         "line": line,
         "column": column,
         "file": file,
+        "notes": list(notes),
+        "helps": list(helps),
+        "endLine": end_line,
+        "endColumn": end_column,
     }
 
 
@@ -279,6 +288,10 @@ def _diagnostic(kind: str, diagnostic: Any) -> dict[str, Any]:
         getattr(diagnostic, "line", None),
         getattr(diagnostic, "column", None),
         Path(source_name).name if source_name else None,
+        notes=getattr(diagnostic, "notes", ()) or (),
+        helps=getattr(diagnostic, "helps", ()) or (),
+        end_line=getattr(diagnostic, "end_line", None),
+        end_column=getattr(diagnostic, "end_column", None),
     )
 
 
@@ -292,6 +305,8 @@ def _runtime_error(error: RuntimeErrorX) -> dict[str, Any]:
         getattr(error, "line", None),
         getattr(error, "column", None),
         Path(source_name).name if source_name else None,
+        end_line=getattr(error, "end_line", None),
+        end_column=getattr(error, "end_column", None),
     )
 
 

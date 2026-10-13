@@ -132,7 +132,12 @@ CodeMirror (no CDN) and a **vendored** WebAssembly runtime:
    reload after rebuild always fetches the new interpreter.
 4. **Run** (or Ctrl+Enter) posts the editor’s files to the worker, which
    calls `xlang.playground.run_files` and returns JSON: printed lines,
-   typed errors with line/file/column, and wall-clock duration. It runs with
+   typed errors with line/file/column, `notes`/`helps` follow-ups and the
+   caret’s end span (`endLine`/`endColumn`), and wall-clock duration.
+   `playground.js` renders each error exactly like the CLI
+   (`xlang/diagnostics.py`): a rustc-style block with the `-->` location,
+   the offending source line, a `^^^` caret, and `= note:` / `= help:`
+   lines. It runs with
    the interpreter’s default feature set — features come from `x.toml` for
    the CLI, never from a browser control. A 15s
    timeout restarts the worker if the program hangs. **Format** (Ctrl+S)

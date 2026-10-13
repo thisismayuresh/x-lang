@@ -226,7 +226,9 @@ Implemented and currently demonstrated features:
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
-  `object<K, V>` annotations validate dictionary key/value types at runtime.
+  `object<K, V>` annotations validate dictionary key/value types at runtime
+  and in `x check`, where an object literal is checked key by key and an
+  unknown key names the key, lists the allowed keys, and points at the entry.
 - [x] `Function`/`function` callback annotations validate function values.
   `interface` declarations support comma- or semicolon-separated fields and
   method signatures, including nested interface types and typed arrays.
@@ -429,6 +431,28 @@ of named properties. The TypeScript-style colon form
 (`let user: object<string, string> = ...`) is also accepted for variables and
 fields, and a union of string literals (`type SettingsKey = "theme" |
 "backup";`) pins the value to its members.
+
+An object literal checked against a generic object type is validated key by
+key, and each problem gets its own diagnostic instead of a generic
+assignment error:
+
+```text
+error: Object key 'd' is not allowed in 'DEFAULT_SETTINGS'
+ --> settings.x:4:5
+  |
+4 |     d: "e",
+  |     ^^ Object key 'd' is not allowed in 'DEFAULT_SETTINGS'
+  = note: 'DEFAULT_SETTINGS' is typed `object<SettingsKey, string>`
+  = note: allowed keys: "theme", "backup_interval_min", "last_backup_at"
+  = help: remove the 'd' entry, or allow 'd' in the key type
+```
+
+A value of the wrong type reports
+`Value for key 'theme' in 'settings' has the wrong type` with a
+`= note: expected \`string\`, found \`integer\`` line. The same message appears for literals passed
+to typed parameters (`... in argument 1 of 'update'`) and for assignment
+literals; the caret underlines the offending key or value, and the browser
+playground renders the `note`/`help` lines the same way as `x check`.
 
 Run the complete sample with:
 
@@ -2048,7 +2072,9 @@ Common mistakes and the exact failures they produce:
 
 A larger, fully commented example combining factories with arguments,
 stateful `memoize` caching, validation guards, multi-argument wrappers,
-load-time side effects, and stacking order lives in
+load-time side effects, stacking order, composing one decorator out of
+another (`@retry` over `@flaky`), method decorators, and class decorators
+lives in
 [`examples/decorators/complex.x`](./examples/decorators/complex.x):
 
 ```sh
@@ -2426,9 +2452,22 @@ python3 -m http.server 8080
 ```
 
 Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
-`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build;
-after changing anything under `xlang/`, rebuild the wheel the playground loads
-with `x playground` (verify with `x playground-check`).
+`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build, but
+the interpreter itself does: after changing anything under `xlang/`, rebuild
+the wheel the playground loads with
+
+```sh
+x playground           # rebuild the wheel once
+x playground-watch     # rebuild automatically on every xlang/ edit
+x playground-check     # exit 1 if the wheel is stale (CI)
+```
+
+The build fingerprints `xlang/**` + `pyproject.toml`, writes the wheel and the
+fingerprint into `docs-site/playground/wheels/manifest.json`, and the worker
+requests the wheel with `?v=<fingerprint>` — so the next page reload always
+fetches the new interpreter. Skipping the rebuild (or a stale
+`playground-check`) means the browser silently runs the old Python code.
+See `docs-site/README.md` for the full pipeline.
 
 The site is published to GitHub Pages by
 `.github/workflows/deploy-docs.yml`, which uploads `docs-site/` as the Pages
@@ -2677,6 +2716,34 @@ previously that slipped through.
 Go-to-definition (Ctrl+Click / F12) resolves functions, methods,
 constructors, parameters, fields, variables and enum members inside the
 current file, not just type names.
+
+Completions are type-aware: every `let`/`const` binding is offered with its
+type in the popup (inferred from the initializer when un-annotated), and after
+`let p = new Point();` the popup for `p.` lists only `Point`'s fields and
+methods. The same holds for built-in types — `s.` on a `string` offers
+`toUpperCase`/`trim`/`split`, `names.` on an array offers `push`/`map`/`filter`,
+and `obj.` on an object offers `keys`/`values`/`entries` — so the popup follows
+the declared or inferred type of the receiver, not just classes. Import paths
+after `import System.` are filtered to what exists on disk.
+
+The extension's server is a Python script the editor spawns at startup. After
+editing [`vscode-xlang/server/server.py`](./vscode-xlang/server/server.py) the
+running editor still has the old copy, so repackage and reinstall it, then
+reload the window:
+
+```sh
+cd vscode-xlang
+npm run compile
+npx --yes @vscode/vsce package --allow-missing-repository --skip-license \
+    -o /tmp/opencode/xlang-0.1.0.vsix
+code --install-extension /tmp/opencode/xlang-0.1.0.vsix
+```
+
+Then `Ctrl/Cmd+Shift+P` → **Developer: Reload Window**. The reload is what
+makes VS Code drop the old server process and start the new one; without it
+the editor keeps running the copy it launched with. While developing you can
+skip packaging entirely: open `vscode-xlang/` and press `F5` to launch an
+Extension Development Host against the source tree.
 
 See **[`vscode-xlang/README.md`](./vscode-xlang/README.md)** for the full
 report: architecture, every defect that was fixed, what was installed where,

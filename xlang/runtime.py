@@ -19,6 +19,21 @@ class _UndefinedValue:
 UNDEFINED = _UndefinedValue()
 
 
+def _typed_object_annotation(type_name: str | None) -> str | None:
+    """Return *type_name* when it annotates a typed object.
+
+    ``object<K, V>`` qualifies; ``object<K, V>[]`` (an array of typed
+    objects) does not — that spelling is handled by the array coercion.
+    """
+    if (
+        type_name is not None
+        and type_name.startswith("object<")
+        and not type_name.endswith("[]")
+    ):
+        return type_name
+    return None
+
+
 class RuntimeErrorX(Exception):
     def __init__(self, message: str, exception_name: str = "RuntimeException") -> None:
         super().__init__(message)
@@ -357,12 +372,7 @@ class XFunction:
                     parameter.name,
                     argument_value,
                     array_type=parameter_array_type,
-                    object_type=(
-                        parameter.type_name
-                        if parameter.type_name is not None
-                        and parameter.type_name.startswith("object<")
-                        else None
-                    ),
+                    object_type=_typed_object_annotation(parameter.type_name),
                     value_type=(
                         parameter.type_name
                         if parameter.type_name is not None

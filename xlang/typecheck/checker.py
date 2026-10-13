@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import fields, is_dataclass
 from typing import Any
@@ -1110,14 +1111,24 @@ class TypeChecker:
         if declaration.initializer is not None:
             actual = self._infer(declaration.initializer, scope)
             if not self._value_matches(declaration.initializer, actual, annotated):
-                self._error(
-                    f"Cannot assign '{actual.display()}' to '{declaration.name}' "
-                    f"of type '{annotated.display()}'",
-                    declaration,
-                    notes=[
-                        f"expected `{annotated.display()}`, found `{actual.display()}`"
-                    ],
+                reported = self._report_typed_object_literal(
+                    declaration.initializer,
+                    actual,
+                    annotated,
+                    label=f"'{declaration.name}'",
+                    subject=f"'{declaration.name}'",
+                    spelling=declaration.type_name,
                 )
+                if not reported:
+                    self._error(
+                        f"Cannot assign '{actual.display()}' to "
+                        f"'{declaration.name}' of type '{annotated.display()}'",
+                        declaration,
+                        notes=[
+                            f"expected `{annotated.display()}`, "
+                            f"found `{actual.display()}`"
+                        ],
+                    )
             if (
                 annotated.is_any
                 and not actual.is_any
@@ -1127,6 +1138,88 @@ class TypeChecker:
         name = declaration.name
         if name:
             scope.define(name, annotated, assigned, constant=declaration.constant)
+
+    # ------------------------------------------------------------------
+    # Typed-object literal diagnostics (object<K, V>)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _allowed_key_names(key_type: XType) -> list[str] | None:
+        """Human-readable members of a literal-union key type, if it is one."""
+        if not key_type.union_parts:
+            return None
+        names = [
+            f'"{part.literal}"'
+            for part in key_type.union_parts
+            if part.literal is not None
+        ]
+        return names or None
+
+    def _report_typed_object_literal(
+        self,
+        initializer: Any,
+        actual: XType,
+        annotated: XType,
+        *,
+        label: str,
+        subject: str,
+        spelling: str | None = None,
+    ) -> bool:
+        """Emit per-key diagnostics for a literal against ``object<K, V>``.
+
+        Returns True when at least one problem was reported, so the caller
+        can suppress its generic assignability error.  ``label`` reads after
+        "in " (``'settings'``, ``argument 1 of 'describe'``); ``subject`` is
+        what the "is typed" note is about.
+        """
+        if (
+            annotated.name != "object"
+            or len(annotated.arguments) != 2
+            or not isinstance(initializer, ObjectLiteral)
+        ):
+            return False
+        key_type, value_type = annotated.arguments
+        spelling = (spelling or annotated.display()).strip()
+        # The parser stores generics without spaces; put them back for humans.
+        spelling = re.sub(r"\s*,\s*", ", ", spelling)
+        allowed = self._allowed_key_names(key_type)
+        value_types = dict(actual.record_fields)
+        reported = False
+        for entry in initializer.entries:
+            if entry.key is None:
+                # Spread: the checker cannot see every key; stay permissive.
+                continue
+            if not is_compatible(
+                XType("string", literal=entry.key), key_type, relations=self
+            ):
+                notes = [f"{subject} is typed `{spelling}`"]
+                if allowed is not None:
+                    notes.append("allowed keys: " + ", ".join(allowed))
+                self._error(
+                    f"Object key '{entry.key}' is not allowed in {label}",
+                    entry,
+                    notes=notes,
+                    helps=[
+                        f"remove the '{entry.key}' entry, or allow "
+                        f"'{entry.key}' in the key type"
+                    ],
+                )
+                reported = True
+                continue
+            value_actual = value_types.get(entry.key)
+            if value_actual is None:
+                continue
+            if not self._value_matches(entry.value, value_actual, value_type):
+                self._error(
+                    f"Value for key '{entry.key}' in {label} has the wrong type",
+                    entry.value,
+                    notes=[
+                        f"expected `{value_type.display()}`, "
+                        f"found `{value_actual.display()}`"
+                    ],
+                )
+                reported = True
+        return reported
 
     # ------------------------------------------------------------------
     # Type resolution
@@ -1390,14 +1483,24 @@ class TypeChecker:
     def _infer_object_literal(
         self, expression: ObjectLiteral, scope: TypeScope
     ) -> XType:
-        fields: list[tuple[str, XType]] = []
-        for key, value in expression.entries:
+        fields: dict[str, XType] = {}
+        opaque_spread = False
+        for entry in expression.entries:
+            key = entry.key
+            value = entry.value
             if key is None:
-                self._infer(value, scope)
-                return OBJECT
-            fields.append((key, self._infer(value, scope)))
-        if fields:
-            return XType("record", record_fields=tuple(fields))
+                spread_type = self._infer(value.value, scope)
+                if spread_type.record_fields:
+                    for name, field_type in spread_type.record_fields:
+                        fields[name] = field_type
+                else:
+                    # The spread source has no visible shape; the literal's
+                    # overall type degrades to a bare object, as before.
+                    opaque_spread = True
+                continue
+            fields[key] = self._infer(value, scope)
+        if fields and not opaque_spread:
+            return XType("record", record_fields=tuple(fields.items()))
         return OBJECT
 
     def _infer_function_expression(
@@ -1579,15 +1682,23 @@ class TypeChecker:
                     if not self._value_matches(
                         expression.value, value_type, target_type
                     ):
-                        self._error(
-                            f"Cannot assign '{value_type.display()}' to "
-                            f"'{target.name}' of type '{target_type.display()}'",
-                            expression,
-                            notes=[
-                                f"expected `{target_type.display()}`, "
-                                f"found `{value_type.display()}`"
-                            ],
+                        reported = self._report_typed_object_literal(
+                            expression.value,
+                            value_type,
+                            target_type,
+                            label=f"'{target.name}'",
+                            subject=f"'{target.name}'",
                         )
+                        if not reported:
+                            self._error(
+                                f"Cannot assign '{value_type.display()}' to "
+                                f"'{target.name}' of type '{target_type.display()}'",
+                                expression,
+                                notes=[
+                                    f"expected `{target_type.display()}`, "
+                                    f"found `{value_type.display()}`"
+                                ],
+                            )
                 else:
                     self._infer(target, scope)
                 scope.mark_assigned(target.name)
@@ -2075,11 +2186,22 @@ class TypeChecker:
                 else is_compatible(actual, expected, relations=self)
             )
             if not matched:
-                self._error(
-                    f"Argument {index + 1} of '{name}' has type "
-                    f"'{actual.display()}', expected '{expected.display()}'",
-                    node,
-                )
+                reported = False
+                if expression is not None:
+                    reported = self._report_typed_object_literal(
+                        expression,
+                        actual,
+                        expected,
+                        label=f"argument {index + 1} of '{name}'",
+                        subject=f"parameter '{parameter.name}'",
+                        spelling=parameter.type_name,
+                    )
+                if not reported:
+                    self._error(
+                        f"Argument {index + 1} of '{name}' has type "
+                        f"'{actual.display()}', expected '{expected.display()}'",
+                        node,
+                    )
         return ANY
 
     def _argument_failures(

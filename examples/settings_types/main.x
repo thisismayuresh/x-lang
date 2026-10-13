@@ -4,7 +4,7 @@
 import settings_store.{getSetting, describe, lookup}
 import settings_types.{SettingsKey, DEFAULT_SETTINGS}
 
-function main() {
+any function main() {
     let SettingsKey key = "theme";
     print(getSetting(key));              // system
     print(getSetting("last_backup_at")); // 0
