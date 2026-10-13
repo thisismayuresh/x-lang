@@ -2386,6 +2386,21 @@ Copy `examples/payment_project/.env.example` to
 `examples/payment_project/.env` to feed the demo credentials through the
 loader; the program runs with safe fallback values either way.
 
+The multi-file [banking platform](./examples/banking_platform/) is a
+Java-to-X translation of a Spring-flavoured codebase: a five-level-deep
+nested `PlatformConfig` hierarchy built with explicit getters, generic
+interfaces (`EventHandler<E, C>`, `ProcessingStage<I, O>`, `Box`-style
+hints), interface-typed arrays, a composition-root `TransactionConfiguration`
+in place of `@Configuration`, and top-level `async` functions standing in
+for `CompletionStage` results. Its README documents every adaptation
+(`HashMap` instead of `Map`, underscore-prefixed backing fields where Java
+records clash with X's no-field/method-name-clash rule, backtick string
+interpolation, and more).
+
+```sh
+x run examples/banking_platform/main.x
+```
+
 ## Interpreter architecture
 
 The execution pipeline is:
