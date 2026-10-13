@@ -5,7 +5,6 @@
 "use strict";
 
 (function () {
-  var STORAGE_KEY = "x-playground-project-v1";
   var RUN_TIMEOUT_MS = 15000;
   var MAX_FILES = 5;
   var DEFAULT_ENTRY = "main.x";
@@ -93,13 +92,6 @@
       return;
     }
     project.files[project.active].content = editor.getValue();
-  }
-
-  function saveProject() {
-    syncActiveFromEditor();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
-    } catch (error) { /* ignore */ }
   }
 
   function safeFileName(raw) {
@@ -196,7 +188,6 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
@@ -212,7 +203,6 @@
     editor.setValue(activeFile().content);
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
@@ -231,7 +221,6 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
   }
 
   function collectFilesForRun() {
@@ -283,37 +272,10 @@
     editor.clearGutter("errors");
     suppressChange = false;
     renderFileBar();
-    saveProject();
     editor.focus();
   }
 
   function loadInitialCode() {
-    var stored = null;
-    try {
-      stored = localStorage.getItem(STORAGE_KEY);
-    } catch (error) {
-      stored = null;
-    }
-    if (stored) {
-      try {
-        var parsed = JSON.parse(stored);
-        if (parsed && Array.isArray(parsed.files) && parsed.files.length) {
-          project.files = parsed.files.slice(0, MAX_FILES).map(function (file, i) {
-            return {
-              name: safeFileName(file && file.name ? file.name : (i === 0 ? DEFAULT_ENTRY : "file-" + (i + 1) + ".x")),
-              content: typeof (file && file.content) === "string" ? file.content : ""
-            };
-          });
-          var active = Number(parsed.active) || 0;
-          project.active = Math.min(Math.max(0, active), project.files.length - 1);
-          suppressChange = true;
-          editor.setValue(activeFile().content || "");
-          suppressChange = false;
-          renderFileBar();
-          return;
-        }
-      } catch (error) { /* fall through to example */ }
-    }
     if (window.X_PLAYGROUND_EXAMPLES && window.X_PLAYGROUND_EXAMPLES[0]) {
       loadExample(window.X_PLAYGROUND_EXAMPLES[0]);
     }
@@ -529,7 +491,6 @@
     if (!worker) {
       spawnWorker();
     }
-    saveProject();
     if (runTimer) {
       clearTimeout(runTimer);
       runTimer = null;
@@ -578,7 +539,6 @@
       editor.setValue(formatted);
       editor.setCursor(cursor);
       syncActiveFromEditor();
-      saveProject();
       suppressChange = false;
       setStatus("Formatted " + activeFile().name, "ok");
       els.errors.textContent = "";
@@ -1156,7 +1116,6 @@
     editor.on("change", function () {
       if (!suppressChange) {
         syncActiveFromEditor();
-        saveProject();
       }
     });
 
