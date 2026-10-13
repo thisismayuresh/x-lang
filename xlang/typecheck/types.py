@@ -344,7 +344,10 @@ def is_compatible(
     """Return whether a value of ``source`` may be used where ``target`` is expected."""
     if target.is_any or source.is_any:
         return True
-    if source.union_parts:
+    if source.union_parts and not source.is_array:
+        # An array whose *element* is a union (``(record{a}|record{b})[]``)
+        # is handled by the array branch below, which strips one dimension
+        # before comparing elements.
         return all(
             is_compatible(part, target, relations=relations)
             for part in source.union_parts
@@ -393,6 +396,28 @@ def is_compatible(
                 return False
         return True
     if target.name == "object":
+        if not target.arguments:
+            return True
+        if source.record_fields and len(target.arguments) == 2:
+            key_type, value_type = target.arguments
+            return all(
+                is_compatible(
+                    XType("string", literal=field_name), key_type, relations=relations
+                )
+                and is_compatible(field_type, value_type, relations=relations)
+                for field_name, field_type in source.record_fields
+            )
+        if (
+            source.name == "object"
+            and source.arguments
+            and len(source.arguments) == len(target.arguments)
+        ):
+            return all(
+                is_compatible(actual, expected, relations=relations)
+                for actual, expected in zip(source.arguments, target.arguments)
+            )
+        # A value whose shape the checker cannot see (bare ``object``, a class
+        # instance, ...) stays acceptable, matching the runtime's coercion.
         return True
     if source.is_array and not target.is_array:
         # An array never satisfies a scalar annotation (``int[]`` where ``int``

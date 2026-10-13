@@ -7,10 +7,51 @@ from typing import Any, Awaitable, Callable
 from ._common import *  # noqa: F401,F403
 from ._native_builtins import DELETE_BUILTIN_NAME
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _EXCEPTION_PARENTS, _ARRAY_METHODS, _STRING_METHODS
+from ..runtime import _typed_object_annotation
 
 from ._math_builtins import MathBuiltins
 from ._native_builtins import NativeBuiltins
 from ._collection_builtins import CollectionBuiltins
+
+
+def _split_type_annotation_union(type_name: str) -> list[str]:
+    """Split a type annotation on top-level ``|`` characters.
+
+    Quote-aware so ``object<"a"|"b", string>`` yields ``"a"`` and ``"b"``,
+    and bracket-aware so nested generics stay in one part.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in type_name:
+        if in_string:
+            current.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            current.append(character)
+        elif character in "<({[":
+            depth += 1
+            current.append(character)
+        elif character in ">)}]":
+            depth = max(0, depth - 1)
+            current.append(character)
+        elif character == "|" and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(character)
+    if current:
+        parts.append("".join(current).strip())
+    return [part for part in parts if part]
 
 
 class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
@@ -979,8 +1020,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
-                    member.type_name is not None
-                    and member.type_name.startswith("object<")
+                    _typed_object_annotation(member.type_name) is not None
                     and member.initializer is not None
                 ):
                     value = self._coerce_typed_object(
@@ -1107,12 +1147,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             value = self._coerce_typed_array(
                 array_type, value, f"variable '{statement.name}'"
             )
-        object_type = (
-            statement.type_name
-            if statement.type_name is not None
-            and statement.type_name.startswith("object<")
-            else None
-        )
+        object_type = _typed_object_annotation(statement.type_name)
         if object_type is not None and statement.initializer is not None:
             value = self._coerce_typed_object(
                 object_type, value, f"variable '{statement.name}'"
@@ -1527,7 +1562,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return items
         if isinstance(expression, ObjectLiteral):
             fields: dict[str, Any] = {}
-            for name, value in expression.entries:
+            for entry in expression.entries:
+                name = entry.key
+                value = entry.value
                 if name is None:
                     spread_fields = self._evaluate(value.value, environment)
                     if isinstance(spread_fields, XInstance):
@@ -2674,8 +2711,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                     )
                 if (
-                    field_declaration.type_name is not None
-                    and field_declaration.type_name.startswith("object<")
+                    _typed_object_annotation(field_declaration.type_name)
+                    is not None
                 ):
                     value = self._coerce_typed_object(
                         field_declaration.type_name,
@@ -2722,8 +2759,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     f"{member_noun(field_declaration.modifiers)} '{field_owner.name}.{name}'",
                 )
             if (
-                field_declaration.type_name is not None
-                and field_declaration.type_name.startswith("object<")
+                _typed_object_annotation(field_declaration.type_name) is not None
             ):
                 value = self._coerce_typed_object(
                     field_declaration.type_name,
@@ -2772,8 +2808,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         f"{member_noun(member.modifiers)} '{xclass.name}.{member.name}'",
                     )
                 if (
-                    member.type_name is not None
-                    and member.type_name.startswith("object<")
+                    _typed_object_annotation(member.type_name) is not None
                     and member.initializer is not None
                 ):
                     value = self._coerce_typed_object(
@@ -2976,8 +3011,22 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return 1 if type_name in ("undefined", "Object", "object") else None
         if value is None:
             return 1 if type_name in ("null", "Object", "object") else None
-        if type_name.startswith("object<"):
-            return 3 if self._typed_object_matches(type_name, value) else None
+        union_parts = (
+            _split_type_annotation_union(type_name) if "|" in type_name else []
+        )
+        if len(union_parts) > 1:
+            scores = [
+                score
+                for part in union_parts
+                if (score := self._type_match_score(part, value)) is not None
+            ]
+            return max(scores) if scores else None
+        if len(type_name) >= 2 and type_name[0] == '"' and type_name[-1] == '"':
+            # String-literal type ("theme"); the literals survive in the
+            # annotation even though user type aliases are erased.  A quoted
+            # body that contains "|" is one literal, not a union.
+            literal = type_name[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            return 3 if isinstance(value, str) and value == literal else None
         if type_name.endswith("[]"):
             if not isinstance(value, list):
                 return None
@@ -2986,6 +3035,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 if self._type_match_score(element_type, element) is None:
                     return None
             return 3
+        if type_name.startswith("object<"):
+            return 3 if self._typed_object_matches(type_name, value) else None
         if type_name.casefold() == "function":
             return 3 if self._is_function_value(value) else None
         interface = self._interface_type(type_name)
@@ -3206,7 +3257,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         )
 
     def _coerce_typed_object(self, type_name: str, value: Any, context: str) -> Any:
-        if not type_name.startswith("object<"):
+        if _typed_object_annotation(type_name) is None:
+            # Not a typed-object annotation (``object``, ``object<K,V>[]``,
+            # an unrelated type name): nothing to coerce here.
             return value
         type_arguments = self._generic_type_arguments(type_name)
         if len(type_arguments) != 2:
@@ -3238,10 +3291,10 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
     def _coerce_typed_object_value(
         self, type_name: str, value: Any, context: str
     ) -> Any:
-        if type_name.startswith("object<"):
-            return self._coerce_typed_object(type_name, value, context)
         if type_name.endswith("[]"):
             return self._coerce_typed_array(type_name, value, context)
+        if type_name.startswith("object<"):
+            return self._coerce_typed_object(type_name, value, context)
         if self._type_match_score(type_name, value) is None:
             raise RuntimeErrorX(
                 f"Expected '{type_name}' for {context}, "

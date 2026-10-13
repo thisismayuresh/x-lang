@@ -226,7 +226,9 @@ Implemented and currently demonstrated features:
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
   first-class function references, generic declaration/call syntax, and
   overload resolution by argument count and runtime value types. Generic
-  `object<K, V>` annotations validate dictionary key/value types at runtime.
+  `object<K, V>` annotations validate dictionary key/value types at runtime
+  and in `x check`, where an object literal is checked key by key and an
+  unknown key names the key, lists the allowed keys, and points at the entry.
 - [x] `Function`/`function` callback annotations validate function values.
   `interface` declarations support comma- or semicolon-separated fields and
   method signatures, including nested interface types and typed arrays.
@@ -429,6 +431,28 @@ of named properties. The TypeScript-style colon form
 (`let user: object<string, string> = ...`) is also accepted for variables and
 fields, and a union of string literals (`type SettingsKey = "theme" |
 "backup";`) pins the value to its members.
+
+An object literal checked against a generic object type is validated key by
+key, and each problem gets its own diagnostic instead of a generic
+assignment error:
+
+```text
+error: Object key 'd' is not allowed in 'DEFAULT_SETTINGS'
+ --> settings.x:4:5
+  |
+4 |     d: "e",
+  |     ^^ Object key 'd' is not allowed in 'DEFAULT_SETTINGS'
+  = note: 'DEFAULT_SETTINGS' is typed `object<SettingsKey, string>`
+  = note: allowed keys: "theme", "backup_interval_min", "last_backup_at"
+  = help: remove the 'd' entry, or allow 'd' in the key type
+```
+
+A value of the wrong type reports
+`Value for key 'theme' in 'settings' has the wrong type` with a
+`= note: expected \`string\`, found \`integer\`` line. The same message appears for literals passed
+to typed parameters (`... in argument 1 of 'update'`) and for assignment
+literals; the caret underlines the offending key or value, and the browser
+playground renders the `note`/`help` lines the same way as `x check`.
 
 Run the complete sample with:
 

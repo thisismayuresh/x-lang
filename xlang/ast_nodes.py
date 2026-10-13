@@ -305,8 +305,24 @@ class ArrayLiteral:
 
 
 @dataclass
+class ObjectEntry:
+    """One ``key: value`` (or ``...spread``) entry of an object literal.
+
+    ``key`` is ``None`` for a spread entry.  The span points at the key
+    token so diagnostics can underline the offending key itself.
+    """
+
+    key: str | None
+    value: Any
+    line: int | None = None
+    column: int | None = None
+    end_line: int | None = None
+    end_column: int | None = None
+
+
+@dataclass
 class ObjectLiteral:
-    entries: list[tuple[str | None, Any]]
+    entries: list[ObjectEntry]
 
 
 @dataclass

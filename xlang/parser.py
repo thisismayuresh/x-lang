@@ -31,6 +31,7 @@ from .ast_nodes import (
     Member,
     NewExpression,
     NamespaceDeclaration,
+    ObjectEntry,
     ObjectLiteral,
     OptionalChain,
     OptionalChainSegment,
@@ -1441,12 +1442,14 @@ class Parser:
         if isinstance(expression, ObjectLiteral):
             fields: list[tuple[str, Any]] = []
             rest_name = None
-            for key, target in expression.entries:
+            for entry in expression.entries:
+                key = entry.key
+                target = entry.value
                 if key is None and isinstance(target, Spread):
                     if not isinstance(target.value, Identifier):
                         raise ParseError("Object rest assignment needs a variable", self._peek())
                     rest_name = target.value.name
-                    if expression.entries[-1] != (key, target):
+                    if expression.entries[-1] is not entry:
                         raise ParseError("Object rest assignment must be last", self._peek())
                     continue
                 if key is None:
@@ -1670,22 +1673,32 @@ class Parser:
             while not self._check("}") and not self._check("EOF"):
                 if self._match("..."):
                     self._require_feature("spread", self._previous())
-                    entries.append((None, Spread(self._expression())))
+                    entries.append(
+                        ObjectEntry(None, Spread(self._expression()))
+                    )
                     if not self._match(","):
                         break
                     continue
                 if self._match("STRING"):
-                    key = self._previous().value
+                    key_token = self._previous()
+                    key = key_token.value
                     self._consume(":", "Expected ':' after object field name")
-                    entries.append((key, self._expression()))
+                    entries.append(
+                        self._object_entry(key, key_token, self._expression())
+                    )
                 else:
-                    key = self._consume(
+                    key_token = self._consume(
                         "IDENTIFIER", "Expected object field name"
-                    ).value
+                    )
+                    key = key_token.value
                     if self._match(":"):
-                        entries.append((key, self._expression()))
+                        entries.append(
+                            self._object_entry(key, key_token, self._expression())
+                        )
                     else:
-                        entries.append((key, Identifier(key)))
+                        entries.append(
+                            self._object_entry(key, key_token, Identifier(key))
+                        )
                 if not self._match(","):
                     break
             self._consume("}", "Expected '}' after object literal")
@@ -1967,6 +1980,20 @@ class Parser:
         if self._check(kind):
             return self._advance()
         raise ParseError(message, self._peek())
+
+    def _object_entry(self, key: str, key_token: Token, value: Any) -> ObjectEntry:
+        """Build an object-literal entry, carrying the key token's span."""
+        width = key_token.end - key_token.start
+        if width < len(key):
+            width = len(key)
+        return ObjectEntry(
+            key,
+            value,
+            line=key_token.line,
+            column=key_token.column,
+            end_line=key_token.line,
+            end_column=key_token.column + width,
+        )
 
     def _line_terminator_before_current(self) -> bool:
         return self.position > 0 and self._peek().line > self._previous().line

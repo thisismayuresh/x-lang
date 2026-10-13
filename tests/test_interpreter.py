@@ -144,7 +144,7 @@ class InterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["object"])
 
         with self.assertRaisesRegex(
-            RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
+            RuntimeErrorX, "Value for key 'age' in 'user' has the wrong type"
         ):
             self.run_x("""
                 function main() {
@@ -156,7 +156,7 @@ class InterpreterTests(unittest.TestCase):
                 """)
 
         with self.assertRaisesRegex(
-            RuntimeErrorX, "Expected 'string'.*object value at key 'age'"
+            RuntimeErrorX, "Value for key 'age' in 'user' has the wrong type"
         ):
             self.run_x("""
                 function main() {
@@ -175,7 +175,10 @@ class InterpreterTests(unittest.TestCase):
                 }
                 """)
 
-        with self.assertRaisesRegex(RuntimeErrorX, "No overload of 'update' matches"):
+        with self.assertRaisesRegex(
+            RuntimeErrorX,
+            "Value for key 'age' in argument 1 of 'update' has the wrong type",
+        ):
             self.run_x("""
                 function update(object<string, string> user) {}
                 function main() {
