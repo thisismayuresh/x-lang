@@ -1,10 +1,12 @@
 # Design: single-sourcing builtin knowledge via interpreter introspection
 
-**Status:** proposal — not implemented yet
+**Status:** implemented (Phases 1–2) — see §11 for what landed and the
+resolved open questions. Phase 3 (docstring backfill, `.x` stubs,
+did-you-mean suggestions) remains future work.
 **Scope:** `xlang/`, `xlang/typecheck/`, `vscode-xlang/`, playground wheel
-**Motivation:** the VS Code extension, the typechecker, and the interpreter each
-carry their own handwritten copy of "which builtin methods exist", and the
-copies have already drifted apart.
+**Motivation:** the VS Code extension, the typechecker, and the interpreter
+each carried their own handwritten copy of "which builtin methods exist", and
+the copies had already drifted apart.
 
 ---
 
@@ -351,13 +353,57 @@ and `tests/test_introspect.py` (new).
 
 ## 10. Open questions
 
-1. Module location — `xlang/introspect.py` (top-level, short) vs
-   `xlang/introspect/__init__.py` (room to grow into the stub loader of
-   Phase 3)?
-2. Ship option A (instance query) first, or go straight to option B
-   (refactor builders to module-level tables)?
-3. Should `namespace_members` also surface `extended_collections.build_namespaces()`
-   names so the extended DSA types complete too? (They are exposed globally
-   at runtime, so arguably yes.)
-4. Once single-sourced, should the checker start suggesting close matches for
-   unknown string methods (`_closest_match` already exists)?
+Resolved in §11 (implementation notes): module location, option A first,
+extended collections included, did-you-mean left for Phase 3.
+
+---
+
+## 11. Implementation notes (what landed)
+
+Phases 1–2 are implemented. Summary of decisions and deltas from the plan
+above:
+
+- **Module:** `xlang/introspect.py` (top-level, per Q1). Public surface:
+  `MemberInfo`, `members_of_type`, `namespace_members`, `known_type_names`.
+  Guarded by `tests/test_introspect.py` (17 tests).
+- **Option A shipped** (Q2): `namespace_members` constructs one cached
+  throwaway `Interpreter(arguments=[], output=sink, auto_call_main=False)`
+  and walks `globals` — `_install_builtins` only assembles in-memory
+  `Environment`s, so this is side-effect free. The API hides the choice, so
+  swapping to option B later is invisible to callers.
+- **Extended collections are included** (Q3): they are registered in
+  `globals` at startup, so the environment walk surfaces `TreeMap`,
+  `TreeSet`, `LinkedHashMap`, `LRUCache`, `ThreadSafeMap`, `ThreadSafeSet`
+  with no extra code.
+- **Did-you-mean suggestions** (Q4) remain Phase 3 — the checker change is
+  still inference-only.
+- **Special members discovered during implementation:** `_get_member`
+  answers `length` (string, array) and `toString` (string, numbers)
+  inline, with no runtime table. `introspect._VALUE_TYPE_SPECIAL_MEMBERS`
+  mirrors them, and `test_special_members_are_real` round-trips every entry
+  through a live `Interpreter._get_member` — drift goes red, not silent.
+- **Wrapper docstrings:** `_make_collection_ns` now copies the original
+  builtin's docstring onto the instance-method wrapper so future Phase 3
+  backfills parse through the wrapper.
+- **The checker's sets are derived** at import time:
+  `STRING_METHOD_NAMES` / `ARRAY_METHOD_NAMES` are frozensets over
+  `members_of_type(...)`. Net effect: +14 string methods typed as
+  `FUNCTION` (strip/startsWith/…), and the phantom `array.add` (checker
+  drift the other way) is gone. No legality change — the checker was
+  already permissive.
+- **The LSP catalog is deleted:** `_BUILTIN_MEMBERS`, `_BUILTIN_ALIASES`
+  and `_BUILTIN_KIND` (≈310 lines) are gone; `_builtin_members` asks
+  `introspect` and maps `MemberInfo.kind` to `CompletionItemKind`.
+  Completeness: string 11→34, array 11→21; collections and
+  `System.utils.Math`/`FileSystem`/etc. now answer from the live
+  environment. The old `*` wildcard bucket is gone — a receiver with no
+  known members (e.g. `integer` beyond `toString`) falls back to the flat
+  keyword list, which is the documented degrade path.
+- **One catalog fiction removed:** the old catalog offered
+  `obj.keys()/values()/isEmpty()` on plain object literals; those raise
+  "Object has no field" at runtime and are no longer suggested
+  (`test_object_variable_offers_no_builtin_fiction` pins this).
+- **The playground's `completions.js` stays a static snapshot** — the
+  browser computes completions on the main thread with no Python to ask.
+  It is the only remaining copy and cannot drift the LSP/checker; wiring
+  the worker to `introspect` is a possible future enhancement.

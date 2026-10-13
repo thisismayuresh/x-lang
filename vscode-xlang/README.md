@@ -68,9 +68,13 @@ Full TextMate grammar for `.x` files covering:
   declaring class (`Point.x`, `Point.mag(...)`). The receiver's type is
   resolved from its annotation or from `new Ctor(...)` in the initializer
   (dotted paths included: `new System.utils.Collections.HashMap()` → `HashMap`).
-  Builtin collections get the same treatment: after `let m = new HashMap()`
-  the popup offers the real instance methods (`set`, `get`, `has`, `entries`, …)
-  from the static catalog shared with the playground.
+  Builtin receivers are answered by **`xlang.introspect`** — the interpreter's
+  own tables, queried in-process — so the popup cannot drift from what runs:
+  all 34 string members (including `strip`, `startsWith`, `replaceAll`,
+  `lines`), all 21 array members, every collection's instance methods
+  (`set`, `get`, `entries`, …), `System.utils.Math` and friends, and the
+  special `length` / `toString` members on primitives. See
+  `INTROSPECTION.md` for the design.
 - Import path completion: after `import ` and after `import System.`, paths are
   filtered to what actually exists on disk.
 

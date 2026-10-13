@@ -1,6 +1,6 @@
 import System.utils.Collections
 
-any function main() {
+export any function main() {
     print("=== Running All DSA Tests ===\n")
     
     // HashMap Tests

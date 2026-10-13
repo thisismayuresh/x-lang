@@ -54,6 +54,7 @@ from ..ast_nodes import (
     WhileStatement,
 )
 from ..diagnostics import callable_kind, member_noun
+from ..introspect import members_of_type
 from .errors import TypeCheckError
 from .types import (
     ANY,
@@ -79,56 +80,17 @@ from .types import (
 )
 
 
-#: Dot-callable methods on arrays, mirroring the interpreter's table.
+#: Dot-callable methods on arrays, derived from the interpreter's table via
+#: ``xlang.introspect`` so the two can never drift.  The checker uses these
+#: only to decide a dot-call's *return type* (FUNCTION vs ANY), never
+#: legality — unknown names stay permissive.
 ARRAY_METHOD_NAMES = frozenset(
-    {
-        "map",
-        "filter",
-        "reduce",
-        "forEach",
-        "find",
-        "some",
-        "every",
-        "indexOf",
-        "contains",
-        "sort",
-        "reverse",
-        "slice",
-        "concat",
-        "join",
-        "first",
-        "last",
-        "isEmpty",
-        "clear",
-        "add",
-        "push",
-        "pop",
-    }
+    member.name for member in members_of_type("array")
 )
 
-#: Dot-callable methods on strings, mirroring the interpreter's table.
+#: Dot-callable methods on strings, derived the same way.
 STRING_METHOD_NAMES = frozenset(
-    {
-        "toUpperCase",
-        "toLowerCase",
-        "trim",
-        "startsWith",
-        "endsWith",
-        "contains",
-        "indexOf",
-        "replace",
-        "replaceAll",
-        "split",
-        "charAt",
-        "substring",
-        "slice",
-        "repeat",
-        "padStart",
-        "padEnd",
-        "isEmpty",
-        "toCharArray",
-        "toString",
-    }
+    member.name for member in members_of_type("string")
 )
 
 _VISIBILITY_ORDER = ("private", "protected", "public")

@@ -955,331 +955,12 @@ def _var_static_type(source: str, name: str) -> str | None:
     return None
 
 
-# Members offered after a `.` for built-in and stdlib receiver types. The
-# playground keeps the same map in `docs-site/playground/completions.js`;
-# keep the two in sync when adding entries.
-_BUILTIN_MEMBERS: dict[str, list[tuple[str, str, str]]] = {
-    "*": [
-        ("length", "property", "size of array/string"),
-        ("size", "method", "collection size()"),
-        ("toString", "method", "stringify value"),
-        ("message", "property", "exception message"),
-        ("name", "property", "type / exception name"),
-    ],
-    "string": [
-        ("toUpperCase", "method", "toUpperCase()"),
-        ("toLowerCase", "method", "toLowerCase()"),
-        ("trim", "method", "trim()"),
-        ("includes", "method", "includes(text)"),
-        ("indexOf", "method", "indexOf(text)"),
-        ("slice", "method", "slice(start, end)"),
-        ("substring", "method", "substring(start, end)"),
-        ("split", "method", "split(separator)"),
-        ("replace", "method", "replace(from, to)"),
-        ("charAt", "method", "charAt(index)"),
-        ("length", "property", "character count"),
-    ],
-    "array": [
-        ("length", "property", "element count"),
-        ("push", "method", "push(value)"),
-        ("pop", "method", "pop()"),
-        ("map", "method", "map(callback)"),
-        ("filter", "method", "filter(callback)"),
-        ("reduce", "method", "reduce(callback, init)"),
-        ("join", "method", "join(separator)"),
-        ("slice", "method", "slice(start, end)"),
-        ("indexOf", "method", "indexOf(value)"),
-        ("contains", "method", "contains(value)"),
-        ("isEmpty", "method", "isEmpty()"),
-    ],
-    "object": [
-        ("keys", "method", "keys()"),
-        ("values", "method", "values()"),
-        ("entries", "method", "entries()"),
-        ("size", "property", "entry count"),
-        ("isEmpty", "method", "isEmpty()"),
-    ],
-    "boolean": [
-        ("toString", "method", "toString()"),
-    ],
-    "number": [
-        ("toString", "method", "toString()"),
-        ("toFixed", "method", "toFixed(digits)"),
-        ("toPrecision", "method", "toPrecision(precision)"),
-    ],
-    "List": [
-        ("add", "method", "add(...)"),
-        ("addFirst", "method", "addFirst(...)"),
-        ("addLast", "method", "addLast(...)"),
-        ("clear", "method", "clear()"),
-        ("concat", "method", "concat(...)"),
-        ("contains", "method", "contains(...)"),
-        ("every", "method", "every(...)"),
-        ("filter", "method", "filter(...)"),
-        ("find", "method", "find(...)"),
-        ("first", "method", "first(...)"),
-        ("forEach", "method", "forEach(...)"),
-        ("get", "method", "get(...)"),
-        ("getFirst", "method", "getFirst()"),
-        ("getLast", "method", "getLast()"),
-        ("groupBy", "method", "groupBy(...)"),
-        ("indexOf", "method", "indexOf(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("join", "method", "join(...)"),
-        ("last", "method", "last(...)"),
-        ("map", "method", "map(...)"),
-        ("partition", "method", "partition(...)"),
-        ("pop", "method", "pop()"),
-        ("push", "method", "push(...)"),
-        ("reduce", "method", "reduce(...)"),
-        ("remove", "method", "remove(...)"),
-        ("removeFirst", "method", "removeFirst()"),
-        ("removeLast", "method", "removeLast()"),
-        ("reverse", "method", "reverse()"),
-        ("size", "method", "size()"),
-        ("slice", "method", "slice(...)"),
-        ("some", "method", "some(...)"),
-        ("sort", "method", "sort(...)"),
-        ("toArray", "method", "toArray()"),
-    ],
-    "LinkedList": [
-        ("add", "method", "add(...)"),
-        ("addFirst", "method", "addFirst(...)"),
-        ("addLast", "method", "addLast(...)"),
-        ("clear", "method", "clear()"),
-        ("concat", "method", "concat(...)"),
-        ("contains", "method", "contains(...)"),
-        ("every", "method", "every(...)"),
-        ("filter", "method", "filter(...)"),
-        ("find", "method", "find(...)"),
-        ("first", "method", "first(...)"),
-        ("forEach", "method", "forEach(...)"),
-        ("get", "method", "get(...)"),
-        ("getFirst", "method", "getFirst()"),
-        ("getLast", "method", "getLast()"),
-        ("groupBy", "method", "groupBy(...)"),
-        ("indexOf", "method", "indexOf(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("join", "method", "join(...)"),
-        ("last", "method", "last(...)"),
-        ("map", "method", "map(...)"),
-        ("partition", "method", "partition(...)"),
-        ("pop", "method", "pop()"),
-        ("push", "method", "push(...)"),
-        ("reduce", "method", "reduce(...)"),
-        ("remove", "method", "remove(...)"),
-        ("removeFirst", "method", "removeFirst()"),
-        ("removeLast", "method", "removeLast()"),
-        ("reverse", "method", "reverse()"),
-        ("size", "method", "size()"),
-        ("slice", "method", "slice(...)"),
-        ("some", "method", "some(...)"),
-        ("sort", "method", "sort(...)"),
-        ("toArray", "method", "toArray()"),
-    ],
-    "HashMap": [
-        ("clear", "method", "clear()"),
-        ("computeIfAbsent", "method", "computeIfAbsent(...)"),
-        ("computeIfPresent", "method", "computeIfPresent(...)"),
-        ("entries", "method", "entries()"),
-        ("filter", "method", "filter(...)"),
-        ("get", "method", "get(...)"),
-        ("getOrDefault", "method", "getOrDefault(...)"),
-        ("has", "method", "has(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("keys", "method", "keys()"),
-        ("map", "method", "map(...)"),
-        ("merge", "method", "merge(...)"),
-        ("putAll", "method", "putAll(...)"),
-        ("reduce", "method", "reduce(...)"),
-        ("remove", "method", "remove(...)"),
-        ("set", "method", "set(...)"),
-        ("size", "method", "size()"),
-        ("values", "method", "values()"),
-    ],
-    "Set": [
-        ("add", "method", "add(...)"),
-        ("clear", "method", "clear()"),
-        ("difference", "method", "difference(...)"),
-        ("has", "method", "has(...)"),
-        ("intersection", "method", "intersection(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-        ("union", "method", "union(...)"),
-    ],
-    "Stack": [
-        ("clear", "method", "clear()"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("peek", "method", "peek()"),
-        ("pop", "method", "pop()"),
-        ("push", "method", "push(...)"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-    ],
-    "Queue": [
-        ("clear", "method", "clear()"),
-        ("dequeue", "method", "dequeue()"),
-        ("enqueue", "method", "enqueue(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("peek", "method", "peek()"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-    ],
-    "PriorityQueue": [
-        ("clear", "method", "clear()"),
-        ("dequeue", "method", "dequeue()"),
-        ("enqueue", "method", "enqueue(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("peek", "method", "peek()"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-    ],
-    "Trie": [
-        ("clear", "method", "clear()"),
-        ("getAllWords", "method", "getAllWords()"),
-        ("getWordsWithPrefix", "method", "getWordsWithPrefix(...)"),
-        ("insert", "method", "insert(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("remove", "method", "remove(...)"),
-        ("search", "method", "search(...)"),
-        ("size", "method", "size()"),
-        ("startsWith", "method", "startsWith(...)"),
-    ],
-    "TreeMap": [
-        ("clear", "method", "clear()"),
-        ("containsKey", "method", "containsKey(...)"),
-        ("firstKey", "method", "firstKey()"),
-        ("get", "method", "get(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("items", "method", "items()"),
-        ("iterator", "method", "iterator()"),
-        ("keysInOrder", "method", "keysInOrder()"),
-        ("lastKey", "method", "lastKey()"),
-        ("put", "method", "put(...)"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toJSON", "method", "toJSON()"),
-        ("valuesInOrder", "method", "valuesInOrder()"),
-    ],
-    "TreeSet": [
-        ("add", "method", "add(...)"),
-        ("clear", "method", "clear()"),
-        ("contains", "method", "contains(...)"),
-        ("first", "method", "first(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("iterator", "method", "iterator()"),
-        ("last", "method", "last(...)"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-        ("toJSON", "method", "toJSON()"),
-    ],
-    "LinkedHashMap": [
-        ("clear", "method", "clear()"),
-        ("containsKey", "method", "containsKey(...)"),
-        ("entries", "method", "entries()"),
-        ("get", "method", "get(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("iterator", "method", "iterator()"),
-        ("keys", "method", "keys()"),
-        ("put", "method", "put(...)"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toJSON", "method", "toJSON()"),
-        ("values", "method", "values()"),
-    ],
-    "LRUCache": [
-        ("capacity", "method", "capacity()"),
-        ("clear", "method", "clear()"),
-        ("containsKey", "method", "containsKey(...)"),
-        ("get", "method", "get(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("iterator", "method", "iterator()"),
-        ("keysInOrder", "method", "keysInOrder()"),
-        ("put", "method", "put(...)"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toJSON", "method", "toJSON()"),
-    ],
-    "ThreadSafeMap": [
-        ("clear", "method", "clear()"),
-        ("containsKey", "method", "containsKey(...)"),
-        ("entries", "method", "entries()"),
-        ("get", "method", "get(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("iterator", "method", "iterator()"),
-        ("put", "method", "put(...)"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toJSON", "method", "toJSON()"),
-    ],
-    "ThreadSafeSet": [
-        ("add", "method", "add(...)"),
-        ("clear", "method", "clear()"),
-        ("contains", "method", "contains(...)"),
-        ("isEmpty", "method", "isEmpty()"),
-        ("iterator", "method", "iterator()"),
-        ("remove", "method", "remove(...)"),
-        ("size", "method", "size()"),
-        ("toArray", "method", "toArray()"),
-        ("toJSON", "method", "toJSON()"),
-    ],
-    "Math": [
-        ("sqrt", "method", "sqrt(x)"),
-        ("pow", "method", "pow(base, exp)"),
-        ("abs", "method", "abs(x)"),
-        ("max", "method", "max(a, b, …)"),
-        ("min", "method", "min(a, b, …)"),
-        ("floor", "method", "floor(x)"),
-        ("ceil", "method", "ceil(x)"),
-        ("round", "method", "round(x)"),
-        ("random", "method", "random()"),
-        ("randomInt", "method", "randomInt(max)"),
-        ("factorial", "method", "factorial(n)"),
-        ("gcd", "method", "gcd(a, b)"),
-        ("lcm", "method", "lcm(a, b)"),
-        ("sin", "method", "sin(x)"),
-        ("cos", "method", "cos(x)"),
-        ("tan", "method", "tan(x)"),
-        ("log", "method", "log(x)"),
-        ("log2", "method", "log2(x)"),
-        ("log10", "method", "log10(x)"),
-        ("exp", "method", "exp(x)"),
-        ("pi", "property", "π constant"),
-        ("e", "property", "Euler's number"),
-    ],
-    "JSON": [
-        ("toJSON", "method", "toJSON(value, indent?)"),
-        ("parse", "method", "parse(text)"),
-    ],
-    "FileSystem": [
-        ("readText", "method", "readText(path)"),
-        ("writeText", "method", "writeText(path, text)"),
-        ("appendText", "method", "appendText(path, text)"),
-        ("exists", "method", "exists(path)"),
-        ("isFile", "method", "isFile(path)"),
-        ("isDirectory", "method", "isDirectory(path)"),
-        ("listDirectory", "method", "listDirectory(path)"),
-        ("createDirectory", "method", "createDirectory(path)"),
-        ("deleteFile", "method", "deleteFile(path)"),
-        ("deleteDirectory", "method", "deleteDirectory(path)"),
-    ],
-}
+# Builtin/stdlib members for `receiver.` completions come from
+# `xlang.introspect` — the interpreter's own tables — so the LSP cannot
+# drift from what actually runs. The playground keeps a static snapshot in
+# `docs-site/playground/completions.js` (the browser has no Python to ask).
 
-# Aliases the runtime reports for the same shape, so `let names = [...]` and a
-# `List` variable both resolve.
-_BUILTIN_ALIASES = {
-    "integer": "number",
-    "int": "number",
-    "float": "number",
-    "number": "number",
-    "bool": "boolean",
-    "boolean": "boolean",
-}
-
-_BUILTIN_KIND = {
+_MEMBER_KINDS = {
     "method": CompletionItemKind.Method,
     "property": CompletionItemKind.Property,
     "namespace": CompletionItemKind.Module,
@@ -1288,30 +969,37 @@ _BUILTIN_KIND = {
 
 
 def _builtin_members(type_name: str) -> list[CompletionItem]:
-    """Members for a built-in/stdlib receiver type, or ``[]``."""
-    key = _BUILTIN_ALIASES.get(type_name, type_name)
-    # `string[]` / `object<K, V>`-shaped annotations share the array/object maps.
-    lowered = key.lower()
-    if lowered.endswith("[]"):
-        key = "array"
-    entries = list(_BUILTIN_MEMBERS.get(key, []))
-    # Only fall back to the wildcard set for types with no dedicated entry;
-    # a number or boolean should not inherit `length` from the array/string
-    # wildcard.
-    if key not in _BUILTIN_MEMBERS:
-        entries += _BUILTIN_MEMBERS.get("*", [])
+    """Members for a built-in/stdlib receiver type, or ``[]``.
+
+    Asks ``xlang.introspect``: value types (string, array) answer from the
+    interpreter's dot-method tables; namespaces and collection classes
+    (``HashMap``, ``System.utils.Math``, ...) from the builtin environment.
+    Never raises — a failure degrades to ``[]``, which drops the popup back
+    to the flat keyword list.
+    """
+    try:
+        from xlang import introspect
+
+        infos = introspect.members_of_type(type_name)
+        if not infos:
+            infos = introspect.namespace_members(type_name)
+    except Exception:
+        return []
     seen: set[str] = set()
     items: list[CompletionItem] = []
-    for name, member_type, detail in entries:
-        if name in seen:
+    for info in infos:
+        if info.name in seen:
             continue
-        seen.add(name)
+        seen.add(info.name)
+        detail = f"{info.owner}.{info.name}"
+        if info.signature:
+            detail = f"{detail}: {info.signature}"
         items.append(
             CompletionItem(
-                label=name,
-                kind=_BUILTIN_KIND.get(member_type, CompletionItemKind.Method),
-                detail=f"{key}.{name}: {detail}",
-                documentation="built-in",
+                label=info.name,
+                kind=_MEMBER_KINDS.get(info.kind, CompletionItemKind.Method),
+                detail=detail,
+                documentation=info.doc or "built-in",
             )
         )
     return items
