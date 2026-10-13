@@ -148,7 +148,14 @@ class XLanguageServer(LanguageServer):
         )
 
     def _update_diagnostics(self, uri: str) -> None:
-        """Lex, parse and type-check a document, then publish the diagnostics."""
+        """Lex, parse and type-check a document, then publish the diagnostics.
+
+        The document is loaded through :class:`ModuleLoader` so that imported
+        interfaces, classes and functions are visible to the type checker —
+        the same way ``x check`` works.  The unsaved editor buffer overrides
+        the on-disk entry file, and any other open buffers override their own
+        files.  Only diagnostics belonging to this document are published.
+        """
         source = self._source(uri)
         if not source:
             self.diagnostics_cache[uri] = []
@@ -156,37 +163,64 @@ class XLanguageServer(LanguageServer):
             return
 
         diagnostics: list[Diagnostic] = []
+        entry_path = Path(to_fs_path(uri)).resolve()
         try:
             config = self.project_config(uri)
-            lexer = Lexer(source, uri, recover_errors=True)
-            tokens = lexer.tokenize()
-            for error in lexer.errors:
-                diagnostics.append(self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang"))
 
-            parser = Parser(
-                tokens,
-                config.features,
-                uri,
-                recover_errors=True,
+            # Every open buffer is an override so cross-file checks see
+            # unsaved edits, not stale disk contents.
+            overrides: dict[Path, str] = {}
+            for open_uri, open_source in self.documents.items():
+                overrides[Path(to_fs_path(open_uri)).resolve()] = open_source
+
+            project_root = config.path.parent if config.path is not None else entry_path.parent
+            loader = ModuleLoader(
+                project_root, config, recover_errors=True, source_overrides=overrides
             )
-            program = parser.parse()
-            for error in parser.errors:
+            try:
+                program = loader.load_program(entry_path)
+            except Exception as error:
                 diagnostics.append(self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang"))
+                self.diagnostics_cache[uri] = diagnostics
+                self._publish(uri, diagnostics)
+                return
+
+            # Loader lex/parse errors, scoped to this document only.
+            for error in loader.errors:
+                if self._error_in_file(error, entry_path):
+                    diagnostics.append(self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang"))
 
             if (
                 not diagnostics
                 and self.settings.get("enableTypeChecking", True)
                 and config.enabled("type_checker")
             ):
-                for error in TypeChecker().check(program, source_name=uri, config=config):
-                    diagnostics.append(
-                        self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang")
-                    )
+                for error in TypeChecker().check(program, source_name=str(entry_path), config=config):
+                    if self._error_in_file(error, entry_path):
+                        diagnostics.append(
+                            self._diagnostic(error, DiagnosticSeverity.Error, source, "xlang")
+                        )
         except Exception as error:
             print(f"Error checking {uri}: {error}", file=sys.stderr, flush=True)
 
         self.diagnostics_cache[uri] = diagnostics
         self._publish(uri, diagnostics)
+
+    @staticmethod
+    def _error_in_file(error: object, entry_path: Path) -> bool:
+        """True when a lex/parse/type error belongs to ``entry_path``.
+
+        Diagnostics from imported modules are dropped here so a document only
+        shows its own problems; each imported file gets its own diagnostics
+        when it is opened.
+        """
+        source_name = getattr(error, "source_name", None)
+        if not source_name:
+            return True
+        try:
+            return Path(source_name).resolve() == entry_path
+        except Exception:
+            return str(source_name) == str(entry_path)
 
 
 server = XLanguageServer()
@@ -1664,12 +1698,98 @@ def definition(ls: XLanguageServer, params: DefinitionParams):
             match = pattern.search(text)
             if match:
                 return located(index, match.start("n"))
+
+    # No local declaration: the name is likely imported.  Search the files
+    # this document imports and jump to the declaration there, mirroring
+    # ModuleLoader's sibling-relative resolution (`import orchestrator.x`).
+    for imported_path in _imported_files(uri, ls._source(uri)):
+        try:
+            imported_source = imported_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        imported_lines = code_lines(imported_source)
+        imported_uri = imported_path.as_uri()
+        for pattern in patterns:
+            for index, text in enumerate(imported_lines):
+                match = pattern.search(text)
+                if match:
+                    return Location(
+                        uri=imported_uri,
+                        range=Range(
+                            start=Position(line=index, character=match.start("n")),
+                            end=Position(line=index, character=match.end("n")),
+                        ),
+                    )
     return None
+
+
+IMPORT_RE = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)")
+
+
+def _imported_files(uri: str, source: str) -> list[Path]:
+    """Filesystem paths of the ``.x`` modules this document imports.
+
+    Resolution matches ``ModuleLoader._path_for_module``: a dotted module
+    path is tried next to the importer first, then under the project root.
+    Only the entry file's direct imports are considered — enough for
+    go-to-definition to cross one file boundary.
+    """
+    entry = Path(to_fs_path(uri))
+    project_root = entry.parent
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for line in code_lines(source):
+        match = IMPORT_RE.match(line)
+        if not match:
+            continue
+        parts = match.group(1).split(".")
+        relative = entry.parent.joinpath(*parts).with_suffix(".x")
+        candidate = relative if relative.is_file() else project_root.joinpath(*parts).with_suffix(".x")
+        if candidate.is_file() and candidate not in seen:
+            seen.add(candidate)
+            result.append(candidate)
+    return result
 
 
 @server.feature(TEXT_DOCUMENT_REFERENCES)
 def references(ls: XLanguageServer, params: ReferenceParams):
-    return []
+    """All places the word under the cursor is used in the document.
+
+    This is what powers "Go to References" / Ctrl+Shift+G.  It scans the
+    comment- and string-blanked buffer for whole-word matches of the symbol
+    at the cursor, so a click on ``TransactionRule`` lists every ``implements
+    TransactionRule``, type annotation and declaration of that name.
+    """
+    uri = str(params.text_document.uri)
+    lines = code_lines(ls._source(uri))
+    line0 = params.position.line
+    char0 = params.position.character
+    if line0 >= len(lines) or char0 > len(lines[line0]):
+        return []
+
+    word = None
+    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", lines[line0]):
+        start, end = match.span()
+        if start <= char0 < end:
+            word = match.group(0)
+            break
+    if word is None:
+        return []
+
+    pattern = re.compile(rf"\b{re.escape(word)}\b")
+    locations: list[Location] = []
+    for index, text in enumerate(lines):
+        for match in pattern.finditer(text):
+            locations.append(
+                Location(
+                    uri=uri,
+                    range=Range(
+                        start=Position(line=index, character=match.start()),
+                        end=Position(line=index, character=match.end()),
+                    ),
+                )
+            )
+    return locations
 
 
 if __name__ == "__main__":

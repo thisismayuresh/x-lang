@@ -2704,20 +2704,26 @@ be relied upon.
 ## Editor support (VS Code)
 
 A bundled extension in [`vscode-xlang/`](./vscode-xlang/) provides syntax
-highlighting, real-time type checking, completions, hover and go-to-definition
-for `.x` files. It is installed as `xlang.xlang@0.1.0` and activates
-automatically when you open any `.x` file — no manual step, and nothing to
-re-do after a reboot.
+highlighting, real-time type checking, completions, hover, go-to-definition and
+Find All References for `.x` files. It is installed as `xlang.xlang@0.1.0` and
+activates automatically when you open any `.x` file — no manual step, and
+nothing to re-do after a reboot.
 
 Editor diagnostics are produced by the same `Lexer` → `Parser` →
 `TypeChecker` pipeline used by `x check`, and the server reads `x.toml` the
 same way, so the squiggles in the editor and the command-line output match.
-The checker also rejects a value returned from a `void` function or method —
-previously that slipped through.
+The document is loaded through `ModuleLoader`, so interfaces and classes
+brought in through `import` are visible — a class implementing an interface
+declared in another file no longer reports a false
+`implements unknown interface` error. The checker also rejects a value
+returned from a `void` function or method — previously that slipped through.
 
 Go-to-definition (Ctrl+Click / F12) resolves functions, methods,
 constructors, parameters, fields, variables and enum members inside the
-current file, not just type names.
+current file, not just type names, and crosses direct `import` statements:
+Ctrl+Click on an imported interface jumps to its `export interface` line in
+the declaring file. Find All References lists every whole-word use of the
+clicked name in the current document.
 
 Completions are type-aware: every `let`/`const` binding is offered with its
 type in the popup (inferred from the initializer when un-annotated), and after
@@ -2749,8 +2755,9 @@ Extension Development Host against the source tree.
 
 See **[`vscode-xlang/README.md`](./vscode-xlang/README.md)** for the full
 report: architecture, every defect that was fixed, what was installed where,
-how to rebuild it, and the current limitations (go-to-definition is
-single-file only and does no scope analysis).
+how to rebuild it, and the current limitations (go-to-definition resolves
+direct imports but does no scope analysis; Find All References is
+single-file and word-based).
 
 **[`INTROSPECTION.md`](./INTROSPECTION.md)** documents the proposed next step:
 the interpreter, the typechecker and the LSP each carry their own handwritten
