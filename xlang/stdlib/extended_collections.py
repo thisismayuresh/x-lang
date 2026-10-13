@@ -40,11 +40,14 @@ this module never imports the interpreter. Register it with one edit inside
         collections_namespace.define(name, namespace)
         self.globals.define(name, namespace)
 
-``_make_collection_ns`` is what makes ``new TreeMap()`` and dot-calls work; the
-raw tables also support the functional style ``TreeMap.put(map, key, value)``.
-X-facing method names are camelCase (``contains_key`` -> ``containsKey``,
-``isEmpty``, ``toArray`` to match ``Set.toArray``, ``toJSON``/``fromJSON``);
-``create`` is the constructor entry point, mirroring ``HashMap.create``.
+``_make_collection_ns`` builds a ``CollectionNamespace``: ``create`` is the
+constructor entry point used by ``new TreeMap()``, and every other entry is an
+instance method (``map.put(key, value)``). The static call style
+(``TreeMap.put(map, key, value)``) is removed -- accessing a non-``create``
+member on the namespace raises an error directing you to ``new`` plus an
+instance call. X-facing method names are camelCase (``contains_key`` ->
+``containsKey``, ``isEmpty``, ``toArray`` to match ``Set.toArray``,
+``toJSON``/``fromJSON``).
 """
 
 from __future__ import annotations

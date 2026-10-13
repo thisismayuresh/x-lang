@@ -99,7 +99,7 @@ function add(integer a, integer b) {
 // calls @flaky first; if the inner function throws, the retry decorator calls
 // it again. This is how you compose behaviour without copying a guard into
 // every retry-aware function.
-function flaky(+) {
+function flaky(target) {
     return (n) => {
         if (n < 0) {
             throw new Error("flaky refused " + n);

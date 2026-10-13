@@ -51,6 +51,19 @@ def _set_key(value: Any) -> Any:
     return value if isinstance(value, _SetKey) else _SetKey(value)
 
 
+#: Methods that build a fresh container instead of mutating the receiver, and
+#: which container they build.  Their results are re-wrapped as instances by
+#: ``_make_collection_ns`` so chains keep working — ``m.filter(fn).entries()``
+#: or ``left.union(right).size()`` — exactly what the ``Set`` algebra used to
+#: do by hand.  Plain-array results (``keys``/``entries``/``toArray``) stay
+#: raw X arrays: those already chain natively.
+_FRESH_RESULT_METHODS: dict[str, dict[str, str]] = {
+    "HashMap": {"merge": "HashMap", "filter": "HashMap", "map": "HashMap"},
+    "LinkedList": {"groupBy": "HashMap"},
+    "Set": {"union": "Set", "intersection": "Set", "difference": "Set"},
+}
+
+
 class CollectionBuiltins:
     def _hashmap_members(self) -> dict[str, BuiltinFunction]:
         return {
@@ -193,40 +206,60 @@ class CollectionBuiltins:
             return value._data
         return value
 
-    def _make_collection_ns(self, type_name: str, members: dict) -> dict:
-        """Wrap a collection method dict so that `new Stack()` returns an
-        XCollectionInstance and instance dot-calls work on it.
+    def _make_collection_ns(self, type_name: str, members: dict) -> CollectionNamespace:
+        """Build the class namespace for a builtin collection.
 
-        The raw `create` builtin receives a plain list/dict as first argument
-        from the functional API.  We replace it with one that returns an
-        XCollectionInstance wrapping that data, and also wrap every other
-        method so it transparently unpacks the instance's _data before
-        delegating to the original builtin.
+        Returns a ``CollectionNamespace`` — a dict whose ``create`` entry powers
+        ``new HashMap()`` and whose ``instance_methods`` table backs dot-calls
+        on instances.  Each instance method unwraps the receiver's data, runs
+        the builtin, and re-wraps fresh-container results (see
+        ``_FRESH_RESULT_METHODS``) so ``m.merge(other).entries()`` chains.
+
+        Member access through the language (``HashMap.set(map, k, v)``) is
+        rejected by ``_get_member``: collections are made with ``new`` and
+        their methods run on the value, never on the namespace.
         """
-        raw_create = members["create"]
+        fresh_results = _FRESH_RESULT_METHODS.get(type_name, {})
+        wrapped: dict[str, BuiltinFunction] = {}
 
-        def instance_create(arguments: list) -> XCollectionInstance:
-            data = raw_create.call(arguments)
-            return XCollectionInstance(type_name, data, wrapped)
+        def make_wrapper(orig: BuiltinFunction, mname: str) -> BuiltinFunction:
+            def dispatch(arguments: list) -> Any:
+                if arguments and isinstance(arguments[0], XCollectionInstance):
+                    arguments = [arguments[0]._data] + arguments[1:]
+                result = orig.call(arguments)
+                wrap_as = fresh_results.get(mname)
+                if wrap_as is not None and isinstance(result, (dict, set)):
+                    wrap_methods = self._collection_instance_methods(wrap_as)
+                    if wrap_methods is not None:
+                        return XCollectionInstance(wrap_as, result, wrap_methods)
+                return result
 
-        wrapped: dict = {}
+            return BuiltinFunction(f"{type_name}.{mname}", dispatch)
+
         for method_name, builtin in members.items():
             if method_name == "create":
                 continue
-            original = builtin
+            wrapped[method_name] = make_wrapper(builtin, method_name)
 
-            def make_wrapper(orig: BuiltinFunction, mname: str) -> BuiltinFunction:
-                def dispatch(arguments: list) -> Any:
-                    # If first arg is an XCollectionInstance, unwrap it
-                    if arguments and isinstance(arguments[0], XCollectionInstance):
-                        return orig.call([arguments[0]._data] + arguments[1:])
-                    return orig.call(arguments)
-                return BuiltinFunction(f"{type_name}.{mname}", dispatch)
+        raw_create = members["create"]
 
-            wrapped[method_name] = make_wrapper(original, method_name)
+        def instance_create(arguments: list) -> XCollectionInstance:
+            return XCollectionInstance(type_name, raw_create.call(arguments), wrapped)
 
-        wrapped["create"] = BuiltinFunction(f"{type_name}.create", instance_create)
-        return wrapped
+        namespace = CollectionNamespace(
+            type_name,
+            {"create": BuiltinFunction(f"{type_name}.new", instance_create)},
+            wrapped,
+        )
+        if not hasattr(self, "_collection_namespaces"):
+            self._collection_namespaces = {}
+        self._collection_namespaces[type_name] = namespace
+        return namespace
+
+    def _collection_instance_methods(self, type_name: str) -> dict | None:
+        """Instance-method table of a registered collection class, if any."""
+        namespace = getattr(self, "_collection_namespaces", {}).get(type_name)
+        return namespace.instance_methods if namespace is not None else None
 
     def _hashmap_filter(self, arguments: list[Any]) -> dict[str, Any]:
         if len(arguments) != 2:
@@ -1905,33 +1938,17 @@ class CollectionBuiltins:
     def _set_union(self, arguments: list[Any]) -> Any:
         """Return a new set containing elements from both sets."""
         s1, s2 = self._set_pair(arguments, "union")
-        return self._set_algebra_result(s1 | s2)
+        return s1 | s2
 
     def _set_intersection(self, arguments: list[Any]) -> Any:
         """Return a new set containing only elements present in both sets."""
         s1, s2 = self._set_pair(arguments, "intersection")
-        return self._set_algebra_result(s1 & s2)
+        return s1 & s2
 
     def _set_difference(self, arguments: list[Any]) -> Any:
         """Return a new set with elements in *s1* that are not in *s2*."""
         s1, s2 = self._set_pair(arguments, "difference")
-        return self._set_algebra_result(s1 - s2)
-
-    def _set_algebra_result(self, data: set[Any]) -> Any:
-        """Wrap a union/intersection/difference result so dot-calls keep working.
-
-        Without the wrapper ``a.union(b).size()`` reports "Value has no member
-        'size'" because the raw Python set carries no method table.
-        """
-        return XCollectionInstance("Set", data, self._set_instance_methods())
-
-    def _set_instance_methods(self) -> dict:
-        """Return the wrapped Set method table (built once per interpreter)."""
-        methods = getattr(self, "_set_instance_methods_cache", None)
-        if methods is None:
-            methods = self._make_collection_ns("Set", self._set_members())
-            self._set_instance_methods_cache = methods
-        return methods
+        return s1 - s2
 
     def _validate_argument_count(
         self, operation: str, arguments: list[Any], expected: int

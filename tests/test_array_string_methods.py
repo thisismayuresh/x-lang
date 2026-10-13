@@ -200,13 +200,13 @@ class ArrayMethodTests(unittest.TestCase):
             output, ["[]", "[]", "true", "false", "null", "-1", "false"]
         )
 
-    def test_functional_list_form(self):
+    def test_array_dot_method_forms(self):
         _, output = run_x("""
             function main() {
-                print(List.map([1, 2, 3], (int n) => n * 2));
-                print(List.filter([1, 2, 3], (int n) => n > 1));
-                print(List.reduce([1, 2, 3], (int a, int b) => a + b, 0));
-                print(List.join(["a", "b"], "-"));
+                print([1, 2, 3].map((int n) => n * 2));
+                print([1, 2, 3].filter((int n) => n > 1));
+                print([1, 2, 3].reduce((int a, int b) => a + b, 0));
+                print(["a", "b"].join("-"));
             }
             """)
         self.assertEqual(output, ["[2, 4, 6]", "[2, 3]", "6", "a-b"])
@@ -224,21 +224,21 @@ class ArrayMethodTests(unittest.TestCase):
             """)
         self.assertEqual(output, ["1", "[7]", "3", "abc"])
 
-    def test_readme_entry_upper_case_via_hashmap_helpers(self):
+    def test_readme_entry_upper_case_via_hashmap_instance(self):
         _, output = run_x("""
             function main() {
-                let map = HashMap.create();
-                HashMap.set(map, "alpha", "one");
-                HashMap.set(map, "beta", "two");
+                let map = new HashMap();
+                map.set("alpha", "one");
+                map.set("beta", "two");
                 function isLong(string[] entry) {
                     return entry[0].length > 3;
                 }
                 function uppercase(string[] entry) {
                     return [entry[0].toUpperCase(), entry[1]];
                 }
-                let filtered = HashMap.filter(map, isLong);
+                let filtered = map.filter(isLong);
                 print(filtered);
-                let mapped = HashMap.map(map, uppercase);
+                let mapped = map.map(uppercase);
                 print(mapped);
             }
             """)

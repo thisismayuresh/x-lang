@@ -192,7 +192,7 @@ any function searchNotes() {
 
 HashMap function loadNotes() {
     let content = FileSystem.readText(NOTES_FILE)
-    if (content == "") return HashMap.create()
+    if (content == "") return new HashMap()
     return parseNotes(content)
 }
 
@@ -202,7 +202,7 @@ any function saveNotes(HashMap notes) {
 }
 
 HashMap function parseNotes(string json) {
-    let notes = HashMap.create()
+    let notes = new HashMap()
     if (json == "{}" || json.length < 3) return notes
     
     let inner = json.substring(1, json.length - 1)

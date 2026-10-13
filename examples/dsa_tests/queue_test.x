@@ -3,58 +3,58 @@ any function main() {
     
     // Test 1: Create and basic operations
     print("\nTest 1: Basic operations")
-    let queue = Queue.create()
-    Queue.enqueue(queue, "first")
-    Queue.enqueue(queue, "second")
-    Queue.enqueue(queue, "third")
+    let queue = new Queue()
+    queue.enqueue("first")
+    queue.enqueue("second")
+    queue.enqueue("third")
     print("Enqueued three elements")
-    print("Size:", Queue.size(queue))
-    print("Is empty:", Queue.isEmpty(queue))
-    print("Peek:", Queue.peek(queue))
+    print("Size:", queue.size())
+    print("Is empty:", queue.isEmpty())
+    print("Peek:", queue.peek())
     
     // Test 2: Dequeue operations
     print("\nTest 2: Dequeue operations")
-    let dequeued1 = Queue.dequeue(queue)
-    let dequeued2 = Queue.dequeue(queue)
+    let dequeued1 = queue.dequeue()
+    let dequeued2 = queue.dequeue()
     print("Dequeued:", dequeued1)
     print("Dequeued:", dequeued2)
-    print("Current peek:", Queue.peek(queue))
-    print("Size:", Queue.size(queue))
+    print("Current peek:", queue.peek())
+    print("Size:", queue.size())
     
     // Test 3: FIFO behavior
     print("\nTest 3: FIFO behavior")
-    let fifo = Queue.create()
-    Queue.enqueue(fifo, "a")
-    Queue.enqueue(fifo, "b")
-    Queue.enqueue(fifo, "c")
+    let fifo = new Queue()
+    fifo.enqueue("a")
+    fifo.enqueue("b")
+    fifo.enqueue("c")
     print("Enqueued a, b, c in order")
     print("Dequeue order:")
-    while (!Queue.isEmpty(fifo)) {
-        print("  ", Queue.dequeue(fifo))
+    while (!fifo.isEmpty()) {
+        print("  ", fifo.dequeue())
     }
     
     // Test 4: Create with initial array
     print("\nTest 4: Create with initial array")
     let initial = [1, 2, 3, 4, 5]
-    let queue2 = Queue.create(initial)
-    print("Created from array:", Queue.toArray(queue2))
-    print("Size:", Queue.size(queue2))
+    let queue2 = new Queue(initial)
+    print("Created from array:", queue2.toArray())
+    print("Size:", queue2.size())
     
     // Test 5: Clear
     print("\nTest 5: Clear")
-    Queue.enqueue(queue, "new")
-    print("Size before clear:", Queue.size(queue))
-    Queue.clear(queue)
-    print("Size after clear:", Queue.size(queue))
-    print("Is empty:", Queue.isEmpty(queue))
+    queue.enqueue("new")
+    print("Size before clear:", queue.size())
+    queue.clear()
+    print("Size after clear:", queue.size())
+    print("Is empty:", queue.isEmpty())
     
     // Test 6: ToArray
     print("\nTest 6: ToArray")
-    let queue3 = Queue.create()
-    Queue.enqueue(queue3, "x")
-    Queue.enqueue(queue3, "y")
-    Queue.enqueue(queue3, "z")
-    print("Queue as array:", Queue.toArray(queue3))
+    let queue3 = new Queue()
+    queue3.enqueue("x")
+    queue3.enqueue("y")
+    queue3.enqueue("z")
+    print("Queue as array:", queue3.toArray())
     
     print("\n=== All Queue tests completed ===")
 }

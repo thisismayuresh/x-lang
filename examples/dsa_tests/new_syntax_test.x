@@ -5,24 +5,24 @@ any function main() {
     
     // Test 1: Basic new syntax
     let stack = new Collections.Stack()
-    Collections.Stack.push(stack, "first")
-    Collections.Stack.push(stack, "second")
-    print("Stack with new:", Collections.Stack.peek(stack))
+    stack.push("first")
+    stack.push("second")
+    print("Stack with new:", stack.peek())
     
     // Test 2: Type annotation on left
     let Collections.Stack stack2 = new Collections.Stack()
-    Collections.Stack.push(stack2, "item")
-    print("Stack with type annotation:", Collections.Stack.peek(stack2))
+    stack2.push("item")
+    print("Stack with type annotation:", stack2.peek())
     
     // Test 3: HashMap
     let Collections.HashMap map = new Collections.HashMap()
-    Collections.HashMap.set(map, "key", "value")
-    print("HashMap:", Collections.HashMap.get(map, "key"))
+    map.set("key", "value")
+    print("HashMap:", map.get("key"))
     
     // Test 4: Queue
     let Collections.Queue queue = new Collections.Queue()
-    Collections.Queue.enqueue(queue, "item")
-    print("Queue:", Collections.Queue.peek(queue))
+    queue.enqueue("item")
+    print("Queue:", queue.peek())
     
     print("\n=== All new syntax tests passed ===")
 }

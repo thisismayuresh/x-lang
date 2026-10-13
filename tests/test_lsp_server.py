@@ -376,5 +376,55 @@ any function main() {
         self.assertEqual(details["mag"], "Point.integer function mag(...)")
 
 
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class BuiltinCollectionCompletionTests(unittest.TestCase):
+    """`m.` after `new HashMap()` offers the collection's instance methods,
+    including when the constructor is spelled as a full dotted path
+    (`new System.utils.Collections.HashMap()`)."""
+
+    def items_at(self, source, line, character):
+        from lsprotocol.types import CompletionParams, Position, TextDocumentIdentifier
+
+        from server import completions
+
+        ls = XLanguageServer()
+        uri = "file:///collections.x"
+        ls.documents[uri] = source
+        result = completions(
+            ls,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri=uri),
+                position=Position(line=line, character=character),
+            ),
+        )
+        return result["items"] if isinstance(result, dict) else result
+
+    def test_short_new_offers_collection_methods(self):
+        source = "any function f() {\n    let m = new HashMap()\n    m.\n}\n"
+        labels = [item.label for item in self.items_at(source, 2, 6)]
+        self.assertIn("set", labels)
+        self.assertIn("get", labels)
+        self.assertIn("entries", labels)
+        self.assertNotIn("create", labels)
+
+    def test_dotted_new_path_infers_collection_type(self):
+        source = (
+            "any function f() {\n"
+            "    let m = new System.utils.Collections.HashMap()\n"
+            "    m.\n"
+            "}\n"
+        )
+        labels = [item.label for item in self.items_at(source, 2, 6)]
+        self.assertIn("set", labels)
+        self.assertIn("keys", labels)
+
+    def test_set_offers_set_algebra_methods(self):
+        source = "any function f() {\n    let s = new Set()\n    s.\n}\n"
+        labels = [item.label for item in self.items_at(source, 2, 6)]
+        self.assertIn("union", labels)
+        self.assertIn("intersection", labels)
+        self.assertNotIn("contains", labels)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1099,7 +1099,11 @@ X provides a robust collection of data structures through the `System.utils.Coll
 
 ### Usage Styles
 
-**1. OOP instance style (recommended)** — `new Stack()` returns an instance; call methods directly on it:
+All structures are constructed with `new` and used through instance methods —
+there is no static call style (`HashMap.set(map, key, value)` raises an error).
+The four spellings below differ only in how you *import* and *name* the type:
+
+**1. Inline import + short name** — import one structure and use it directly:
 
 ```x
 import System.utils.Collections.Stack
@@ -1112,7 +1116,25 @@ print(history.size())   // 2
 history.pop()
 ```
 
-**2. Inline import + short name** — import one structure and use it without a prefix:
+**2. Namespace import** — import the whole module; prefix the type name in `new`:
+
+```x
+import System.utils.Collections
+
+let stack = new Collections.Stack()
+stack.push("item")
+print(stack.peek())  // item
+```
+
+**3. Full path** — no import needed:
+
+```x
+let stack = new System.utils.Collections.Stack()
+stack.push("item")
+print(stack.peek())  // item
+```
+
+**4. Alias** — `List` is a built-in alias for `LinkedList`:
 
 ```x
 import System.utils.Collections.List
@@ -1121,23 +1143,6 @@ let List<string> names = new List<string>()
 names.add("Alice")
 names.add("Bob")
 print(names.getFirst())  // Alice
-```
-
-**3. Namespace style** — import the whole module and prefix each call with the structure name:
-
-```x
-import System.utils.Collections
-
-let stack = Collections.Stack.create()
-Collections.Stack.push(stack, "item")
-print(Collections.Stack.peek(stack))  // item
-```
-
-**4. Full path** — no import needed, reference via `System.utils.Collections.*`:
-
-```x
-let stack = System.utils.Collections.Stack.create()
-System.utils.Collections.Stack.push(stack, "item")
 ```
 
 ### Generics
@@ -1161,9 +1166,10 @@ checks.
 |-----------|-------|-------------|-------------------|
 | **HashMap** | — | True hash map with O(1) average-case operations | `computeIfAbsent`, `computeIfPresent`, `filter`, `map`, `reduce`, `merge`, functional operations |
 | **LinkedList** | **List** | Doubly-linked list with O(1) insertions at ends | `addFirst`, `addLast`, `removeFirst`, `removeLast`, `reverse`, bidirectional traversal |
-| **Stack** | — | LIFO stack with O(1) push/pop operations | OOP dot-call style, toArray conversion, isEmpty check |
-| **Queue** | — | FIFO queue with O(1) enqueue/dequeue operations | OOP dot-call style, peek, toArray conversion |
+| **Stack** | — | LIFO stack with O(1) push/pop operations | Dot-call style, toArray conversion, isEmpty check |
+| **Queue** | — | FIFO queue with O(1) enqueue/dequeue operations | Dot-call style, peek, toArray conversion |
 | **PriorityQueue** | — | Min-heap based priority queue | Automatic ordering, peek at minimum element |
+| **Set** | — | Hash set with O(1) average-case operations | `union`, `intersection`, `difference`, `toArray` |
 | **Trie** | — | Prefix tree for efficient string operations | `startsWith`, `getAllWords`, prefix search, word count |
 
 `List` is a built-in alias for `LinkedList` — `new List()` and `new LinkedList()` are identical.
@@ -1235,74 +1241,74 @@ The HashMap implementation provides a true hash map with advanced functional pro
 import System.utils.Collections
 
 // Create and use
-let map = Collections.HashMap.create()
+let map = new Collections.HashMap()
 
 // Basic operations
-Collections.HashMap.set(map, "name", "Alice")
-Collections.HashMap.set(map, "age", 30)
-print(Collections.HashMap.get(map, "name"))  // Alice
-print(Collections.HashMap.has(map, "age"))   // true
-print(Collections.HashMap.size(map))        // 2
+map.set("name", "Alice")
+map.set("age", 30)
+print(map.get("name"))  // Alice
+print(map.has("age"))   // true
+print(map.size())       // 2
 
 // Advanced operations
-print(Collections.HashMap.getOrDefault(map, "missing", "default"))
+print(map.getOrDefault("missing", "default"))
 
 // Lazy initialization
-let cache = Collections.HashMap.create()
+let cache = new Collections.HashMap()
 function compute(string key) {
     return key.length * 10
 }
-let value = Collections.HashMap.computeIfAbsent(cache, "test", compute)
+let value = cache.computeIfAbsent("test", compute)
 
-// Functional operations
+// Functional operations — filter/map/reduce return fresh HashMaps,
+// so they chain
 function isLong(string[] entry) {
     return entry[0].length > 3
 }
-let filtered = Collections.HashMap.filter(map, isLong)
+let filtered = map.filter(isLong)
 
 function uppercase(string[] entry) {
     return [entry[0].toUpperCase(), entry[1]]
 }
-let mapped = Collections.HashMap.map(map, uppercase)
+let mapped = map.map(uppercase)
 
-function sum(int acc, string[] entry) {
-    if (typeof entry[1] === "number") {
+function sum(any acc, any entry) {
+    if (typeOf(entry[1]) === "number") {
         return acc + entry[1]
     }
     return acc
 }
-let total = Collections.HashMap.reduce(map, 0, sum)
+let total = map.reduce(0, sum)
 ```
 
 **Note:** You can also use the full path without importing:
 ```x
-let map = System.utils.Collections.HashMap.create()
-System.utils.Collections.HashMap.set(map, "key", "value")
+let map = new System.utils.Collections.HashMap()
+map.set("key", "value")
 ```
 
 **HashMap Methods:**
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `create(capacity?)` | Creates a new HashMap (optional initial capacity) |
-| `set` | `set(map, key, value)` | Sets a key-value pair |
-| `get` | `get(map, key)` | Gets value by key (returns null if not found) |
-| `has` | `has(map, key)` | Checks if key exists |
-| `remove` | `remove(map, key)` | Removes and returns value by key |
-| `size` | `size(map)` | Returns number of entries |
-| `isEmpty` | `isEmpty(map)` | Checks if map is empty |
-| `clear` | `clear(map)` | Removes all entries |
-| `keys` | `keys(map)` | Returns array of all keys |
-| `values` | `values(map)` | Returns array of all values |
-| `entries` | `entries(map)` | Returns array of [key, value] pairs |
-| `getOrDefault` | `getOrDefault(map, key, default)` | Gets value or default if not found |
-| `computeIfAbsent` | `computeIfAbsent(map, key, function)` | Computes value if key absent |
-| `computeIfPresent` | `computeIfPresent(map, key, function)` | Computes new value if key present |
-| `merge` | `merge(map, otherMap, ...)` | Merges multiple maps |
-| `filter` | `filter(map, predicate)` | Filters entries by predicate |
-| `map` | `map(map, mapper)` | Transforms entries |
-| `reduce` | `reduce(map, initial, reducer)` | Reduces entries to single value |
-| `putAll` | `putAll(target, source)` | Copies all entries from source to target |
+| `set` | `set(key, value)` | Sets a key-value pair |
+| `get` | `get(key)` | Gets value by key (returns null if not found) |
+| `has` | `has(key)` | Checks if key exists |
+| `remove` | `remove(key)` | Removes and returns value by key |
+| `size` | `size()` | Returns number of entries |
+| `isEmpty` | `isEmpty()` | Checks if map is empty |
+| `clear` | `clear()` | Removes all entries |
+| `keys` | `keys()` | Returns array of all keys |
+| `values` | `values()` | Returns array of all values |
+| `entries` | `entries()` | Returns array of [key, value] pairs |
+| `getOrDefault` | `getOrDefault(key, default)` | Gets value or default if not found |
+| `computeIfAbsent` | `computeIfAbsent(key, function)` | Computes value if key absent |
+| `computeIfPresent` | `computeIfPresent(key, function)` | Computes new value if key present |
+| `merge` | `merge(otherMap, ...)` | Merges into a fresh HashMap |
+| `filter` | `filter(predicate)` | Filters entries into a fresh HashMap |
+| `map` | `map(mapper)` | Transforms entries into a fresh HashMap |
+| `reduce` | `reduce(initial, reducer)` | Reduces entries to single value |
+| `putAll` | `putAll(other)` | Copies all entries from other into this map |
 
 ### LinkedList
 
@@ -1310,32 +1316,32 @@ System.utils.Collections.HashMap.set(map, "key", "value")
 
 A doubly-linked list with efficient operations at both ends. `List` is a built-in alias — `new List()` and `new LinkedList()` are identical. See the **[List (LinkedList)](#list-linkedlist)** section above for the full OOP-style documentation and example with generics and `for` loop traversal.
 
-Namespace style (also still works):
+Namespace-import style for construction (methods are always called on the instance):
 
 ```x
 import System.utils.Collections
 
-let list = Collections.LinkedList.create()
+let list = new Collections.LinkedList()
 
 // Add elements
-Collections.LinkedList.add(list, "middle")
-Collections.LinkedList.addFirst(list, "first")
-Collections.LinkedList.addLast(list, "last")
+list.add("middle")
+list.addFirst("first")
+list.addLast("last")
 
 // Access
-print(Collections.LinkedList.getFirst(list))  // first
-print(Collections.LinkedList.getLast(list))   // last
-print(Collections.LinkedList.get(list, 1))    // middle
+print(list.getFirst())  // first
+print(list.getLast())   // last
+print(list.get(1))      // middle
 
 // Remove
-Collections.LinkedList.remove(list, "middle")
-let removed = Collections.LinkedList.removeFirst(list)
+list.remove("middle")
+let removed = list.removeFirst()
 
 // Utility
-print(Collections.LinkedList.size(list))
-print(Collections.LinkedList.contains(list, "last"))
-Collections.LinkedList.reverse(list)
-print(Collections.LinkedList.toArray(list))
+print(list.size())
+print(list.contains("last"))
+list.reverse()
+print(list.toArray())
 ```
 
 ### Stack
@@ -1345,7 +1351,6 @@ LIFO (Last-In-First-Out) stack implementation.
 ```x
 import System.utils.Collections.Stack
 
-// OOP instance style (recommended)
 let Stack<string> history = new Stack<string>()
 history.push("first")
 history.push("second")
@@ -1356,15 +1361,9 @@ print(history.pop())     // third
 print(history.size())    // 2
 print(history.isEmpty()) // false
 history.clear()
-
-// Namespace style still works
-import System.utils.Collections
-let stack = Collections.Stack.create()
-Collections.Stack.push(stack, "item")
-print(Collections.Stack.peek(stack))  // item
 ```
 
-**Stack Methods (OOP dot-call):**
+**Stack Methods:**
 
 | Method | Description |
 |--------|-------------|
@@ -1383,7 +1382,6 @@ FIFO (First-In-First-Out) queue implementation.
 ```x
 import System.utils.Collections.Queue
 
-// OOP instance style
 let Queue<string> q = new Queue<string>()
 q.enqueue("first")
 q.enqueue("second")
@@ -1395,7 +1393,7 @@ print(q.dequeue())  // second
 print(q.size())     // 1
 ```
 
-**Queue Methods (OOP dot-call):**
+**Queue Methods:**
 
 | Method | Description |
 |--------|-------------|
@@ -1406,8 +1404,6 @@ print(q.size())     // 1
 | `isEmpty()` | Returns true if empty |
 | `clear()` | Removes all elements |
 | `toArray()` | Returns all elements as an array |
-| `clear` | `clear(queue)` | Clears queue |
-| `toArray` | `toArray(queue)` | Converts to array |
 
 ### PriorityQueue
 
@@ -1416,29 +1412,28 @@ Min-heap based priority queue (smallest element has highest priority):
 ```x
 import System.utils.Collections
 
-let pq = Collections.PriorityQueue.create()
+let pq = new Collections.PriorityQueue()
 
-Collections.PriorityQueue.enqueue(pq, 5)
-Collections.PriorityQueue.enqueue(pq, 2)
-Collections.PriorityQueue.enqueue(pq, 8)
+pq.enqueue(5)
+pq.enqueue(2)
+pq.enqueue(8)
 
-print(Collections.PriorityQueue.peek(pq))     // 2
-print(Collections.PriorityQueue.dequeue(pq))  // 2
-print(Collections.PriorityQueue.dequeue(pq))  // 5
+print(pq.peek())     // 2
+print(pq.dequeue())  // 2
+print(pq.dequeue())  // 5
 ```
 
 **PriorityQueue Methods:**
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `create(comparator?)` | Creates a new PriorityQueue |
-| `enqueue` | `enqueue(pq, value)` | Adds value (maintains order) |
-| `dequeue` | `dequeue(pq)` | Removes and returns minimum |
-| `peek` | `peek(pq)` | Returns minimum without removing |
-| `size` | `size(pq)` | Returns queue size |
-| `isEmpty` | `isEmpty(pq)` | Checks if empty |
-| `clear` | `clear(pq)` | Clears queue |
-| `toArray` | `toArray(pq)` | Converts to array |
+| `enqueue` | `enqueue(value)` | Adds value (maintains order) |
+| `dequeue` | `dequeue()` | Removes and returns minimum |
+| `peek` | `peek()` | Returns minimum without removing |
+| `size` | `size()` | Returns queue size |
+| `isEmpty` | `isEmpty()` | Checks if empty |
+| `clear` | `clear()` | Clears queue |
+| `toArray` | `toArray()` | Converts to array |
 
 ### Trie
 
@@ -1447,35 +1442,34 @@ Prefix tree for efficient string operations:
 ```x
 import System.utils.Collections
 
-let trie = Collections.Trie.create()
+let trie = new Collections.Trie()
 
-Collections.Trie.insert(trie, "hello")
-Collections.Trie.insert(trie, "world")
-Collections.Trie.insert(trie, "hey")
+trie.insert("hello")
+trie.insert("world")
+trie.insert("hey")
 
-print(Collections.Trie.search(trie, "hello"))     // true
-print(Collections.Trie.search(trie, "hel"))        // false
-print(Collections.Trie.startsWith(trie, "he"))    // true
-print(Collections.Trie.getAllWords(trie))         // [hello, hey, world]
-print(Collections.Trie.size(trie))                 // 3
+print(trie.search("hello"))     // true
+print(trie.search("hel"))       // false
+print(trie.startsWith("he"))    // true
+print(trie.getAllWords())       // [hello, hey, world]
+print(trie.size())              // 3
 
-Collections.Trie.remove(trie, "hey")
-print(Collections.Trie.size(trie))                 // 2
+trie.remove("hey")
+print(trie.size())              // 2
 ```
 
 **Trie Methods:**
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create` | `create()` | Creates a new Trie |
-| `insert` | `insert(trie, word)` | Inserts a word |
-| `search` | `search(trie, word)` | Checks if exact word exists |
-| `startsWith` | `startsWith(trie, prefix)` | Checks if any word starts with prefix |
-| `remove` | `remove(trie, word)` | Removes a word |
-| `size` | `size(trie)` | Returns word count |
-| `isEmpty` | `isEmpty(trie)` | Checks if empty |
-| `clear` | `clear(trie)` | Clears all words |
-| `getAllWords` | `getAllWords(trie)` | Returns all words |
+| `insert` | `insert(word)` | Inserts a word |
+| `search` | `search(word)` | Checks if exact word exists |
+| `startsWith` | `startsWith(prefix)` | Checks if any word starts with prefix |
+| `remove` | `remove(word)` | Removes a word |
+| `size` | `size()` | Returns word count |
+| `isEmpty` | `isEmpty()` | Checks if empty |
+| `clear` | `clear()` | Clears all words |
+| `getAllWords` | `getAllWords()` | Returns all words |
 
 ### Running DSA Tests
 
@@ -1499,10 +1493,10 @@ x run examples/dsa_tests/trie_test.x
 This checklist covers both what is implemented and what remains. Items added or fixed in the current session are marked **[new]**.
 
 #### Core API styles **[new]** ✅
-- [x] OOP instance style — `new Stack()` returns an instance; methods called as `stack.push(x)`
+- [x] OOP instance style — `new Stack()` returns an instance; methods called as `stack.push(x)` (the only style — static calls are removed)
 - [x] Inline import — `import System.utils.Collections.Stack` binds `Stack` directly
-- [x] Namespace import — `import System.utils.Collections` then `Collections.Stack.create()`
-- [x] Full path without import — `System.utils.Collections.Stack.create()` always works
+- [x] Namespace import — `import System.utils.Collections` then `new Collections.Stack()`
+- [x] Full path without import — `new System.utils.Collections.Stack()` always works
 - [x] `List` as a built-in alias for `LinkedList` — `new List()` and `new LinkedList()` are identical
 - [x] Generic type annotations — `let List<Student> students = new List<Student>()` (hint only, not statically enforced yet)
 - [x] Short names globally available — `Stack`, `Queue`, `HashMap`, `LinkedList`, `List`, `PriorityQueue`, `Trie` without any import
@@ -1594,15 +1588,8 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [ ] **Custom comparator** for PriorityQueue — `new PriorityQueue((a, b) => a.priority - b.priority)`
 - [ ] **Max-heap** option for PriorityQueue
 - [ ] **Static type enforcement** for generics — `List<Student>` currently accepts any value
-- [ ] **`new StructureName(initialArray)`** — constructing with data e.g. `new Stack([1,2,3])` works; `new List(existingArray)` also works; document clearly
-- [ ] **Set** data structure — unique-value collection
-- [ ] **TreeMap / TreeSet** — sorted key ordering
-- [ ] **LinkedHashMap** — insertion-order preserving map
-- [ ] **LRU Cache** — built on top of LinkedHashMap
-- [ ] **Thread-safe wrappers** — concurrent access guards
 - [ ] **Immutable/frozen variants**
-- [ ] **Serialization** — `toJSON()` / `fromJSON()` round-trip
-- [ ] **`groupBy` / `partition`** functional operators on List
+- [ ] **`fromJSON()` reachable from X** for the extended collections (TreeMap/TreeSet/LinkedHashMap/LRUCache) — currently only callable from the Python embedding API
 - [ ] **Graph** — adjacency list and matrix representations
 - [ ] **BST / AVL / Red-Black tree**
 - [ ] **Union-Find (Disjoint Set)**
@@ -2749,3 +2736,11 @@ See **[`vscode-xlang/README.md`](./vscode-xlang/README.md)** for the full
 report: architecture, every defect that was fixed, what was installed where,
 how to rebuild it, and the current limitations (go-to-definition is
 single-file only and does no scope analysis).
+
+**[`INTROSPECTION.md`](./INTROSPECTION.md)** documents the proposed next step:
+the interpreter, the typechecker and the LSP each carry their own handwritten
+list of builtin methods and the copies have drifted (the editor currently
+offers 11 of the string type's 32 methods). The design replaces all copies
+with one public `xlang.introspect` module the server already has the means to
+call in-process, with the research, phased plan, industry comparison, and
+trade-offs.

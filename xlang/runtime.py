@@ -513,6 +513,25 @@ class XCollectionInstance:
         self._methods = methods                  # name -> BuiltinFunction
 
 
+class CollectionNamespace(dict):
+    """Class namespace for a builtin collection (``HashMap``, ``Stack``, …).
+
+    A ``dict`` holding the ``create`` entry the interpreter's ``NewExpression``
+    path calls, so ``new HashMap()`` constructs an ``XCollectionInstance``.
+    It also carries ``instance_methods`` — the table that backs dot-calls on
+    instances.
+
+    Member access *through the language* (``HashMap.set(map, k, v)``) raises
+    a construct-first error: collections are made with ``new`` and their
+    methods run on the value, never on the namespace.
+    """
+
+    def __init__(self, type_name: str, methods: dict, instance_methods: dict) -> None:
+        super().__init__(methods)
+        self.type_name = type_name
+        self.instance_methods = instance_methods
+
+
 @dataclass
 class XExceptionValue:
     message: str

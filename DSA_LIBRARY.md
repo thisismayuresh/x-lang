@@ -285,40 +285,40 @@ The library integrates seamlessly with:
 ### HashMap with Functional Operations
 
 ```x
-let map = System.utils.Collections.HashMap.create()
-System.utils.Collections.HashMap.set(map, "a", 1)
-System.utils.Collections.HashMap.set(map, "b", 2)
+let map = new System.utils.Collections.HashMap()
+map.set("a", 1)
+map.set("b", 2)
 
-// Filter
-function isEven(string[] entry) {
+// Filter — returns a fresh HashMap
+function isEven(any entry) {
     return entry[1] % 2 === 0
 }
-let even = System.utils.Collections.HashMap.filter(map, isEven)
+let even = map.filter(isEven)
 
-// Map
-function double(string[] entry) {
+// Map — returns a fresh HashMap
+function double(any entry) {
     return [entry[0], entry[1] * 2]
 }
-let doubled = System.utils.Collections.HashMap.map(map, double)
+let doubled = map.map(double)
 
 // Reduce
-function sum(int acc, string[] entry) {
+function sum(any acc, any entry) {
     return acc + entry[1]
 }
-let total = System.utils.Collections.HashMap.reduce(map, 0, sum)
+let total = map.reduce(0, sum)
 ```
 
 ### Trie for Autocomplete
 
 ```x
-let trie = System.utils.Collections.Trie.create()
-System.utils.Collections.Trie.insert(trie, "hello")
-System.utils.Collections.Trie.insert(trie, "help")
-System.utils.Collections.Trie.insert(trie, "world")
+let trie = new System.utils.Collections.Trie()
+trie.insert("hello")
+trie.insert("help")
+trie.insert("world")
 
 // Check prefix
-if (System.utils.Collections.Trie.startsWith(trie, "hel")) {
-    print("Suggestions: " + System.utils.Collections.Trie.getAllWords(trie))
+if (trie.startsWith("hel")) {
+    print("Suggestions: " + trie.getAllWords())
 }
 ```
 

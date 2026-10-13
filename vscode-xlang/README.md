@@ -66,7 +66,11 @@ Full TextMate grammar for `.x` files covering:
 - **Type-aware `receiver.` suggestions** — after `let p = new Point();` the
   popup for `p.` offers only `Point`'s fields and methods, each tagged with its
   declaring class (`Point.x`, `Point.mag(...)`). The receiver's type is
-  resolved from its annotation or from `new Ctor(...)` in the initializer.
+  resolved from its annotation or from `new Ctor(...)` in the initializer
+  (dotted paths included: `new System.utils.Collections.HashMap()` → `HashMap`).
+  Builtin collections get the same treatment: after `let m = new HashMap()`
+  the popup offers the real instance methods (`set`, `get`, `has`, `entries`, …)
+  from the static catalog shared with the playground.
 - Import path completion: after `import ` and after `import System.`, paths are
   filtered to what actually exists on disk.
 

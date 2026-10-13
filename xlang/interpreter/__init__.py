@@ -2125,6 +2125,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         return False
 
     def _read_indexed_value(self, container: Any, index: Any) -> Any:
+        # Instances index like their data: `map["key"]`, `stack[0]`.
+        if isinstance(container, XCollectionInstance):
+            container = container._data
         if isinstance(container, str):
             if isinstance(index, bool) or not isinstance(index, int):
                 raise RuntimeErrorX(
@@ -2174,6 +2177,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         )
 
     def _write_indexed_value(self, container: Any, index: Any, value: Any) -> None:
+        # Instances assign like their data: `map["key"] = value`.
+        if isinstance(container, XCollectionInstance):
+            container = container._data
         if isinstance(container, str):
             raise RuntimeErrorX(
                 f"Cannot assign to index {self._stringify(index)}: "
@@ -2395,6 +2401,11 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if isinstance(object_value, XCollectionInstance):
             methods = object_value._methods
             if name not in methods:
+                if name == "create":
+                    raise RuntimeErrorX(
+                        f"{object_value.collection_type} has no method 'create' — "
+                        f"construct with 'new {object_value.collection_type}()'"
+                    )
                 raise RuntimeErrorX(
                     f"{object_value.collection_type} has no method '{name}'"
                 )
@@ -2560,6 +2571,20 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return BuiltinFunction(
                 "toString",
                 lambda arguments: self._number_to_string(object_value, arguments),
+            )
+        if isinstance(object_value, CollectionNamespace):
+            # The static style (HashMap.create(), HashMap.set(map, k, v))
+            # was removed: collections are classes made with `new`.
+            type_name = object_value.type_name
+            if name == "create":
+                raise RuntimeErrorX(
+                    f"'{type_name}' is a class — construct with "
+                    f"'new {type_name}()'"
+                )
+            raise RuntimeErrorX(
+                f"'{type_name}.{name}' is not a static call — create an "
+                f"instance with 'new {type_name}()' and call "
+                f"'instance.{name}(...)' on it"
             )
         if isinstance(object_value, dict):
             if name in object_value:
