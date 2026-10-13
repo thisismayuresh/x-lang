@@ -3973,12 +3973,28 @@ Copy `examples/payment_project/.env.example` to
 `examples/payment_project/.env` to feed the demo credentials through the
 loader; the program runs with safe fallback values either way.
 
+The multi-file [banking platform](./examples/banking_platform/) is a
+Java-to-X translation of a Spring-flavoured codebase: a five-level-deep
+nested `PlatformConfig` hierarchy built with explicit getters, generic
+interfaces (`EventHandler<E, C>`, `ProcessingStage<I, O>`), interface-typed
+arrays, a composition-root `TransactionConfiguration` in place of
+`@Configuration`, and top-level `async` functions standing in for
+`CompletionStage` results. Its README documents every adaptation
+(`HashMap` instead of `Map`, underscore-prefixed backing fields where Java
+records clash with X's no-field/method-name-clash rule, backtick string
+interpolation, and more).
+
+```sh
+x run examples/banking_platform/main.x
+```
+
 ## Feature examples
 
 Runnable feature examples are organized by topic:
 
 ```text
 examples/
+├── banking_platform/main.x
 ├── configuration/configured_args.x
 ├── control_flow/main.x
 ├── control_flow/main_file.x
@@ -4277,22 +4293,29 @@ be relied upon.
 ## Editor support (VS Code)
 
 A bundled extension in [`vscode-xlang/`](./vscode-xlang/) provides syntax
-highlighting, real-time type checking, completions, hover and go-to-definition
-for `.x` files. It is installed as `xlang.xlang@0.1.0` and activates
-automatically when you open any `.x` file — no manual step, and nothing to
-re-do after a reboot.
+highlighting, real-time type checking, completions, hover, go-to-definition and
+Find All References for `.x` files. It is installed as `xlang.xlang@0.1.0` and
+activates automatically when you open any `.x` file — no manual step, and
+nothing to re-do after a reboot.
 
 Editor diagnostics are produced by the same `Lexer` → `Parser` →
 `TypeChecker` pipeline used by `x check`, and the server reads `x.toml` the
 same way, so the squiggles in the editor and the command-line output match.
-The checker also rejects a value returned from a `void` function or method —
-previously that slipped through.
+The document is loaded through `ModuleLoader`, so interfaces and classes
+brought in through `import` are visible — a class implementing an interface
+declared in another file no longer reports a false
+`implements unknown interface` error. The checker also rejects a value
+returned from a `void` function or method — previously that slipped through.
 
 Go-to-definition (Ctrl+Click / F12) resolves functions, methods,
 constructors, parameters, fields, variables and enum members inside the
-current file, not just type names.
+current file, not just type names, and crosses direct `import` statements:
+Ctrl+Click on an imported interface jumps to its `export interface` line in
+the declaring file. Find All References lists every whole-word use of the
+clicked name in the current document.
 
 See **[`vscode-xlang/README.md`](./vscode-xlang/README.md)** for the full
 report: architecture, every defect that was fixed, what was installed where,
-how to rebuild it, and the current limitations (go-to-definition is
-single-file only and does no scope analysis).
+how to rebuild it, and the current limitations (go-to-definition resolves
+direct imports but does no scope analysis; Find All References is
+single-file and word-based).

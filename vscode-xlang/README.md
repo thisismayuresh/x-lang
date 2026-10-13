@@ -2,10 +2,11 @@
 
 VS Code extension for the X programming language providing:
 - Syntax highlighting
-- Real-time type checking (diagnostics)
+- Real-time type checking (diagnostics), import-aware (cross-file `implements`/`extends`)
 - Code completion (IntelliSense)
 - Hover type information
-- Go to Definition
+- Go to Definition (crosses direct `import` statements)
+- Find All References
 
 ## Installation
 
@@ -443,18 +444,64 @@ an `any` function that returns a value stays legal.
 removed, which is also what makes the two tests that assert the example is
 clean pass again.
 
-## 12. Known limitations
+## 12. Cross-file navigation and import-aware diagnostics
 
-* **Go-to-definition is single-file only.** The server searches the current
-  buffer; it does not resolve across `import` statements or into the standard
-  library. Jumping to `System.io.FileSystem` or to anything in another file is
-  not supported yet.
+Three related bugs were reported together: Ctrl+Click on an imported interface
+said "No definition found", "Find All References" always said "No references
+found", and the editor showed a false
+`Class 'AmountRule' implements unknown interface 'TransactionRule'` squiggle on
+code that `x check` accepts.
+
+### False `implements unknown interface` diagnostics
+
+The server type-checked each buffer **in isolation** — it lexed and parsed only
+the open file, so every interface, class and function brought in through
+`import` was invisible to `TypeChecker`. A file like
+`examples/banking_platform/main.x`, whose classes implement interfaces declared
+in `orchestrator.x` and `pipeline.x`, reported one false error per `implements`
+clause.
+
+`_update_diagnostics()` now loads the document through `ModuleLoader` — the
+same path `x check` uses — so the whole import graph is visible. The unsaved
+editor buffer overrides the on-disk entry file (and any other open buffer
+overrides its own file) via the loader's new optional `source_overrides`
+parameter, so unsaved edits are checked, not stale disk contents. Diagnostics
+from imported modules are filtered out by `source_name`: a document only shows
+its own problems, and each imported file gets its own diagnostics when opened.
+
+### Go to Definition crosses direct imports
+
+`definition()` gained a fourth phase: when no declaration is found in the
+current buffer, the server resolves the document's direct `import` statements
+(sibling-relative first, then project-root, matching `ModuleLoader`) and searches
+each imported file for the declaration. Ctrl+Click on `TransactionRule`,
+`ProcessingStage` or `Duration` now lands on the `export interface`/`class`
+line in the file that declares it. The standard library and second-degree
+imports are still out of scope.
+
+### Find All References is implemented
+
+`references()` was a stub that always returned an empty list. It now finds the
+word under the cursor and returns every whole-word match in the
+comment-and-string-blanked buffer — so clicking `TransactionRule` in
+`main.x` lists both the import entry and the `implements TransactionRule`
+usage.
+
+## 13. Known limitations
+
+* **Go-to-definition resolves direct imports only.** The server searches the
+  current buffer, then the files named in that buffer's own `import`
+  statements. It does not chase second-degree imports or the standard library
+  (`System.io.FileSystem` still does not resolve).
 * **No scope analysis.** Phase 2 (enclosing function) and the declaration
   priority order are a good approximation, not a real symbol table: if two
   functions declare the same name, or a local shadows a field declared far
   away, the jump can pick the wrong one. There is no shadowing-aware
   resolution across sibling functions.
-* The same applies to **Find All References** (returns an empty list).
+* **Find All References is single-file** and word-based, not symbol-based: it
+  lists whole-word matches of the clicked name in the current document, so a
+  local that shadows an imported name is counted too, and references in other
+  files are not included.
 * **`vscode-xlang/sample.x` contains invalid X** (it was written with
   TypeScript-style `public T add(T item): T {`; real X syntax is
   `public T add(T item) {`). It is a *highlighting* fixture, not a compiling

@@ -105,6 +105,7 @@ class ModuleLoader:
         project_root: Path,
         config: XConfig | None = None,
         recover_errors: bool = False,
+        source_overrides: dict[Path, str] | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = config or XConfig()
@@ -115,6 +116,16 @@ class ModuleLoader:
         self.sources: dict[Path, str] = {}
         self.warnings: list[ModuleWarning] = []
         self.errors: list[BaseException] = []
+        # In-memory sources keyed by resolved path.  The language server uses
+        # this to type-check an unsaved editor buffer together with its real
+        # on-disk imports; the CLI leaves it empty and reads everything from
+        # disk.  An overridden path is treated as existing even before the
+        # file check below, so a brand-new buffer can be checked.
+        self.source_overrides: dict[Path, str] = (
+            {path.resolve(): text for path, text in source_overrides.items()}
+            if source_overrides
+            else {}
+        )
         self._flattened_bindings: dict[str, Path] = {}  # name -> source module path
         self._emitted_declarations: set[int] = set()
         self._emitted_namespaces: set[tuple[str, str]] = set()
@@ -136,11 +147,16 @@ class ModuleLoader:
             raise RuntimeErrorX(f"Circular module import detected at '{source_path}'")
         if resolved_path in self.loaded_files:
             return []
-        if not resolved_path.is_file():
+        overridden = self.source_overrides.get(resolved_path)
+        if overridden is None and not resolved_path.is_file():
             raise RuntimeErrorX(f"Imported source file '{source_path}' does not exist")
 
         try:
-            source = resolved_path.read_text(encoding="utf-8")
+            source = (
+                overridden
+                if overridden is not None
+                else resolved_path.read_text(encoding="utf-8")
+            )
         except (OSError, UnicodeError) as error:
             raise RuntimeErrorX(f"Cannot read source file '{source_path}': {error}") from error
 
