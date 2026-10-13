@@ -432,11 +432,11 @@ class TypeOfTests(unittest.TestCase):
     def test_type_of_reports_collection_instance_names(self):
         result, output = run_x("""
             function main() {
-                let stack = Stack.create();
+                let stack = new Stack();
                 stack.push("x");
                 print(typeOf(stack));
-                print(typeOf(HashMap.create()));
-                print(typeOf(Queue.create()));
+                print(typeOf(new HashMap()));
+                print(typeOf(new Queue()));
             }
             """)
         self.assertIsNone(result)
@@ -504,9 +504,9 @@ class ArrayPushPopTests(unittest.TestCase):
         result, output = run_x("""
             function main() {
                 let values = [1];
-                List.push(values, 2);
+                values.push(2);
                 print(values);
-                print(List.pop(values));
+                print(values.pop());
                 print(values);
             }
             """)

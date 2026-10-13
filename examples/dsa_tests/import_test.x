@@ -4,17 +4,17 @@ any function main() {
     print("=== Testing Import Syntax ===")
     
     // Test with import
-    let map = Collections.HashMap.create()
-    Collections.HashMap.set(map, "key", "value")
-    print("HashMap with import:", Collections.HashMap.get(map, "key"))
+    let map = new Collections.HashMap()
+    map.set("key", "value")
+    print("HashMap with import:", map.get("key"))
     
-    let stack = Collections.Stack.create()
-    Collections.Stack.push(stack, "item")
-    print("Stack with import:", Collections.Stack.peek(stack))
+    let stack = new Collections.Stack()
+    stack.push("item")
+    print("Stack with import:", stack.peek())
     
-    let queue = Collections.Queue.create()
-    Collections.Queue.enqueue(queue, "item")
-    print("Queue with import:", Collections.Queue.peek(queue))
+    let queue = new Collections.Queue()
+    queue.enqueue("item")
+    print("Queue with import:", queue.peek())
     
     print("\n=== All import tests passed ===")
 }

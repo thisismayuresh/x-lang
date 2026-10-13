@@ -292,25 +292,25 @@ enum Direction {
 // ============================================
 
 // LinkedList
-let LinkedList stringList = LinkedList.create();
+let LinkedList stringList = new LinkedList();
 stringList.add("first");
 stringList.add("second");
 stringList.add("third");
 
 // HashMap
-let HashMap userMap = HashMap.create();
+let HashMap userMap = new HashMap();
 userMap.set("user1", { "name": "Alice", "age": 25 });
 userMap.set("user2", { "name": "Bob", "age": 30 });
 userMap.set("user3", { "name": "Charlie", "age": 35 });
 
 // Stack
-let Stack intStack = Stack.create();
+let Stack intStack = new Stack();
 intStack.push(1);
 intStack.push(2);
 intStack.push(3);
 
 // Queue
-let Queue stringQueue = Queue.create();
+let Queue stringQueue = new Queue();
 stringQueue.enqueue("first");
 stringQueue.enqueue("second");
 stringQueue.enqueue("third");

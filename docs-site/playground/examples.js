@@ -108,10 +108,10 @@ window.X_PLAYGROUND_EXAMPLES = [
       "    print(`- {names.get(i)}`);",
       "}",
       "",
-      "let scores = HashMap.create();",
-      "HashMap.set(scores, \"ada\", 10);",
-      "HashMap.set(scores, \"grace\", 20);",
-      "print(HashMap.get(scores, \"grace\"));"
+      "let scores = new HashMap();",
+      "scores.set(\"ada\", 10);",
+      "scores.set(\"grace\", 20);",
+      "print(scores.get(\"grace\"));"
     ].join("\n")
   },
   {

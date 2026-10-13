@@ -86,6 +86,7 @@ from ..runtime import (
 )
 from ..runtime import (
     BuiltinFunction,
+    CollectionNamespace,
     Environment,
     LoopSignal,
     OverloadedFunction,
