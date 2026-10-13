@@ -2,7 +2,7 @@
   "name": "xlang",
   "displayName": "X Language",
   "description": "VS Code support for the X programming language",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "xlang",
   "engines": {
     "vscode": "^1.80.0"

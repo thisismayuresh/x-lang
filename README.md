@@ -2737,10 +2737,10 @@ report: architecture, every defect that was fixed, what was installed where,
 how to rebuild it, and the current limitations (go-to-definition is
 single-file only and does no scope analysis).
 
-**[`INTROSPECTION.md`](./INTROSPECTION.md)** documents the proposed next step:
-the interpreter, the typechecker and the LSP each carry their own handwritten
-list of builtin methods and the copies have drifted (the editor currently
-offers 11 of the string type's 32 methods). The design replaces all copies
-with one public `xlang.introspect` module the server already has the means to
-call in-process, with the research, phased plan, industry comparison, and
-trade-offs.
+**[`INTROSPECTION.md`](./INTROSPECTION.md)** documents the builtin-knowledge
+single-sourcing design — **implemented**: the interpreter, the typechecker and
+the LSP no longer keep handwritten copies of "which builtin methods exist".
+The public `xlang.introspect` module answers from the interpreter's own tables
+in-process, so `s.` completions offer all 34 string members (was 11), array
+completions all 21 (was 11), and a new builtin can no longer be hidden by
+forgetting a second or third edit.

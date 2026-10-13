@@ -254,11 +254,14 @@ class BuiltinMemberCompletionTests(unittest.TestCase):
         self.assertIn("toString", labels)
         self.assertNotIn("length", labels)
 
-    def test_object_variable_offers_object_members(self):
+    def test_object_variable_offers_no_builtin_fiction(self):
+        # Plain object literals answer only field reads at runtime
+        # (`obj.keys()` raises "Object has no field 'keys'"), so the popup
+        # must not advertise Object.keys/values/isEmpty as instance members.
         labels = self.members_for("let obj = {};", "obj")
-        self.assertIn("keys", labels)
-        self.assertIn("values", labels)
-        self.assertIn("isEmpty", labels)
+        self.assertNotIn("keys", labels)
+        self.assertNotIn("values", labels)
+        self.assertNotIn("isEmpty", labels)
 
     def test_annotated_variable_uses_the_annotation(self):
         labels = self.members_for("let s: string = \"hi\";", "s")

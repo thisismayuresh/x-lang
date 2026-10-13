@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Awaitable, Callable
 
 from ._common import *  # noqa: F401,F403
@@ -234,6 +235,9 @@ class CollectionBuiltins:
                         return XCollectionInstance(wrap_as, result, wrap_methods)
                 return result
 
+            # Keep the original builtin's docstring visible through the
+            # wrapper so xlang.introspect can parse signatures from it.
+            dispatch.__doc__ = inspect.getdoc(orig.implementation)
             return BuiltinFunction(f"{type_name}.{mname}", dispatch)
 
         for method_name, builtin in members.items():
@@ -583,7 +587,7 @@ class CollectionBuiltins:
         return any(self._strict_equal(value, sought) for value in array)
 
     def _array_sort(self, arguments: list[Any]) -> list[Any]:
-        """Stable in-place sort; returns the array, like JavaScript.
+        """``sort(compare?)`` — stable in-place sort; returns the array.
 
         With no callback, values order naturally (numbers numerically, then
         booleans, then strings, then printed forms).  With a two-argument
