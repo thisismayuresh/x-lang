@@ -15,7 +15,9 @@ try:
 
     from server import (  # noqa: E402
         XLanguageServer,
+        _declared_symbols,
         _expression_completions,
+        _find_declaration,
         _import_completions,
         _module_matches,
     )
@@ -157,6 +159,221 @@ class CompletionRequestTests(unittest.TestCase):
         self.assertEqual(math.text_edit.range.start.character, 7)
         self.assertEqual(math.text_edit.range.end.character, 14)
         self.assertEqual(math.filter_text, "System.utils.Math")
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class DeclaredSymbolCompletionTests(unittest.TestCase):
+    """Names declared in the buffer show up with their types."""
+
+    SOURCE = """\
+export type SettingsKey = "theme" | "backup";
+
+export const object<SettingsKey, string> DEFAULT_SETTINGS = {
+    theme: "system"
+};
+
+export string function getSetting(SettingsKey key) {
+    return DEFAULT_SETTINGS.theme;
+}
+
+any function main() {
+    let integer count = 3;
+    let raw: string = "x";
+    print(count, raw);
+}
+"""
+
+    def by_label(self):
+        return {item.label: item for item in _declared_symbols(self.SOURCE)}
+
+    def test_declared_variables_are_offered_with_annotations(self):
+        items = self.by_label()
+        self.assertIn("DEFAULT_SETTINGS", items)
+        self.assertIn("object<SettingsKey, string>", items["DEFAULT_SETTINGS"].detail)
+        self.assertEqual(items["DEFAULT_SETTINGS"].kind, CompletionItemKind.Constant)
+        self.assertIn("count", items)
+        self.assertIn("integer", items["count"].detail)
+        self.assertEqual(items["count"].kind, CompletionItemKind.Variable)
+
+    def test_colon_annotation_is_shown_in_detail(self):
+        items = self.by_label()
+        self.assertIn("raw", items)
+        self.assertIn("string", items["raw"].detail)
+
+    def test_functions_types_and_parameters_are_offered(self):
+        items = self.by_label()
+        self.assertIn("getSetting", items)
+        self.assertIn("SettingsKey key", items["getSetting"].detail)
+        self.assertIn("main", items)
+        self.assertIn("SettingsKey", items)
+        self.assertEqual(items["SettingsKey"].kind, CompletionItemKind.Struct)
+
+    def test_declared_names_sort_above_keywords(self):
+        for item in _declared_symbols(self.SOURCE):
+            self.assertTrue(item.sort_text.startswith("0_"), item.label)
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class BuiltinMemberCompletionTests(unittest.TestCase):
+    """``x.`` offers the members of ``x``'s declared or inferred type."""
+
+    def members_for(self, declaration, variable):
+        """Complete after the dot on *variable*, which *declaration* declares."""
+        from lsprotocol.types import TextDocumentIdentifier
+
+        from server import _member_completions
+
+        source = f"{declaration}\n{variable}.\n"
+        server = XLanguageServer()
+        uri = "file:///member.x"
+        server.documents[uri] = source
+        items = _member_completions(server, uri, source, 1, len(variable) + 1)
+        return [item.label for item in items or []]
+
+    def test_string_variable_offers_string_methods(self):
+        labels = self.members_for('let s = "hi";', "s")
+        self.assertIn("toUpperCase", labels)
+        self.assertIn("trim", labels)
+        self.assertIn("split", labels)
+        self.assertIn("length", labels)
+
+    def test_array_variable_offers_array_methods(self):
+        labels = self.members_for("let names = [1, 2];", "names")
+        self.assertIn("push", labels)
+        self.assertIn("map", labels)
+        self.assertIn("filter", labels)
+
+    def test_integer_variable_does_not_inherit_array_members(self):
+        labels = self.members_for("let count = 0;", "count")
+        self.assertIn("toString", labels)
+        self.assertNotIn("length", labels)
+        self.assertNotIn("push", labels)
+
+    def test_boolean_variable_offers_only_sensible_members(self):
+        labels = self.members_for("let flag = true;", "flag")
+        self.assertIn("toString", labels)
+        self.assertNotIn("length", labels)
+
+    def test_object_variable_offers_object_members(self):
+        labels = self.members_for("let obj = {};", "obj")
+        self.assertIn("keys", labels)
+        self.assertIn("values", labels)
+        self.assertIn("isEmpty", labels)
+
+    def test_annotated_variable_uses_the_annotation(self):
+        labels = self.members_for("let s: string = \"hi\";", "s")
+        self.assertIn("toUpperCase", labels)
+
+    def test_class_variable_still_offers_class_fields(self):
+        from lsprotocol.types import TextDocumentIdentifier
+
+        from server import completions
+
+        source = (
+            "class Point {\n"
+            "    integer x;\n"
+            "    integer y;\n"
+            "}\n"
+            "any function f() {\n"
+            "    let p = new Point();\n"
+            "    p.\n"
+            "}\n"
+        )
+        server = XLanguageServer()
+        uri = "file:///class-member.x"
+        server.documents[uri] = source
+        result = completions(
+            server,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri=uri),
+                position=Position(line=6, character=6),
+            ),
+        )
+        labels = [item.label for item in result["items"]]
+        self.assertIn("x", labels)
+        self.assertIn("y", labels)
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class TypedHoverTests(unittest.TestCase):
+    """Hover resolves declared names to their declarations."""
+
+    SOURCE = """\
+export type SettingsKey = "theme" | "backup";
+export const object<SettingsKey, string> DEFAULT_SETTINGS = {
+    theme: "system"
+};
+export string function getSetting(SettingsKey key) {
+    return DEFAULT_SETTINGS.theme;
+}
+"""
+
+    def test_hover_on_declared_const_shows_annotation(self):
+        display, _ = _find_declaration(self.SOURCE, "DEFAULT_SETTINGS")
+        self.assertIn("object<SettingsKey, string>", display)
+        self.assertIn("DEFAULT_SETTINGS", display)
+
+    def test_hover_on_type_alias_and_function(self):
+        self.assertIn("SettingsKey", _find_declaration(self.SOURCE, "SettingsKey")[0])
+        display, _ = _find_declaration(self.SOURCE, "getSetting")
+        self.assertIn("function getSetting", display)
+        self.assertIn("SettingsKey key", display)
+
+    def test_hover_on_parameter_shows_its_annotation(self):
+        display, _ = _find_declaration(self.SOURCE, "key")
+        self.assertEqual(display, "SettingsKey key")
+
+    def test_hover_on_unknown_word_is_none(self):
+        self.assertIsNone(_find_declaration(self.SOURCE, "nosuchname"))
+
+
+class MemberCompletionTests(unittest.TestCase):
+    """``receiver.`` offers the receiver class's fields and methods."""
+
+    SOURCE = """\
+class Point {
+    public integer x;
+    public integer y;
+    public integer function mag() { return x; }
+}
+
+class Circle {
+    public float r;
+    public float function area() { return r; }
+}
+
+any function main() {
+    let p = new Point();
+    print(p.);
+}
+"""
+
+    def items_at(self, line, character):
+        from lsprotocol.types import CompletionParams, Position, TextDocumentIdentifier
+
+        from server import completions
+
+        ls = XLanguageServer()
+        uri = "file:///member-demo.x"
+        ls.documents[uri] = self.SOURCE
+        result = completions(
+            ls,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri=uri),
+                position=Position(line=line, character=character),
+            ),
+        )
+        return result["items"] if isinstance(result, dict) else result
+
+    def test_receiver_dot_offers_only_that_class_members(self):
+        items = self.items_at(13, 14)  # cursor inside `print(p.);`
+        labels = [item.label for item in items]
+        self.assertEqual(labels, ["x", "y", "mag"])
+
+    def test_members_are_tagged_with_their_class(self):
+        details = {item.label: item.detail for item in self.items_at(13, 14)}
+        self.assertEqual(details["x"], "Point.integer x")
+        self.assertEqual(details["mag"], "Point.integer function mag(...)")
 
 
 if __name__ == "__main__":

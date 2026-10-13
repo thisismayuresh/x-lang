@@ -2717,6 +2717,34 @@ Go-to-definition (Ctrl+Click / F12) resolves functions, methods,
 constructors, parameters, fields, variables and enum members inside the
 current file, not just type names.
 
+Completions are type-aware: every `let`/`const` binding is offered with its
+type in the popup (inferred from the initializer when un-annotated), and after
+`let p = new Point();` the popup for `p.` lists only `Point`'s fields and
+methods. The same holds for built-in types — `s.` on a `string` offers
+`toUpperCase`/`trim`/`split`, `names.` on an array offers `push`/`map`/`filter`,
+and `obj.` on an object offers `keys`/`values`/`entries` — so the popup follows
+the declared or inferred type of the receiver, not just classes. Import paths
+after `import System.` are filtered to what exists on disk.
+
+The extension's server is a Python script the editor spawns at startup. After
+editing [`vscode-xlang/server/server.py`](./vscode-xlang/server/server.py) the
+running editor still has the old copy, so repackage and reinstall it, then
+reload the window:
+
+```sh
+cd vscode-xlang
+npm run compile
+npx --yes @vscode/vsce package --allow-missing-repository --skip-license \
+    -o /tmp/opencode/xlang-0.1.0.vsix
+code --install-extension /tmp/opencode/xlang-0.1.0.vsix
+```
+
+Then `Ctrl/Cmd+Shift+P` → **Developer: Reload Window**. The reload is what
+makes VS Code drop the old server process and start the new one; without it
+the editor keeps running the copy it launched with. While developing you can
+skip packaging entirely: open `vscode-xlang/` and press `F5` to launch an
+Extension Development Host against the source tree.
+
 See **[`vscode-xlang/README.md`](./vscode-xlang/README.md)** for the full
 report: architecture, every defect that was fixed, what was installed where,
 how to rebuild it, and the current limitations (go-to-definition is

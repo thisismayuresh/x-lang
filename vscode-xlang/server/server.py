@@ -540,6 +540,257 @@ def _expression_completions(
     return items or None
 
 
+# --------------------------------------------------------------------------
+# Declared symbols: completions and hover for names in the buffer
+# --------------------------------------------------------------------------
+
+_TYPE_TEXT = r"[A-Za-z_][\w.]*(?:<[^=;{}]*>)?(?:\[\])*"
+_MODIFIERS_RE = r"(?:(?:public|private|protected|static|final|abstract|async|override|internal|export)\s+)*"
+
+VARIABLE_DECL_RE = re.compile(
+    rf"^\s*{_MODIFIERS_RE}"
+    rf"(?P<binding>let|const|var)\s+"
+    rf"(?:(?P<type>{_TYPE_TEXT})\s+)?"
+    rf"(?P<name>[A-Za-z_]\w*)"
+    rf"\s*(?::\s*(?P<colon>[^=;]+))?"
+    rf"\s*(?:=|;|,|$)"
+)
+
+FUNCTION_DECL_RE = re.compile(
+    rf"^\s*{_MODIFIERS_RE}"
+    rf"(?P<return>{_TYPE_TEXT})\s+function\s*"
+    rf"(?:<(?P<generics>[^>]*)>)?\s*"
+    rf"(?P<name>[A-Za-z_]\w*)\s*\((?P<params>[^)]*)\)"
+)
+
+TYPE_DECL_RE = re.compile(
+    rf"^\s*{_MODIFIERS_RE}"
+    rf"(?P<kind>class|interface|enum|type)\s+(?P<name>[A-Za-z_]\w*)"
+)
+
+IMPORT_DECL_RE = re.compile(
+    r"^\s*import\s+(?P<path>[A-Za-z_][\w.]*)"
+    r"(?:\.(?P<braced>\{(?P<names>[^}]*)\})|(?P<single>\.\s*(?P<one>[A-Za-z_]\w*)))?"
+)
+
+_TYPE_KIND = {
+    "class": CompletionItemKind.Class,
+    "interface": CompletionItemKind.Interface,
+    "enum": CompletionItemKind.Enum,
+    "type": CompletionItemKind.Struct,
+}
+
+
+_INIT_STRING_RE = re.compile(r"""^["'`]""")
+_INIT_INT_RE = re.compile(r"^-?\d+\s*($|[^.0-9])")
+_INIT_FLOAT_RE = re.compile(r"^-?\d+\.\d+\s*$")
+_INIT_BOOL_RE = re.compile(r"^(true|false)\s*$")
+_INIT_ARRAY_RE = re.compile(r"^\[")
+_INIT_OBJECT_RE = re.compile(r"^\{")
+_INIT_NEW_RE = re.compile(r"^new\s+([A-Za-z_]\w*)")
+_INIT_IDENT_RE = re.compile(r"^([A-Za-z_]\w*)$")
+
+
+def _infer_initializer_type(
+    initializer: str, source: str, _depth: int = 0
+) -> str | None:
+    """Best-effort type of an ``= ...`` initializer, mirroring the playground.
+
+    Covers literals, ``new Ctor(...)``, and identifier-to-identifier copy so an
+    un-annotated ``let count = 0;`` still shows ``integer`` in the popup.
+    """
+    value = initializer.strip()
+    if not value:
+        return None
+    if _INIT_STRING_RE.match(value):
+        return "string"
+    if _INIT_FLOAT_RE.match(value):
+        return "float"
+    if _INIT_INT_RE.match(value):
+        return "integer"
+    if _INIT_BOOL_RE.match(value):
+        return "boolean"
+    if _INIT_ARRAY_RE.match(value):
+        return "array"
+    if _INIT_OBJECT_RE.match(value):
+        return "object"
+    new_call = _INIT_NEW_RE.match(value)
+    if new_call:
+        return new_call.group(1)
+    if _depth >= 4:
+        return None
+    ident = _INIT_IDENT_RE.match(value)
+    if ident:
+        inner = ident.group(1)
+        for raw in source.split("\n"):
+            match = VARIABLE_DECL_RE.search(raw)
+            if match and match.group("name") == inner:
+                annotation = match.group("colon") or match.group("type")
+                if annotation:
+                    return annotation.strip()
+                init = raw.split("=", 1)
+                if len(init) == 2:
+                    inferred = _infer_initializer_type(
+                        init[1].rstrip(";"), source, _depth + 1
+                    )
+                    if inferred:
+                        return inferred
+    return None
+
+
+def _declared_symbols(source: str) -> list[CompletionItem]:
+    """Completion items for every name declared in *source*.
+
+    Harvests X-style bindings (``let object<K, string> NAME = ...`` and the
+    colon spelling), functions, classes/interfaces/enums/type aliases, and
+    imported names — with the declaration as the item's ``detail`` so the
+    popup shows the type.
+    """
+    items: list[CompletionItem] = []
+    seen: set[str] = set()
+    raw_lines = source.split("\n")
+
+    def add(label: str, kind: CompletionItemKind, detail: str, doc: str) -> None:
+        if not label or label in seen:
+            return
+        seen.add(label)
+        items.append(
+            CompletionItem(
+                label=label,
+                kind=kind,
+                detail=detail,
+                documentation=doc,
+                sort_text="0_" + label,
+            )
+        )
+
+    for line0, line in enumerate(code_lines(source)):
+        match = FUNCTION_DECL_RE.search(line)
+        if match:
+            signature = line.strip()
+            for stop in ("{", ";"):
+                cut = signature.find(stop)
+                if cut >= 0:
+                    signature = signature[:cut].rstrip()
+            label = match.group("name")
+            add(
+                label,
+                CompletionItemKind.Function,
+                signature or label,
+                "declared in this file",
+            )
+            continue
+        match = VARIABLE_DECL_RE.search(line)
+        if match:
+            name = match.group("name")
+            annotation = match.group("colon") or match.group("type")
+            binding = match.group("binding")
+            kind = (
+                CompletionItemKind.Constant
+                if binding == "const"
+                else CompletionItemKind.Variable
+            )
+            detail = f"{binding} {annotation} {name}".strip() if annotation else f"{binding} {name}"
+            if not annotation:
+                raw = raw_lines[line0] if line0 < len(raw_lines) else line
+                init_match = re.search(r"=\s*([^;]+)", raw)
+                if init_match:
+                    inferred = _infer_initializer_type(init_match.group(1), source)
+                    if inferred:
+                        detail = f"{binding} {inferred} {name}"
+            add(name, kind, detail, "declared in this file")
+            continue
+        match = TYPE_DECL_RE.search(line)
+        if match:
+            kind = _TYPE_KIND.get(match.group("kind"), CompletionItemKind.Struct)
+            header = line.strip()
+            for stop in ("{", ";", "="):
+                cut = header.find(stop)
+                if cut >= 0:
+                    header = header[:cut].rstrip()
+            add(match.group("name"), kind, header or match.group("name"), "declared in this file")
+            continue
+        match = IMPORT_DECL_RE.search(line)
+        if match:
+            path = match.group("path")
+            names: list[str] = []
+            if match.group("names"):
+                names = [
+                    piece.strip().split()[-1]
+                    for piece in match.group("names").split(",")
+                    if piece.strip()
+                ]
+            elif match.group("one"):
+                names = [match.group("one")]
+            for name in names:
+                add(
+                    name,
+                    CompletionItemKind.Reference,
+                    f"imported from {path}",
+                    f"`import {path}`",
+                )
+    return items
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split *text* on commas that sit outside ``<...>`` nesting."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for character in text:
+        if character == "<":
+            depth += 1
+        elif character == ">":
+            depth = max(0, depth - 1)
+        if character == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(character)
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _declaration_display(raw_line: str, word: str, is_parameter: bool) -> str | None:
+    """Human-readable declaration text for *word* on *raw_line*."""
+    if is_parameter:
+        open_paren = raw_line.find("(")
+        close_paren = raw_line.find(")", open_paren + 1) if open_paren >= 0 else -1
+        if open_paren >= 0 and close_paren > open_paren:
+            for part in _split_top_level(raw_line[open_paren + 1 : close_paren]):
+                tokens = part.strip().split()
+                if tokens and tokens[-1] == word:
+                    return " ".join(tokens)
+    text = raw_line.strip()
+    cuts = [
+        index
+        for stop in ("{", ";", "=")
+        if (index := text.find(stop)) >= 0
+    ]
+    if cuts:
+        text = text[: min(cuts)].rstrip()
+    return text or None
+
+
+def _find_declaration(source: str, word: str) -> tuple[str, int] | None:
+    """Locate the first declaration of *word*; return (display, line0)."""
+    blanked_lines = code_lines(source)
+    raw_lines = source.split("\n")
+    for pattern in definition_patterns(word):
+        parameter_pattern = "fn" in pattern.groupindex
+        for line0, blanked in enumerate(blanked_lines):
+            match = pattern.search(blanked)
+            if match is None:
+                continue
+            display = _declaration_display(
+                raw_lines[line0], word, parameter_pattern
+            )
+            if display:
+                return display, line0
+    return None
+
+
 @server.feature(
     TEXT_DOCUMENT_COMPLETION,
     CompletionOptions(trigger_characters=["."]),
@@ -559,23 +810,430 @@ def completions(ls: XLanguageServer, params: CompletionParams):
     if expression_items:
         return {"items": expression_items, "isIncomplete": False}
 
-    items = [CompletionItem(label=kw, kind=CompletionItemKind.Keyword) for kw in KEYWORDS]
-    items += [CompletionItem(label=t, kind=CompletionItemKind.Class) for t in TYPES]
-    items += [CompletionItem(label=f, kind=CompletionItemKind.Function) for f in BUILTINS]
+    member_items = _member_completions(
+        ls, uri, source, params.position.line, params.position.character
+    )
+    if member_items:
+        return {"items": member_items, "isIncomplete": False}
+
+    items = _declared_symbols(source)
+    declared = {item.label for item in items}
+    items += [
+        CompletionItem(label=kw, kind=CompletionItemKind.Keyword, sort_text="2_" + kw)
+        for kw in KEYWORDS
+        if kw not in declared
+    ]
+    items += [
+        CompletionItem(label=t, kind=CompletionItemKind.Class, sort_text="2_" + t)
+        for t in TYPES
+        if t not in declared
+    ]
+    items += [
+        CompletionItem(label=f, kind=CompletionItemKind.Function, sort_text="1_" + f)
+        for f in BUILTINS
+        if f not in declared
+    ]
 
     for match in re.finditer(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)", source):
-        items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Class))
+        if match.group(1) not in declared:
+            items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Class))
     for match in re.finditer(r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)", source):
-        items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Interface))
+        if match.group(1) not in declared:
+            items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Interface))
     for match in re.finditer(
         r"^\s*(?:public|private|protected|static|final|abstract|async|\s)*"
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?::\s*[A-Za-z_][\w.\[\]]*)?\s*\{",
+        r"([A-Za-z_][A-Za-z_0-9]*)\s*\([^;]*\)\s*(?::\s*[A-Za-z_][\w.\[\]]*)?\s*\{",
         source,
         re.MULTILINE,
     ):
-        items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Method))
+        if match.group(1) not in declared:
+            items.append(CompletionItem(label=match.group(1), kind=CompletionItemKind.Method))
 
+    _add_class_members(source, items)
     return {"items": items, "isIncomplete": False}
+
+
+_FIELD_DECL_RE = re.compile(
+    r"^[ \t]*(?:public|private|protected|static|final|abstract|async|export|const|let|var)*\s*"
+    r"(?P<type>[A-Za-z_][\w.\[\]<>?, ]*?)\s+"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?:=[^;]*)?;[ \t]*$"
+)
+_METHOD_DECL_RE = re.compile(
+    r"^[ \t]*(?:public|private|protected|static|final|abstract|async|export|const|let|var)*\s*"
+    r"(?P<type>[A-Za-z_][\w.\[\]<>?, ]*?)\s+"
+    r"(?P<name>[A-Za-z_]\w*)\s*\([^)]*\)"
+)
+_CLASS_START_RE = re.compile(
+    r"^[ \t]*class\s+(?P<name>[A-Za-z_]\w*)\b[^\n{]*\{"
+)
+
+
+def _add_class_members(source: str, items: list[CompletionItem]) -> None:
+    """Offer fields and methods of every ``class`` in *source*.
+
+    A member's ``detail`` is prefixed with its declaring class, so after
+    ``let p = new Point();`` the popup for ``p.`` still shows ``Point.x``.
+    """
+    raw_lines = source.split("\n")
+    declared = {item.label for item in items}
+    open_classes: list[str] = []
+
+    for raw in raw_lines:
+        start = _CLASS_START_RE.match(raw)
+        if start:
+            open_classes.append(start.group("name"))
+            continue
+
+        if not open_classes:
+            continue
+
+        stripped = raw.strip()
+        if stripped == "}":
+            if open_classes:
+                open_classes.pop()
+            continue
+
+        field = _FIELD_DECL_RE.match(raw)
+        if field and field.group("name") not in ("return", "new", "let", "const"):
+            name = field.group("name")
+            if name in declared:
+                continue
+            declared.add(name)
+            items.append(
+                CompletionItem(
+                    label=name,
+                    kind=CompletionItemKind.Field,
+                    detail=f"{open_classes[-1]}.{field.group('type').strip()} {name}",
+                    documentation="field",
+                )
+            )
+            continue
+
+        method = _METHOD_DECL_RE.match(raw)
+        if method:
+            name = method.group("name")
+            if name in declared:
+                continue
+            declared.add(name)
+            items.append(
+                CompletionItem(
+                    label=name,
+                    kind=CompletionItemKind.Method,
+                    detail=f"{open_classes[-1]}.{method.group('type').strip()} {name}(...)",
+                    documentation="method",
+                )
+            )
+
+
+_RECEIVER_RE = re.compile(r"([A-Za-z_]\w*)\s*\.(?:[A-Za-z_]\w*)?$")
+
+
+def _var_static_type(source: str, name: str) -> str | None:
+    """Declared or initializer type of local *name*, e.g. ``Point`` for
+    ``let p = new Point();``."""
+    for raw in source.split("\n"):
+        m = VARIABLE_DECL_RE.search(raw)
+        if m and m.group("name") == name:
+            annotation = m.group("colon") or m.group("type")
+            if annotation:
+                return annotation.strip().lstrip("?").strip()
+            init = re.search(r"=\s*([^;]+)", raw)
+            if init:
+                new_call = re.search(r"new\s+([A-Za-z_]\w*)", init.group(1))
+                if new_call:
+                    return new_call.group(1)
+                # Literals first: `true`/`false` also match the bare-identifier
+                # pattern below, so booleans must be checked before the
+                # identifier-to-identifier copy.
+                inferred = _infer_initializer_type(init.group(1), source)
+                if inferred:
+                    return inferred
+                ident = re.match(r"^\s*([A-Za-z_]\w*)\s*$", init.group(1))
+                if ident:
+                    return _var_static_type(source, ident.group(1))
+    return None
+
+
+# Members offered after a `.` for built-in and stdlib receiver types. The
+# playground keeps the same map in `docs-site/playground/completions.js`;
+# keep the two in sync when adding entries.
+_BUILTIN_MEMBERS: dict[str, list[tuple[str, str, str]]] = {
+    "*": [
+        ("length", "property", "size of array/string"),
+        ("size", "method", "collection size()"),
+        ("toString", "method", "stringify value"),
+        ("message", "property", "exception message"),
+        ("name", "property", "type / exception name"),
+    ],
+    "string": [
+        ("toUpperCase", "method", "toUpperCase()"),
+        ("toLowerCase", "method", "toLowerCase()"),
+        ("trim", "method", "trim()"),
+        ("includes", "method", "includes(text)"),
+        ("indexOf", "method", "indexOf(text)"),
+        ("slice", "method", "slice(start, end)"),
+        ("substring", "method", "substring(start, end)"),
+        ("split", "method", "split(separator)"),
+        ("replace", "method", "replace(from, to)"),
+        ("charAt", "method", "charAt(index)"),
+        ("length", "property", "character count"),
+    ],
+    "array": [
+        ("length", "property", "element count"),
+        ("push", "method", "push(value)"),
+        ("pop", "method", "pop()"),
+        ("map", "method", "map(callback)"),
+        ("filter", "method", "filter(callback)"),
+        ("reduce", "method", "reduce(callback, init)"),
+        ("join", "method", "join(separator)"),
+        ("slice", "method", "slice(start, end)"),
+        ("indexOf", "method", "indexOf(value)"),
+        ("contains", "method", "contains(value)"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "object": [
+        ("keys", "method", "keys()"),
+        ("values", "method", "values()"),
+        ("entries", "method", "entries()"),
+        ("size", "property", "entry count"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "boolean": [
+        ("toString", "method", "toString()"),
+    ],
+    "number": [
+        ("toString", "method", "toString()"),
+        ("toFixed", "method", "toFixed(digits)"),
+        ("toPrecision", "method", "toPrecision(precision)"),
+    ],
+    "List": [
+        ("add", "method", "add(value)"),
+        ("get", "method", "get(index)"),
+        ("set", "method", "set(index, value)"),
+        ("remove", "method", "remove(index)"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+        ("contains", "method", "contains(value)"),
+        ("indexOf", "method", "indexOf(value)"),
+        ("clear", "method", "clear()"),
+        ("map", "method", "map(callback)"),
+        ("filter", "method", "filter(callback)"),
+        ("reduce", "method", "reduce(callback, init)"),
+        ("join", "method", "join(separator)"),
+        ("slice", "method", "slice(start, end)"),
+    ],
+    "LinkedList": [
+        ("add", "method", "add(value)"),
+        ("get", "method", "get(index)"),
+        ("remove", "method", "remove(index)"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "HashMap": [
+        ("set", "method", "set(key, value)"),
+        ("get", "method", "get(key)"),
+        ("has", "method", "has(key)"),
+        ("remove", "method", "remove(key)"),
+        ("keys", "method", "keys()"),
+        ("values", "method", "values()"),
+        ("entries", "method", "entries()"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+        ("clear", "method", "clear()"),
+    ],
+    "Set": [
+        ("add", "method", "add(value)"),
+        ("remove", "method", "remove(value)"),
+        ("contains", "method", "contains(value)"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "Stack": [
+        ("push", "method", "push(value)"),
+        ("pop", "method", "pop()"),
+        ("peek", "method", "peek()"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "Queue": [
+        ("enqueue", "method", "enqueue(value)"),
+        ("dequeue", "method", "dequeue()"),
+        ("peek", "method", "peek()"),
+        ("size", "method", "size()"),
+        ("isEmpty", "method", "isEmpty()"),
+    ],
+    "Math": [
+        ("sqrt", "method", "sqrt(x)"),
+        ("pow", "method", "pow(base, exp)"),
+        ("abs", "method", "abs(x)"),
+        ("max", "method", "max(a, b, …)"),
+        ("min", "method", "min(a, b, …)"),
+        ("floor", "method", "floor(x)"),
+        ("ceil", "method", "ceil(x)"),
+        ("round", "method", "round(x)"),
+        ("random", "method", "random()"),
+        ("randomInt", "method", "randomInt(max)"),
+        ("factorial", "method", "factorial(n)"),
+        ("gcd", "method", "gcd(a, b)"),
+        ("lcm", "method", "lcm(a, b)"),
+        ("sin", "method", "sin(x)"),
+        ("cos", "method", "cos(x)"),
+        ("tan", "method", "tan(x)"),
+        ("log", "method", "log(x)"),
+        ("log2", "method", "log2(x)"),
+        ("log10", "method", "log10(x)"),
+        ("exp", "method", "exp(x)"),
+        ("pi", "property", "π constant"),
+        ("e", "property", "Euler's number"),
+    ],
+    "JSON": [
+        ("toJSON", "method", "toJSON(value, indent?)"),
+        ("parse", "method", "parse(text)"),
+    ],
+    "FileSystem": [
+        ("readText", "method", "readText(path)"),
+        ("writeText", "method", "writeText(path, text)"),
+        ("appendText", "method", "appendText(path, text)"),
+        ("exists", "method", "exists(path)"),
+        ("isFile", "method", "isFile(path)"),
+        ("isDirectory", "method", "isDirectory(path)"),
+        ("listDirectory", "method", "listDirectory(path)"),
+        ("createDirectory", "method", "createDirectory(path)"),
+        ("deleteFile", "method", "deleteFile(path)"),
+        ("deleteDirectory", "method", "deleteDirectory(path)"),
+    ],
+}
+
+# Aliases the runtime reports for the same shape, so `let names = [...]` and a
+# `List` variable both resolve.
+_BUILTIN_ALIASES = {
+    "integer": "number",
+    "int": "number",
+    "float": "number",
+    "number": "number",
+    "bool": "boolean",
+    "boolean": "boolean",
+}
+
+_BUILTIN_KIND = {
+    "method": CompletionItemKind.Method,
+    "property": CompletionItemKind.Property,
+    "namespace": CompletionItemKind.Module,
+    "class": CompletionItemKind.Class,
+}
+
+
+def _builtin_members(type_name: str) -> list[CompletionItem]:
+    """Members for a built-in/stdlib receiver type, or ``[]``."""
+    key = _BUILTIN_ALIASES.get(type_name, type_name)
+    # `string[]` / `object<K, V>`-shaped annotations share the array/object maps.
+    lowered = key.lower()
+    if lowered.endswith("[]"):
+        key = "array"
+    entries = list(_BUILTIN_MEMBERS.get(key, []))
+    # Only fall back to the wildcard set for types with no dedicated entry;
+    # a number or boolean should not inherit `length` from the array/string
+    # wildcard.
+    if key not in _BUILTIN_MEMBERS:
+        entries += _BUILTIN_MEMBERS.get("*", [])
+    seen: set[str] = set()
+    items: list[CompletionItem] = []
+    for name, member_type, detail in entries:
+        if name in seen:
+            continue
+        seen.add(name)
+        items.append(
+            CompletionItem(
+                label=name,
+                kind=_BUILTIN_KIND.get(member_type, CompletionItemKind.Method),
+                detail=f"{key}.{name}: {detail}",
+                documentation="built-in",
+            )
+        )
+    return items
+
+
+def _members_of_class(source: str, class_name: str) -> list[CompletionItem]:
+    """Fields and methods declared directly inside ``class <class_name>``."""
+    raw_lines = source.split("\n")
+    members: list[CompletionItem] = []
+    inside = False
+    depth = 0
+    for raw in raw_lines:
+        start = _CLASS_START_RE.match(raw)
+        if start:
+            if start.group("name") == class_name:
+                inside = True
+                depth = 1
+            elif inside:
+                depth += 1
+            continue
+        if not inside:
+            continue
+        depth += raw.count("{") - raw.count("}")
+        if depth <= 0:
+            inside = False
+            continue
+        field = _FIELD_DECL_RE.match(raw)
+        if field and field.group("name") not in ("return", "new", "let", "const"):
+            members.append(
+                CompletionItem(
+                    label=field.group("name"),
+                    kind=CompletionItemKind.Field,
+                    detail=f"{class_name}.{field.group('type').strip()} {field.group('name')}",
+                    documentation="field",
+                )
+            )
+            continue
+        method = _METHOD_DECL_RE.match(raw)
+        if method:
+            members.append(
+                CompletionItem(
+                    label=method.group("name"),
+                    kind=CompletionItemKind.Method,
+                    detail=(
+                        f"{class_name}.{method.group('type').strip()} "
+                        f"{method.group('name')}(...)"
+                    ),
+                    documentation="method",
+                )
+            )
+    return members
+
+
+def _member_completions(
+    ls: XLanguageServer, uri: str, source: str, line: int, character: int
+) -> list[CompletionItem] | None:
+    """Type-aware ``receiver.`` suggestions.
+
+    After ``let p = new Point();`` the popup for ``p.`` offers only ``Point``'s
+    fields and methods, each tagged ``Point.x``. Returns ``None`` when the
+    text before the cursor is not a member access, so the flat list takes over.
+    """
+    lines = source.split("\n")
+    if line >= len(lines):
+        return None
+    # Cut the prefix at the last `.`: `print(p.)` leaves `);` after the dot and
+    # would otherwise block the match, while `p.` alone still matches.
+    prefix = lines[line][:character]
+    dot = prefix.rfind(".")
+    if dot < 0:
+        return None
+    match = _RECEIVER_RE.search(prefix[: dot + 1])
+    if match is None:
+        return None
+    receiver = match.group(1)
+    type_name = _var_static_type(source, receiver)
+    if not type_name:
+        return None
+    members = _members_of_class(source, type_name)
+    if not members:
+        # Not a class declared in this file — fall back to built-in / stdlib
+        # members, so `let string label = "x"; label.` offers string methods.
+        members = _builtin_members(type_name)
+    if not members:
+        return None
+    return members
 
 
 HOVER_INFO = {
@@ -612,11 +1270,23 @@ def hover(ls: XLanguageServer, params: HoverParams):
     for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", lines[line0]):
         start, end = match.span()
         if start <= char0 < end:
-            value = HOVER_INFO.get(match.group(0))
-            if value is None:
+            word = match.group(0)
+            value = HOVER_INFO.get(word)
+            if value is not None:
+                return Hover(
+                    contents=MarkupContent(
+                        kind=MarkupKind.Markdown, value=f"```x\n{value}\n```"
+                    )
+                )
+            declared = _find_declaration(source, word)
+            if declared is None:
                 return None
+            display, declared_line = declared
+            body = f"```x\n{display}\n```"
+            if declared_line != line0:
+                body += f"\n\ndeclared in this file, line {declared_line + 1}"
             return Hover(
-                contents=MarkupContent(kind=MarkupKind.Markdown, value=f"```x\n{value}\n```")
+                contents=MarkupContent(kind=MarkupKind.Markdown, value=body)
             )
     return None
 
@@ -625,10 +1295,13 @@ DECL_KEYWORDS = (
     r"(?:return|if|else|while|for|switch|match|case|default|break|continue|"
     r"throw|catch|new|print)\b"
 )
-TYPE_TOKEN = r"[A-Za-z_][A-Za-z0-9_]*(?:\[\])*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+TYPE_TOKEN = (
+    r"[A-Za-z_][A-Za-z0-9_]*(?:<[^=;{}]*>)?(?:\[\])*"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
 MODIFIERS = (
     r"(?:(?:public|private|protected|static|final|abstract|async|override|"
-    r"internal)\s+)*"
+    r"internal|export)\s+)*"
 )
 
 
