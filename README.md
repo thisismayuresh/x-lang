@@ -2450,9 +2450,22 @@ python3 -m http.server 8080
 ```
 
 Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
-`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build;
-after changing anything under `xlang/`, rebuild the wheel the playground loads
-with `x playground` (verify with `x playground-check`).
+`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build, but
+the interpreter itself does: after changing anything under `xlang/`, rebuild
+the wheel the playground loads with
+
+```sh
+x playground           # rebuild the wheel once
+x playground-watch     # rebuild automatically on every xlang/ edit
+x playground-check     # exit 1 if the wheel is stale (CI)
+```
+
+The build fingerprints `xlang/**` + `pyproject.toml`, writes the wheel and the
+fingerprint into `docs-site/playground/wheels/manifest.json`, and the worker
+requests the wheel with `?v=<fingerprint>` — so the next page reload always
+fetches the new interpreter. Skipping the rebuild (or a stale
+`playground-check`) means the browser silently runs the old Python code.
+See `docs-site/README.md` for the full pipeline.
 
 The site is published to GitHub Pages by
 `.github/workflows/deploy-docs.yml`, which uploads `docs-site/` as the Pages
