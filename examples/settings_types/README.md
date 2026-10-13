@@ -89,9 +89,23 @@ function main() {
 
 - A file cannot re-export an imported type; a `type`/`export { ... }` name must
   be declared in the file itself. Import the type directly wherever it is used.
-- Type aliases are checked by `x check` but are erased at runtime, so an alias
-  used inside `object<K, V>` (for example `object<SettingsKey, string>`) is
-  resolved by the checker; the runtime accepts any value for that key type.
+- `object<K, V>` is checked against object literals key by key. An unknown key
+  names the key, lists the allowed ones, and points at the entry:
+
+  ```text
+  error: Object key 'd' is not allowed in 'DEFAULT_SETTINGS'
+     = note: 'DEFAULT_SETTINGS' is typed `object<SettingsKey, string>`
+             allowed keys: "theme", "backup_interval_min", "last_backup_at"
+     = help: remove the 'd' entry, or allow 'd' in the key type
+  ```
+
+  A value of the wrong type gets its own diagnostic
+  (`Value for key 'theme' ... expected \`string\`, found \`integer\``).
+- Type aliases are erased at runtime, so `object<SettingsKey, string>` is
+  enforced by the checker; the runtime re-checks inline literal unions
+  (`object<"a"|"b", string>`) but cannot re-check an aliased key type. Under
+  `strict_typing` the checker runs before every `x run`, so a bad key never
+  reaches the runtime.
 - String-literal unions are enforced where the checker sees a literal value
   (declaration, assignment, `return`, and call arguments). A value that reaches
   the type through a broad `string` binding is rejected, because the checker
