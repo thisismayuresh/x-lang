@@ -2280,6 +2280,39 @@ use `FileSystemException`, which can also be caught as `IOException`,
 which likewise extends `IOException`. See the runnable
 [exception hierarchy example](./examples/exceptions/exception_hierarchy.x).
 
+### Try with resources
+
+`try (let name = resource) { ... }` binds a resource and calls its `close()`
+method automatically when the block exits — on normal completion, on `return`,
+and on throw (before any `catch`/`finally` runs). The resource type is
+optional; the bound value just needs a `close()` method. Multiple bindings are
+closed last-in-first-out.
+
+```x
+class Connection {
+    private string id;
+
+    public Connection(string id) {
+        this.id = id;
+        print("open   " + this.id);
+    }
+
+    public string getId() { return this.id; }
+
+    public void close() {
+        print("close  " + this.id);
+    }
+}
+
+try (let Connection db = new Connection("db")) {
+    print("using " + db.getId());
+}
+// prints: open db / using db / close db
+```
+
+See the runnable [try-with-resources example](./examples/exceptions/try_with_resources.x)
+for the throw-before-catch and multi-resource LIFO cases.
+
 ## Type aliases and records
 
 `type Name = ...` introduces an alias. Record aliases describe an object
@@ -4000,6 +4033,7 @@ examples/
 ├── control_flow/main_file.x
 ├── decorators/trace.x
 ├── exceptions/try_catch_finally.x
+├── exceptions/try_with_resources.x
 ├── namespaces/nested_classes.x
 ├── objects/destructuring.x
 ├── pattern_matching/match.x
@@ -4013,6 +4047,7 @@ For example:
 x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
+x run examples/exceptions/try_with_resources.x
 x run examples/filesystem_async_demo.x
 x run examples/namespaces/nested_classes.x
 x run examples/objects/destructuring.x
@@ -4262,7 +4297,7 @@ remaining implementation goals and documented constraints:
 - [ ] Union/nullable type semantics — `integer | null` does not exist and
       `null` is rejected for non-null types; inline `record{...}` annotations are
       checked structurally today
-- [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects
+- [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
 - [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
 - [ ] A broader standard library beyond the built-ins documented here
 
@@ -4285,6 +4320,102 @@ remaining implementation goals and documented constraints:
 - Parser recovery reports multiple recoverable errors but malformed constructs can prevent discovery of later errors; runtime failures stop at the first failure
 - Recursive algorithms (flood fill, deep trees) can hit Python's default recursion limit on large inputs
 - The run-length codec example is intended for letter-only input, not a general-purpose escaping format
+
+### Known issue: `import B.greet` leaks the whole module scope
+
+**Status:** known limitation, not yet fixed. Documented here rather than
+silently worked around so the shape of the bug and the options for fixing it
+are recorded.
+
+**Symptom.** A member import such as `import main_tests.greet("Maya")` (the
+feature shown in the import-function section above) is supposed to bind only
+`greet`. Instead the loader pulls in *every* top-level declaration of the
+imported module — interfaces, classes, enums, helpers — into the importing
+file's global scope. If the importing file happens to declare a name with the
+same identifier, loading fails with a confusing collision error that appears
+to be a duplicate declaration in your own file:
+
+```text
+$ x run examples/main.x
+error: 'Serializable' is already declared in this scope
+   --> main.x:297:1
+    |
+297 | interface Serializable {
+    | ^ 'Serializable' is already declared in this scope
+```
+
+**Reproduction.** `examples/main.x` (unmodified, present on `development`)
+hits it today:
+
+- `main.x:4` — `import main_tests.greet("Maya")`
+- `main.x:297` — declares `interface Serializable { string serialize(); }`
+- `main_tests.x:236` — declares `interface Serializable { string serialize();
+  void deserialize(string data); }`
+
+Because the import flattens `main_tests`' scope into `main.x`, the two
+`Serializable` interfaces collide and `x run examples/main.x` aborts. Note
+`x check examples/main.x` reports `syntax is valid` / `types are valid` — the
+collision is raised by the **module loader** when declarations are merged at
+load time, not by the parser or the type checker. A minimal standalone
+repro (any name works, not just `Serializable`):
+
+```x
+// lib.x
+export string function greet(string name) { return "Hello, " + name; }
+interface Marker { void m(); }
+```
+
+```x
+// app.x
+import lib.greet
+interface Marker { void m(); }   // error: 'Marker' is already declared in this scope
+print(greet("Ada"));
+```
+
+**Root cause.** `xlang/module_loader.py`, the member-import branch of
+`_load_file` (around line 257): after loading the source module it does
+`combined_declarations.extend(imported_declarations)`, splicing the whole
+module's declarations into the importer. The collision check that runs just
+before (`_check_flatten_collision(import_name, ...)`) only guards the single
+name you asked for (`greet`), so every *other* leaked name bypasses it.
+
+**Why it is a spec conflict, not a typo.** The two authoritative documents
+disagree:
+
+- `README.md` (import-function section) says the import "behaves exactly
+  like `import B.greet`" — implying only `greet` binds.
+- The `module_loader.py` module docstring says declarations are "no longer
+  arbitrarily flattened ... flattening occurs only when necessary for
+  backward compatibility and never when it would create a collision between
+  different exported declarations. When a collision would occur from
+  flattening, an error is raised."
+
+So the loader is behaving as *its* design intends (flatten for backward
+compat, then raise on collision), while the README describes the *intended*
+member-import semantics. That contradiction is why this was documented rather
+than patched in place.
+
+**What we can do (options).**
+
+1. *Minimal unblock (no interpreter change).* Rename one of the colliding
+   declarations — e.g. give `examples/main.x`'s `Serializable` a distinct
+   name — so `main.x` runs. Cheapest and safest, but leaves the scope leak
+   for the next file to trip over.
+2. *Correct fix (interpreter change).* Make member imports bind only the
+   named declaration and stop flattening siblings. The catch: module-level
+   helpers referenced by the imported `greet` resolve today *because*
+   everything shares one flattened scope, so the real fix is per-module
+   scope isolation — which is exactly the separate open limitation
+   *"Independent module namespaces"* in the list above. This is
+   architectural: full test suite, WebAssembly playground wheel rebuild
+   (`x playground`), and doc updates are all required.
+3. *Status quo (chosen).* Leave the code as-is and document the issue here,
+   as recorded above.
+
+**Practical guidance until fixed.** Avoid declaring a top-level name in an
+importing file that also exists in any module you member-import; or import
+the module wholesale (`import main_tests`) and reference members through the
+namespace rather than splicing a single member's scope in.
 
 The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
 behavior is narrower than that draft, this README describes what can currently
