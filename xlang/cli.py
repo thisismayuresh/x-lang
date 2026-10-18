@@ -9,6 +9,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .config import (
@@ -38,6 +39,7 @@ Usage:
   x [OPTIONS] run <file>.x [-- <program arguments...>]
   x [OPTIONS] check <file>.x
   x [OPTIONS] build <file>.x
+  x [OPTIONS] compile <file>.x [--target <language>] [--out <file>]
   x [OPTIONS] format <file>.x
   x [OPTIONS] install <package>...
   x [OPTIONS] repl
@@ -55,6 +57,14 @@ Options:
                         (the single-dash form -watch is also accepted)
   -h, --help            Show this help
   -V, --version         Show the interpreter version
+
+Compile:
+  x compile file.x      Translate file.x to another language and write it out.
+                        The type checker runs first, so type errors abort the
+                        compile. Defaults to TypeScript written to file.ts;
+                        --target/--out (or [compile].target/out in x.toml)
+                        override both. The output directory is created.
+  x compile file.x --target typescript --out dist/main.ts
 
 Format:
   x format file.x       Rewrite file.x with canonical formatting in place
@@ -191,7 +201,7 @@ def _execute(
         return 2
     if parsed.watch and command == "install":
         state.abort = True
-        print("x: --watch can only be used with run, check, build, or format", file=sys.stderr)
+        print("x: --watch can only be used with run, check, build, compile, or format", file=sys.stderr)
         return 2
 
     if command == "install":
@@ -238,7 +248,7 @@ def _execute(
                 return 2
             print("x: source files must use the .x extension", file=sys.stderr)
             return 2
-        if command in ("check", "build", "format"):
+        if command in ("check", "build", "format", "compile"):
             print(
                 f"x: '{parsed.source}' is a script; run it with "
                 f"'x {parsed.source}'",
@@ -326,7 +336,7 @@ def _execute(
                 config.color,
                 show_context=not parsed.no_context,
             )
-        if command in ("check", "build"):
+        if command in ("check", "build", "compile"):
             if config.enabled("type_checker"):
                 type_errors = TypeChecker().check(program, source_name=str(source_path), config=config)
                 if type_errors:
@@ -338,6 +348,15 @@ def _execute(
                         label="type error",
                         show_context=not parsed.no_context,
                     )
+            if command == "compile":
+                return _compile_program(
+                    program,
+                    loader,
+                    source_path,
+                    parsed,
+                    config,
+                    show_context=not parsed.no_context,
+                )
             print(f"{source_path}: syntax is valid")
             if config.enabled("type_checker"):
                 print(f"{source_path}: types are valid")
@@ -569,7 +588,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         watch=False,
     )
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("run", "check", "build", "format", "install", "repl"):
+    for command in ("run", "check", "build", "format", "install", "repl", "compile"):
         command_parser = subparsers.add_parser(
             command,
             parents=[common_parser],
@@ -584,6 +603,17 @@ def _create_argument_parser() -> argparse.ArgumentParser:
             if command == "run":
                 command_parser.add_argument(
                     "program_arguments", nargs=argparse.REMAINDER
+                )
+            elif command == "compile":
+                command_parser.add_argument(
+                    "--target",
+                    default=None,
+                    help="target language (default: typescript, or [compile].target)",
+                )
+                command_parser.add_argument(
+                    "--out",
+                    default=None,
+                    help="output file (default: <source>.ts, or [compile].out)",
                 )
     return parser
 
@@ -611,7 +641,7 @@ def _insert_implicit_run_command(
             if current_argument.endswith(".x"):
                 return ["run", *arguments], True
             return arguments, False
-        if current_argument in {"--config", "--feature", "--profile", "--color"}:
+        if current_argument in {"--config", "--feature", "--profile", "--color", "--target", "--out"}:
             first_non_option += 2
         else:
             first_non_option += 1
@@ -655,7 +685,7 @@ def _insert_script_command(
         if current_argument == "--":
             return arguments, False
         if current_argument.startswith("-"):
-            if current_argument in {"--config", "--feature", "--profile", "--color"}:
+            if current_argument in {"--config", "--feature", "--profile", "--color", "--target", "--out"}:
                 first_non_option += 2
             else:
                 first_non_option += 1
@@ -670,6 +700,56 @@ def _insert_script_command(
             *arguments[first_non_option + 1:],
         ], True
     return arguments, False
+
+
+def _compile_program(
+    program: Any,
+    loader: ModuleLoader,
+    source_path: Path,
+    parsed: argparse.Namespace,
+    config: Any,
+    show_context: bool = True,
+) -> int:
+    """Emit *program* for the ``x compile`` command.
+
+    Resolution order for the target and output path is the ``--target`` /
+    ``--out`` flags, then ``[compile].target`` / ``[compile].out`` from x.toml,
+    then ``typescript`` and a ``.ts`` file next to the source. The output
+    directory is created when it does not exist.
+    """
+    from .codegen import SUPPORTED_TARGETS, CodegenError, emit
+
+    target = getattr(parsed, "target", None) or config.compile_target or "typescript"
+    if target not in SUPPORTED_TARGETS:
+        available = ", ".join(SUPPORTED_TARGETS)
+        print(
+            f"x: unknown compile target '{target}'. Available targets: {available}",
+            file=sys.stderr,
+        )
+        return 2
+    out = getattr(parsed, "out", None) or config.compile_out
+    output_path = Path(out) if out else source_path.with_suffix(".ts")
+    try:
+        source_text = emit(
+            program, target, source_name=str(source_path), config=config
+        )
+    except CodegenError as error:
+        return _report_source_errors(
+            [error],
+            loader.sources,
+            source_path,
+            config.color,
+            label="compile error",
+            show_context=show_context,
+        )
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(source_text, encoding="utf-8")
+    except OSError as error:
+        print(f"x: cannot write '{output_path}': {error}", file=sys.stderr)
+        return 1
+    print(f"{source_path}: compiled to {output_path} ({target})")
+    return 0
 
 
 def _format_source_file(

@@ -59,7 +59,7 @@ FEATURE_DEFAULTS = {
 
 COMMAND_LINE_SOURCE = Path("<command line>")
 
-BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl", "format")
+BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl", "format", "compile")
 
 
 class ConfigError(Exception):
@@ -92,6 +92,8 @@ class XConfig:
     default_imports: list[str] = field(default_factory=list)
     default_command: str = "run"
     color: str = "auto"
+    compile_target: str = ""
+    compile_out: str = ""
 
     def enabled(self, feature: str) -> bool:
         return self.features.get(feature, False)
@@ -213,7 +215,12 @@ def load_env_file(path: Path) -> dict[str, str]:
 def _apply_config_tables(
     config: XConfig, data: dict[str, Any], config_path: Path
 ) -> None:
-    _validate_keys(data, {"features", "run", "cli", "scripts", "imports"}, "root", config_path)
+    _validate_keys(
+        data,
+        {"features", "run", "cli", "scripts", "imports", "compile"},
+        "root",
+        config_path,
+    )
 
     feature_values = data.get("features", {})
     if not isinstance(feature_values, dict):
@@ -236,9 +243,10 @@ def _apply_config_tables(
         raise ConfigError("[cli] must be a TOML table", config_path)
     _validate_keys(cli_values, {"default-command", "color"}, "[cli]", config_path)
     default_command = cli_values.get("default-command", "run")
-    if default_command not in {"run", "check", "build"}:
+    if default_command not in {"run", "check", "build", "compile"}:
         raise ConfigError(
-            "[cli].default-command must be 'run', 'check', or 'build'", config_path
+            "[cli].default-command must be 'run', 'check', 'build', or 'compile'",
+            config_path,
         )
     config.default_command = default_command
     color = cli_values.get("color", "auto")
@@ -283,6 +291,19 @@ def _apply_config_tables(
     config.default_imports = _string_list(
         imports_values.get("default", []), "[imports].default", config_path
     )
+
+    compile_values = data.get("compile", {})
+    if not isinstance(compile_values, dict):
+        raise ConfigError("[compile] must be a TOML table", config_path)
+    _validate_keys(compile_values, {"target", "out"}, "[compile]", config_path)
+    compile_target = compile_values.get("target", "")
+    if not isinstance(compile_target, str):
+        raise ConfigError("[compile].target must be a string", config_path)
+    config.compile_target = compile_target
+    compile_out = compile_values.get("out", "")
+    if not isinstance(compile_out, str):
+        raise ConfigError("[compile].out must be a string", config_path)
+    config.compile_out = compile_out
 
     run_values = data.get("run", {})
     if not isinstance(run_values, dict):
