@@ -1040,7 +1040,7 @@ class WatchFlagTests(unittest.TestCase):
 
         self.assertEqual(return_code, 2)
         self.assertIn(
-            "--watch can only be used with run, check, build, or format", errors
+            "--watch can only be used with run, check, build, compile, or format", errors
         )
 
     def test_watch_normalization_stops_at_the_argument_separator(self):
