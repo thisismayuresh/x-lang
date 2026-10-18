@@ -22,8 +22,10 @@ is sent to a server.
 ## Browser playground (WebAssembly)
 
 The [playground](playground.html) runs the **real** X interpreter in your
-browser. There is no second implementation and no code generation step that
-turns X into JavaScript.
+browser. There is no second implementation — the browser executes X through
+the same interpreter the CLI uses (via Pyodide), not through a transpiled
+JavaScript build. (The separate `x compile --target typescript` command emits
+TypeScript on disk; the playground does not use it.)
 
 ### Technologies
 
@@ -138,6 +140,7 @@ x run path/to/main.x [arguments...]
 x path/to/main.x [arguments...]
 x check path/to/main.x
 x build path/to/main.x
+x compile path/to/main.x --target typescript --out dist/main.ts
 x format path/to/main.x
 x --watch format path/to/main.x
 x -watch path/to/main.x
@@ -158,6 +161,14 @@ x help
   limit recovery, so errors after it may not be discoverable in that pass.
 - `build` currently performs the same validation; it does not emit a native
   executable.
+- `compile` type-checks the program like `check`, then emits a TypeScript
+  translation of the entry file and its imports. It runs after type-checking
+  succeeds, so type errors abort compilation before any output is written. The
+  target language defaults to `typescript` (currently the only supported
+  target); the output path defaults to the source file's name with a `.ts`
+  extension. Both can be overridden with `--target`/`--out` flags or the
+  `[compile]` table in `x.toml` (see below). Missing output directories are
+  created automatically.
 - `format` rewrites the source file in place with canonical formatting
   (implemented by `xlang/formatter.py`): two-space indentation, normalized
   spacing around operators and commas, `if`/`else` and `try`/`catch` kept on
@@ -168,10 +179,10 @@ x help
 - `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
   whenever the entry file, one of its imported files, or `x.toml` changes;
   press Ctrl+C to stop. Errors keep the watcher alive, so saving a fix
-  triggers the next run. Watch mode works with `run`, `check`, `build`, and
-  `format` and must appear before the source file. Combined with `format`
-  (`x --watch format file.x`), the file is automatically reformatted every
-  time you save it while typing.
+  triggers the next run. Watch mode works with `run`, `check`, `build`,
+  `compile`, and `format` and must appear before the source file. Combined
+  with `format` (`x --watch format file.x`), the file is automatically
+  reformatted every time you save it while typing.
 - Commands listed in the `[scripts]` table of `x.toml` run with `x <name>`,
   similar to `pnpm start` and package.json scripts.
 - The process exit code is taken from an integer returned by `main`; a `void`
@@ -267,6 +278,10 @@ APP_MODE = "test"
 [scripts]
 start = "x run path/to/main.x"
 test = "x check path/to/main.x"
+
+[compile]
+target = "typescript"
+out = "dist/main.ts"
 ```
 
 `[run].args` are passed to the program first, followed by profile arguments
@@ -288,8 +303,17 @@ values are exported to the process. The command runs in the project root
 (directory of `x.toml`) and its exit status becomes the `x` exit code, so
 `x test` propagates a failing status exactly like `pnpm test`. Script names
 must be single words that do not collide with the built-in commands
-(`run`, `check`, `build`, `install`). `--watch` cannot be combined with
-scripts because a shell command does not expose the files it depends on.
+(`run`, `check`, `build`, `compile`, `install`). `--watch` cannot be combined
+with scripts because a shell command does not expose the files it depends on.
+
+`[compile]` sets the defaults for the `compile` command. Both keys are
+optional strings: `target` selects the output language (currently only
+`"typescript"`) and `out` sets the output file path (relative to the current
+directory). The `--target` and `--out` command-line flags override these
+values; when neither is provided, the target falls back to `"typescript"` and
+the output to the source file's name with a `.ts` extension. An unknown
+target or an invalid key in `[compile]` is a configuration error reported
+before compilation begins.
 
 The CLI also loads a project-root `.env` file when running a program. Copy the
 safe demo values in [.env.example](./.env.example) to `.env`, then run the
@@ -312,8 +336,8 @@ settings and then the selected profile override both. `.env` is ignored by
 Git, so keep credentials and machine-specific values there, never in the
 tracked example.
 
-An explicit subcommand (`run`, `check`, or `build`) always wins. The
-`[cli].default-command` setting applies to the shorthand `x file.x` form.
+An explicit subcommand (`run`, `check`, `build`, or `compile`) always wins.
+The `[cli].default-command` setting applies to the shorthand `x file.x` form.
 Unknown keys, feature names, types, and profile names fail with an actionable
 configuration error.
 
