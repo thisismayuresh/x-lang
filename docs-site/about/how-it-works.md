@@ -11,14 +11,14 @@ no dependencies.
 
 | File | Role |
 | --- | --- |
-| `index.html` | The fixed shell: top bar, sidebar, content area, table of contents, script tags. Never changes when content changes. |
+| `index.html` | The fixed shell: top bar (**Docs** · **Changelog** · **Playground**; the active item is highlighted), sidebar, content area, table of contents, script tags. Never changes when content changes. The playground shell (`playground.html`) only links **Docs** in its top bar. |
 | `README.md` | The content source. This is a copy of the repository README, extended for the website. Editing this file is all a documentation writer does. |
 | `markdown.js` | Fetches the markdown, parses it to HTML, builds the sidebar navigation. |
 | `script.js` | Everything the page does after render: theme, mobile menu, table of contents, scroll spy, syntax highlighting, copy buttons. |
 | `styles.css` | All styling, light and dark themes, responsive layout. |
-| `about/` | Extra pages like this one, each a plain markdown file. |
+| `about/` | Extra pages like this one (how-it-works, project-ideas, changelog), each a plain markdown file. |
 | `playground.html` | The interactive playground (editor + output). Separate shell from the docs pages. |
-| `playground/` | Playground assets: Web Worker, CodeMirror X mode, examples, and the interpreter wheel built by `build.py`. |
+| `playground/` | Playground assets: Web Worker, Monaco runtime (`monaco/`), X completions, examples, Pyodide, and the interpreter wheel built by `build.py`. |
 
 ## From README.md to the page
 
@@ -104,7 +104,7 @@ Pages from running Jekyll over the vendored assets.
 
 `playground.html` is the interactive editor linked from the top bar and the
 docs intro. It is still dependency-free HTML/CSS/JS, with **vendored**
-CodeMirror (no CDN) and a **vendored** WebAssembly runtime:
+Monaco + Pyodide (no CDN at runtime):
 
 1. The page spawns an **ES-module** Web Worker (`playground/worker.js` with
    `{ type: "module" }`) so a runaway program can be terminated without
@@ -144,18 +144,15 @@ CodeMirror (no CDN) and a **vendored** WebAssembly runtime:
    calls `xlang.playground.format_file` (same pipeline as `x format`).
    Fatal infrastructure failures (WASM boot, worker crash) render in the
    **fatal bar** under the output pane; program errors stay in `#errors`.
-5. The editor is CodeMirror 5 with a hand-written X mode
-   (`playground/x-mode.js`), bracket colours (guide lines off by default),
-   auto-close brackets/quotes, and autocomplete (`playground/completions.js`).
-   **Ctrl+Space** lists keywords/types/snippets and the names declared in the
-   current buffer — `collectDeclarations` in `playground.js` scans for
-   variables, parameters, functions, types/classes/interfaces/enums and
-   imports; after `.` it uses a simple
-   type inference (`inferVarType` in `playground.js`) so string/list locals
-   offer the right members. CodeMirror and its addons are vendored under
-   `playground/codemirror/` — no CDN. Up to five files live under a virtual
-   `playground/` folder; the splitter between panes is draggable. Matching
-   brackets use underline/bold only — no bar.
+5. The editor is **Monaco** (VS Code’s editor core), vendored under
+   `playground/monaco/` with the AMD loader — no CDN. An X Monarch
+   tokenizer + language configuration provide highlighting and auto-close.
+   Completions (Ctrl+Space / after `.`) use `playground/completions.js`
+   plus simple type inference (`inferVarType`) and declared-name scan
+   (`collectDeclarations`) in `playground.js`. Up to five files live as
+   Monaco models under a virtual `playground/` folder; the splitter
+   between panes is draggable. Error lines use Monaco markers
+   (squiggles).
 
 See the main README section
 [Browser playground (WebAssembly)](../README.md) for the full technology
@@ -175,6 +172,8 @@ Sandbox notes: there is no network or OS-thread support inside Pyodide, so
   architecture changes, and other user-visible work must update the
   concerned README (and its parent README) in the same change — see
   `AGENTS.md` at the repository root for the full mapping.
+- User-visible changes should also get a bullet under **Unreleased** in
+  [Changelog and release notes](?page=about/changelog.md).
 
 ## Extra pages and the ?page= parameter
 
@@ -187,6 +186,7 @@ parameter:
 | `/docs-site/` | `docs-site/README.md` |
 | `/docs-site/?page=about/how-it-works.md` | `docs-site/about/how-it-works.md` |
 | `/docs-site/?page=about/project-ideas.md` | `docs-site/about/project-ideas.md` |
+| `/docs-site/?page=about/changelog.md` | `docs-site/about/changelog.md` |
 
 Only names matching `about/<file>.md` style paths are accepted (no `..`, no
 outside files). On an extra page the sidebar lists that page's own headings,

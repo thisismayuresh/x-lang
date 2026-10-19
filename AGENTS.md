@@ -75,10 +75,10 @@ removed or renamed behaviour.
 
 - The worker is an **ES module** (`new Worker(..., { type: "module" })`).
   Pyodide ≥ 314 rejects classic workers (`importScripts`).
-- CodeMirror 5 + addons are **vendored** under
-  `docs-site/playground/codemirror/` — do not re-introduce CDN script tags.
+- Monaco (VS Code editor core) is **vendored** under
+  `docs-site/playground/monaco/` — do not re-introduce CDN script tags.
 - Completions live in `playground/completions.js` (static catalog) +
-  `xHint`/`collectDeclarations`/`inferVarType` in `playground.js`
+  `collectDeclarations`/`inferVarType` in `playground.js`
   (declared names at top level, type-aware members after `.`).
 - After editing `xlang/`, rebuild the wheel: `x playground` or
   `x playground-watch`. Stale wheel → `x playground-check` fails.
