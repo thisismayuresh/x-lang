@@ -114,16 +114,34 @@ pre {
     flex: 1;
 }
 
+.topbar-nav {
+    display: flex;
+    align-items: stretch;
+    height: 100%;
+    gap: 0;
+    margin-right: 8px;
+}
+
 .topbar-link {
+    display: inline-flex;
+    align-items: center;
     font-size: 13px;
     color: var(--muted);
     text-decoration: none;
-    border-bottom: 1px solid transparent;
+    padding: 0 14px;
+    border-bottom: 3px solid transparent;
 }
 
 .topbar-link:hover {
     color: var(--text);
-    border-bottom-color: var(--muted);
+    background: var(--surface);
+}
+
+.topbar-link.active {
+    color: var(--text);
+    font-weight: 600;
+    background: var(--accent-soft);
+    border-bottom: 3px solid var(--accent);
 }
 
 .theme-toggle,
