@@ -1,6 +1,6 @@
-/* X playground UI: multi-file editor, formatter, Pyodide worker host, splitter. */
+/* X playground UI: multi-file editor (Monaco), formatter, Pyodide worker host. */
 
-/* global CodeMirror, X_PLAYGROUND_EXAMPLES */
+/* global require, monaco, X_PLAYGROUND_EXAMPLES */
 
 "use strict";
 
@@ -8,8 +8,10 @@
   var RUN_TIMEOUT_MS = 15000;
   var MAX_FILES = 5;
   var DEFAULT_ENTRY = "main.x";
+  var MONACO_BASE = "playground/monaco/vs";
 
   var editor = null;
+  var models = Object.create(null);
   var worker = null;
   var workerReady = false;
   var pendingRunId = 0;
@@ -25,9 +27,6 @@
     return document.getElementById(id);
   }
 
-  /* Fatal / infrastructure errors (worker crash, WASM boot failure, …).
-     User program errors stay in the output pane; this bar is only for
-     "the playground itself is broken". */
   function setFatal(message) {
     if (!els.fatal) {
       return;
@@ -47,11 +46,14 @@
     setFatal("");
   }
 
+  function monacoThemeName() {
+    return currentTheme() === "dark" ? "vs-dark" : "vs";
+  }
+
   function setThemeOnEditor(theme) {
-    if (!editor) {
-      return;
+    if (window.monaco) {
+      monaco.editor.setTheme(theme === "dark" ? "vs-dark" : "vs");
     }
-    editor.setOption("theme", theme === "dark" ? "material" : "default");
   }
 
   function currentTheme() {
@@ -81,17 +83,57 @@
     label();
   }
 
-  /* ---------- project / multi-file state ---------- */
+  /* ---------- project / multi-file ---------- */
 
   function activeFile() {
     return project.files[project.active] || project.files[0];
+  }
+
+  function modelUriFor(name) {
+    return monaco.Uri.parse("inmemory://playground/" + name);
+  }
+
+  function getModelFor(file) {
+    if (!file) {
+      return null;
+    }
+    var existing = models[file.name];
+    if (existing && !existing.isDisposed()) {
+      if (existing.getValue() !== (file.content || "")) {
+        // model is source of truth when attached; content updated on sync
+      }
+      return existing;
+    }
+    var model = monaco.editor.createModel(
+      file.content || "",
+      "x",
+      modelUriFor(file.name)
+    );
+    models[file.name] = model;
+    return model;
+  }
+
+  function disposeModelsExcept(keepNames) {
+    var keep = Object.create(null);
+    keepNames.forEach(function (n) { keep[n] = true; });
+    Object.keys(models).forEach(function (name) {
+      if (!keep[name] && models[name] && !models[name].isDisposed()) {
+        models[name].dispose();
+      }
+      if (!keep[name]) {
+        delete models[name];
+      }
+    });
   }
 
   function syncActiveFromEditor() {
     if (!editor || !project.files[project.active]) {
       return;
     }
-    project.files[project.active].content = editor.getValue();
+    var model = editor.getModel();
+    if (model) {
+      project.files[project.active].content = model.getValue();
+    }
   }
 
   function safeFileName(raw) {
@@ -119,6 +161,19 @@
       n += 1;
     }
     return stem + "-" + n + ".x";
+  }
+
+  function attachActiveModel() {
+    if (!editor) {
+      return;
+    }
+    var file = activeFile();
+    var model = getModelFor(file);
+    if (editor.getModel() !== model) {
+      suppressChange = true;
+      editor.setModel(model);
+      suppressChange = false;
+    }
   }
 
   function renderFileBar() {
@@ -183,12 +238,12 @@
     }
     syncActiveFromEditor();
     project.active = index;
-    suppressChange = true;
-    editor.setValue(project.files[index].content || "");
-    editor.clearGutter("errors");
-    suppressChange = false;
+    attachActiveModel();
+    clearLinters();
     renderFileBar();
-    editor.focus();
+    if (editor) {
+      editor.focus();
+    }
   }
 
   function addFile() {
@@ -197,29 +252,34 @@
     }
     syncActiveFromEditor();
     var name = uniqueName("util.x");
-    project.files.push({ name: name, content: "// " + name + "\nexport string function hello() {\n    return \"hi\";\n}\n" });
+    project.files.push({
+      name: name,
+      content: "// " + name + "\nexport string function hello() {\n    return \"hi\";\n}\n"
+    });
     project.active = project.files.length - 1;
-    suppressChange = true;
-    editor.setValue(activeFile().content);
-    suppressChange = false;
+    attachActiveModel();
     renderFileBar();
-    editor.focus();
+    if (editor) {
+      editor.focus();
+    }
   }
 
   function closeFile(index) {
     if (index === 0 || project.files.length <= 1 || !project.files[index]) {
       return;
     }
-    project.files.splice(index, 1);
+    var removed = project.files.splice(index, 1)[0];
+    if (removed && models[removed.name] && !models[removed.name].isDisposed()) {
+      models[removed.name].dispose();
+    }
+    delete models[removed.name];
     if (project.active >= project.files.length) {
       project.active = project.files.length - 1;
     } else if (project.active === index) {
       project.active = Math.max(0, index - 1);
     }
-    suppressChange = true;
-    editor.setValue(activeFile().content || "");
-    editor.clearGutter("errors");
-    suppressChange = false;
+    attachActiveModel();
+    clearLinters();
     renderFileBar();
   }
 
@@ -242,14 +302,19 @@
     if (!select || !window.X_PLAYGROUND_EXAMPLES) {
       return;
     }
-    window.X_PLAYGROUND_EXAMPLES.forEach(function (example, index) {
+    window.X_PLAYGROUND_EXAMPLES.forEach(function (example) {
       var option = document.createElement("option");
-      option.value = String(index);
+      option.value = example.id || String(select.options.length);
       option.textContent = example.label;
       select.appendChild(option);
     });
     select.addEventListener("change", function () {
       var example = window.X_PLAYGROUND_EXAMPLES[Number(select.value)];
+      if (!example) {
+        example = window.X_PLAYGROUND_EXAMPLES.filter(function (e) {
+          return e.id === select.value;
+        })[0];
+      }
       if (!example) {
         return;
       }
@@ -266,13 +331,34 @@
           };
         })
       : [{ name: DEFAULT_ENTRY, content: example.code }];
+
+    syncActiveFromEditor();
+    files.forEach(function (file) {
+      var model = models[file.name];
+      if (model && !model.isDisposed()) {
+        model.setValue(file.content || "");
+      }
+    });
     project = { files: files, active: 0 };
-    suppressChange = true;
-    editor.setValue(activeFile().content);
-    editor.clearGutter("errors");
-    suppressChange = false;
+    disposeModelsExcept(files.map(function (f) { return f.name; }));
+    files.forEach(function (file) {
+      var model = models[file.name];
+      if (model && !model.isDisposed()) {
+        model.setValue(file.content || "");
+      } else {
+        models[file.name] = monaco.editor.createModel(
+          file.content || "",
+          "x",
+          modelUriFor(file.name)
+        );
+      }
+    });
+    attachActiveModel();
+    clearLinters();
     renderFileBar();
-    editor.focus();
+    if (editor) {
+      editor.focus();
+    }
   }
 
   function loadInitialCode() {
@@ -281,7 +367,7 @@
     }
   }
 
-  /* ---------- status / output ---------- */
+  /* ---------- status / output / markers ---------- */
 
   function setStatus(text, tone) {
     els.status.textContent = text;
@@ -289,25 +375,33 @@
   }
 
   function clearLinters() {
-    if (editor) {
-      editor.clearGutter("errors");
+    if (!editor) {
+      return;
+    }
+    var model = editor.getModel();
+    if (model) {
+      monaco.editor.setModelMarkers(model, "x", []);
     }
   }
 
   function markErrorLine(line) {
-    if (!line || line < 1) {
+    if (!line || line < 1 || !editor) {
       return;
     }
-    var marker = document.createElement("div");
-    marker.className = "error-marker";
-    marker.title = "Error on this line";
-    editor.setGutterMarker(line - 1, "errors", marker);
+    var model = editor.getModel();
+    if (!model || line > model.getLineCount()) {
+      return;
+    }
+    var maxCol = model.getLineMaxColumn(line);
+    monaco.editor.setModelMarkers(model, "x", [{
+      startLineNumber: line,
+      endLineNumber: line,
+      startColumn: 1,
+      endColumn: maxCol,
+      message: "Error on this line",
+      severity: monaco.MarkerSeverity.Error
+    }]);
   }
-
-  /* ---------- rustc-style diagnostics ----------
-     Mirrors xlang/diagnostics.py::render_diagnostic so the browser shows
-     the same block the CLI prints: header, --> location, code frame with
-     a ^^^ caret, then = note: / = help: follow-ups. */
 
   function fileContentFor(name) {
     var files = project.files || [];
@@ -316,15 +410,14 @@
         return files[i].content || "";
       }
     }
-    return editor ? editor.getValue() : "";
+    return editor && editor.getModel() ? editor.getModel().getValue() : "";
   }
 
   function expandTabs(text) {
     var out = "";
     for (var i = 0; i < text.length; i++) {
       if (text[i] === "\t") {
-        var width = 4 - (out.length % 4);
-        out += " ".repeat(width);
+        out += " ".repeat(4 - (out.length % 4));
       } else {
         out += text[i];
       }
@@ -533,13 +626,21 @@
       return;
     }
     var formatted = result.source;
-    if (typeof formatted === "string") {
-      suppressChange = true;
-      var cursor = editor.getCursor();
-      editor.setValue(formatted);
-      editor.setCursor(cursor);
-      syncActiveFromEditor();
-      suppressChange = false;
+    if (typeof formatted === "string" && editor) {
+      var model = editor.getModel();
+      if (model) {
+        suppressChange = true;
+        var pos = editor.getPosition();
+        model.setValue(formatted);
+        if (pos) {
+          editor.setPosition({
+            lineNumber: Math.min(pos.lineNumber, model.getLineCount()),
+            column: 1
+          });
+        }
+        syncActiveFromEditor();
+        suppressChange = false;
+      }
       setStatus("Formatted " + activeFile().name, "ok");
       els.errors.textContent = "";
     }
@@ -586,9 +687,6 @@
       try {
         localStorage.setItem("x-playground-split", String(Math.round(pct * 10) / 10));
       } catch (error) { /* ignore */ }
-      if (editor) {
-        editor.refresh();
-      }
     }
 
     splitter.addEventListener("mousedown", function (event) {
@@ -610,9 +708,6 @@
       }
       dragging = false;
       document.body.classList.remove("splitter-dragging");
-      if (editor) {
-        editor.refresh();
-      }
     });
 
     try {
@@ -623,10 +718,12 @@
     } catch (error) { /* ignore */ }
   }
 
-  /* ---------- autocomplete (unchanged catalogue logic) ---------- */
+  /* ---------- completions ---------- */
 
   function catalog() {
-    return window.X_COMPLETIONS || { types: [], keywords: [], builtins: [], classes: [], snippets: [], members: {} };
+    return window.X_COMPLETIONS || {
+      types: [], keywords: [], builtins: [], classes: [], snippets: [], members: {}
+    };
   }
 
   function prefixFilter(items, word) {
@@ -651,11 +748,10 @@
     return starts.concat(contains);
   }
 
-  function dottedChain(cm, pos) {
-    var line = cm.getLine(pos.line).slice(0, pos.ch);
+  function dottedChain(linePrefix) {
     var chain = [];
     var re = /([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/;
-    var cursor = line;
+    var cursor = linePrefix;
     while (true) {
       var match = cursor.match(re);
       if (!match) {
@@ -667,10 +763,6 @@
     return chain;
   }
 
-  function lineBefore(cm, pos) {
-    return cm.getLine(pos.line).slice(0, pos.ch);
-  }
-
   function inTypePosition(before) {
     return /(^|[^\w.])(let|const|var)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*[A-Za-z_]*$/.test(before) ||
       /(^|[^\w.])(integer|int|float|string|boolean|any|void|var)\s+[A-Za-z_][A-Za-z0-9_]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=(,;]*\s*$/.test(before) ||
@@ -678,13 +770,11 @@
       /(^|[^\w.])(class|interface|extends|implements)\s+[A-Za-z_]*$/.test(before);
   }
 
-  /* Best-effort type of a local from its declaration / initializer. */
-  function inferVarType(cm, name) {
+  function inferVarType(content, name) {
     if (!name) {
       return null;
     }
     var members = catalog().members;
-    var content = cm.getValue();
     var declared = new RegExp(
       "(?:let|const|var)\\s+" + name + "\\s*:\\s*([A-Za-z_][A-Za-z0-9_]*)"
     ).exec(content);
@@ -724,24 +814,11 @@
       if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(rhs)) {
         return "function";
       }
-      if (/^null\b/.test(rhs) || /^undefined\b/.test(rhs)) {
-        return null;
-      }
-      var callName = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(rhs);
-      if (callName) {
-        var nested = inferVarType(cm, callName[1]);
-        if (nested) {
-          return nested;
-        }
-        if (members[callName[1]]) {
-          return callName[1];
-        }
-      }
     }
     return null;
   }
 
-  function memberItemsFor(chain, word) {
+  function memberItemsFor(chain, content) {
     var members = catalog().members;
     var items = [];
     var seen = {};
@@ -792,8 +869,8 @@
       return items;
     }
 
-    if (!second && editor) {
-      var inferred = inferVarType(editor, head);
+    if (!second) {
+      var inferred = inferVarType(content, head);
       if (inferred === "string") {
         addAll(members.string);
       } else if (inferred === "Array") {
@@ -814,42 +891,6 @@
     return items;
   }
 
-  function hintItemToCompletion(item) {
-    return {
-      text: item.text,
-      displayText: item.displayText || item.text,
-      className: "cm-hint-" + (item.type || "plain"),
-      render: function (elt, data, completion) {
-        elt.appendChild(document.createTextNode(completion.displayText || completion.text));
-        if (item.detail) {
-          var detail = document.createElement("span");
-          detail.className = "cm-hint-detail";
-          detail.textContent = item.detail;
-          elt.appendChild(detail);
-        }
-      },
-      hint: function (cm, data, completion) {
-        var from = data.from;
-        var to = data.to || cm.getCursor();
-        var text = completion.text;
-        if (item.snippet) {
-          cm.replaceRange("", from, to);
-          cm.replaceSelection(item.snippet);
-          var body = cm.getValue();
-          var m = body.slice(cm.indexFromPos(from)).match(/\$1/);
-          if (m) {
-            var abs = cm.indexFromPos(from) + m.index;
-            var pos = cm.posFromIndex(abs);
-            cm.replaceRange("", pos, CodeMirror.Pos(pos.line, pos.ch + 2));
-            cm.setCursor(pos);
-          }
-          return;
-        }
-        cm.replaceRange(text, from, to, "complete");
-      }
-    };
-  }
-
   function isCatalogKeyword(name) {
     var keywords = catalog().keywords || [];
     for (var i = 0; i < keywords.length; i += 1) {
@@ -860,17 +901,15 @@
     return false;
   }
 
-  /* Names declared in the current buffer (variables, parameters, functions,
-     types, classes, imports) so they complete alongside the static catalogue. */
-  function collectDeclarations(cm) {
+  function collectDeclarations(content) {
     var variables = [];
     var types = [];
     var seenVar = {};
     var seenType = {};
-    if (!cm) {
+    if (!content) {
       return { variables: variables, types: types };
     }
-    var content = cm.getValue()
+    content = content
       .replace(/\/\*[\s\S]*?\*\//g, " ")
       .replace(/\/\/[^\n]*/g, " ");
 
@@ -901,80 +940,14 @@
       addVar(match[1], "function", "method");
     }
 
-    function splitParams(text) {
-      var parts = [];
-      var depth = 0;
-      var current = "";
-      for (var i = 0; i < text.length; i += 1) {
-        var ch = text[i];
-        if (ch === "<") {
-          depth += 1;
-        } else if (ch === ">") {
-          depth = Math.max(0, depth - 1);
-        } else if (ch === "," && depth === 0) {
-          parts.push(current);
-          current = "";
-          continue;
-        }
-        current += ch;
-      }
-      parts.push(current);
-      return parts;
-    }
-
-    var paramRe = /\bfunction(?:\s*<[^<>]*>)?\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)/g;
-    while ((match = paramRe.exec(content)) !== null) {
-      splitParams(match[1]).forEach(function (chunk) {
-        var clean = chunk.replace(/<[^<>]*>/g, "");
-        var colon = clean.indexOf(":");
-        var name;
-        if (colon !== -1) {
-          var head = clean.slice(0, colon).match(/[A-Za-z_][A-Za-z0-9_]*\s*$/);
-          name = head ? head[0].replace(/\s+$/, "") : null;
-        } else {
-          var ids = clean.match(/[A-Za-z_][A-Za-z0-9_]*/g);
-          name = ids ? ids[ids.length - 1] : null;
-        }
-        addVar(name, "parameter", "parameter");
-      });
-    }
-
     var colonVarRe = /\b(?:let|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
     while ((match = colonVarRe.exec(content)) !== null) {
-      addVar(match[1], "variable", "variable");
-    }
-
-    var typedVarRe =
-      /\b(?:let|const|var)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>]*>)?(?:\[\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=[=;,)\n])/g;
-    while ((match = typedVarRe.exec(content)) !== null) {
       addVar(match[1], "variable", "variable");
     }
 
     var plainVarRe = /\b(?:let|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
     while ((match = plainVarRe.exec(content)) !== null) {
       addVar(match[1], "variable", "variable");
-    }
-
-    var forRe =
-      /\bfor\s*\(\s*(?:let|const|var)\s+(?:[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>]*>)?(?:\[\])*\s+)?([A-Za-z_][A-Za-z0-9_]*)/g;
-    while ((match = forRe.exec(content)) !== null) {
-      addVar(match[1], "loop variable", "variable");
-    }
-
-    var catchRe =
-      /\bcatch\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>]*>)?(?:\[\])*\s+)?([A-Za-z_][A-Za-z0-9_]*)/g;
-    while ((match = catchRe.exec(content)) !== null) {
-      addVar(match[1], "exception", "variable");
-    }
-
-    var groupedImportRe = /import\s+[A-Za-z_][A-Za-z0-9_.]*\.\{([^}]*)\}/g;
-    while ((match = groupedImportRe.exec(content)) !== null) {
-      match[1].split(",").forEach(function (chunk) {
-        var alias = chunk.match(/\bas\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
-        var ids = chunk.match(/[A-Za-z_][A-Za-z0-9_]*/g);
-        var chosen = alias ? alias[1] : (ids ? ids[0] : null);
-        addVar(chosen, "import", "namespace");
-      });
     }
 
     var singleImportRe = /^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;?\s*$/gm;
@@ -1000,133 +973,266 @@
     return unique;
   }
 
-  function allStandaloneItems(word, cm) {
-    var c = catalog();
-    var pool = []
-      .concat(c.types || [])
-      .concat(c.keywords || [])
-      .concat(c.builtins || [])
-      .concat(c.classes || [])
-      .concat(c.snippets || []);
-    pool = pool.concat(collectDeclarations(cm).variables);
-    return prefixFilter(dedupeItems(pool), word);
+  function kindForType(type) {
+    switch (type) {
+      case "keyword": return monaco.languages.CompletionItemKind.Keyword;
+      case "type": return monaco.languages.CompletionItemKind.TypeParameter;
+      case "builtin":
+      case "method": return monaco.languages.CompletionItemKind.Function;
+      case "class": return monaco.languages.CompletionItemKind.Class;
+      case "property": return monaco.languages.CompletionItemKind.Property;
+      case "namespace": return monaco.languages.CompletionItemKind.Module;
+      case "snippet": return monaco.languages.CompletionItemKind.Snippet;
+      case "parameter": return monaco.languages.CompletionItemKind.Variable;
+      default: return monaco.languages.CompletionItemKind.Value;
+    }
   }
 
-  function xHint(cm) {
-    var cur = cm.getCursor();
-    var token = cm.getTokenAt(cur);
-    var before = lineBefore(cm, cur);
-    var start = token.start;
-    var end = cur.ch;
-
-    if (token.type === "comment" || token.type === "string" ||
-        token.type === "string-2" || before.slice(0, end).match(/\/\/.*$/) ||
-        before.slice(0, end).match(/\/\*.*$/)) {
-      return null;
+  function toCompletion(item, range) {
+    var result = {
+      label: item.displayText || item.text,
+      kind: kindForType(item.type),
+      insertText: item.snippet || item.text,
+      range: range
+    };
+    if (item.detail) {
+      result.detail = item.detail;
+      result.documentation = { value: item.detail };
     }
+    if (item.snippet) {
+      result.insertTextRules = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
+    }
+    return result;
+  }
 
-    var chain = dottedChain(cm, cur);
+  function buildCompletions(model, position) {
+    var word = model.getWordUntilPosition(position);
+    var range = new monaco.Range(
+      position.lineNumber, word.startColumn,
+      position.lineNumber, word.endColumn
+    );
+    var linePrefix = model.getValueInRange({
+      startLineNumber: position.lineNumber,
+      startColumn: 1,
+      endLineNumber: position.lineNumber,
+      endColumn: position.column
+    });
+    var content = model.getValue();
+    var chain = dottedChain(linePrefix);
     var list;
 
-    if (chain.length || token.string === ".") {
-      list = memberItemsFor(chain, token.string === "." ? "" : token.string);
-      if (token.string === ".") {
-        start = end;
+    if (chain.length || /\.\s*[A-Za-z0-9_]*$/.test(linePrefix)) {
+      list = memberItemsFor(chain, content);
+      if (/\.$/.test(linePrefix.replace(/\s+$/, ""))) {
+        range = new monaco.Range(
+          position.lineNumber, position.column,
+          position.lineNumber, position.column
+        );
       }
     } else {
-      var word = token.string.slice(0, end - token.start);
-      if (!word || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(word)) {
-        if (/[\s;{}(,]$/.test(before) || before === "") {
-          word = "";
-          start = end;
-        } else {
-          return null;
-        }
-      }
-      if (inTypePosition(before)) {
+      var wordPrefix = word.word || "";
+      if (inTypePosition(linePrefix)) {
         var typePool = (catalog().types || [])
           .concat(catalog().keywords || [])
-          .concat(collectDeclarations(cm).types);
+          .concat(collectDeclarations(content).types);
         var rest = prefixFilter(
-          (catalog().builtins || []).concat(catalog().classes || []).concat(catalog().snippets || []),
-          word
+          (catalog().builtins || [])
+            .concat(catalog().classes || [])
+            .concat(catalog().snippets || [])
+            .concat(collectDeclarations(content).variables),
+          wordPrefix
         );
-        list = prefixFilter(dedupeItems(typePool), word).concat(rest);
+        list = prefixFilter(dedupeItems(typePool), wordPrefix).concat(rest);
       } else {
-        list = allStandaloneItems(word, cm);
+        var pool = []
+          .concat(catalog().types || [])
+          .concat(catalog().keywords || [])
+          .concat(catalog().builtins || [])
+          .concat(catalog().classes || [])
+          .concat(catalog().snippets || [])
+          .concat(collectDeclarations(content).variables);
+        list = prefixFilter(dedupeItems(pool), wordPrefix);
       }
     }
 
-    if (!list.length) {
-      return null;
-    }
-
-    return {
-      list: list.map(hintItemToCompletion),
-      from: CodeMirror.Pos(cur.line, start),
-      to: CodeMirror.Pos(cur.line, end)
-    };
+    return list.map(function (item) { return toCompletion(item, range); });
   }
 
-  function shouldAutoHint(cm, change) {
-    if (change.origin !== "+input" || !change.text.length) {
-      return false;
-    }
-    var typed = change.text[0];
-    return typed === "." || typed === ":" || /[A-Za-z_]/.test(typed);
-  }
+  /* ---------- Monaco language + editor ---------- */
 
-  function initEditor() {
-    var dark = currentTheme() === "dark";
-    editor = CodeMirror.fromTextArea($("editor"), {
-      mode: "x",
-      lineNumbers: true,
-      indentUnit: 4,
-      indentWithTabs: false,
-      matchBrackets: true,
-      bracketGuides: false,
-      autoCloseBrackets: {
-        pairs: "()[]{}''\"\"``",
-        closeBefore: ")]}:;>'\"`",
-        triples: "",
-        explode: "[]{}"
-      },
-      styleActiveLine: true,
-      gutters: ["CodeMirror-linenumbers", "errors"],
-      theme: dark ? "material" : "default",
-      extraKeys: {
-        "Ctrl-Enter": function () { run(); },
-        "Cmd-Enter": function () { run(); },
-        "Ctrl-S": function () { formatActive(); },
-        "Cmd-S": function (cm) { formatActive(); return false; },
-        "Ctrl-Space": function (cm) {
-          cm.showHint({ hint: cm.getOption("hint"), completeSingle: false });
-        },
-        "Alt-Space": function (cm) {
-          cm.showHint({ hint: cm.getOption("hint"), completeSingle: false });
-        }
-      },
-      hintOptions: {
-        completeSingle: false,
-        completeOnSingleClick: false,
-        pickOnTab: true
+  function registerXLanguage() {
+    if (monaco.languages.getLanguages().some(function (l) { return l.id === "x"; })) {
+      return;
+    }
+
+    monaco.languages.register({
+      id: "x",
+      extensions: [".x"],
+      aliases: ["X", "x"]
+    });
+
+    monaco.languages.setLanguageConfiguration("x", {
+      comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+      brackets: [["{", "}"], ["[", "]"], ["(", ")"]],
+      autoClosingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: "'", close: "'", notIn: ["string", "comment"] },
+        { open: "\"", close: "\"", notIn: ["string", "comment"] },
+        { open: "`", close: "`", notIn: ["string", "comment"] }
+      ],
+      surroundingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: "'", close: "'" },
+        { open: "\"", close: "\"" },
+        { open: "`", close: "`" }
+      ],
+      indentationRules: {
+        increaseIndentPattern: /\{$/,
+        decreaseIndentPattern: /^\s*\}/
       }
     });
 
-    editor.on("change", function () {
+    monaco.languages.setMonarchTokensProvider("x", {
+      keywords: [
+        "abstract", "as", "async", "await", "break", "case", "catch", "class",
+        "const", "continue", "default", "do", "else", "enum", "export",
+        "extends", "finally", "for", "function", "if", "import", "in",
+        "interface", "let", "match", "namespace", "new", "of", "private",
+        "protected", "public", "return", "static", "super", "switch", "this",
+        "throw", "try", "virtual", "while", "with", "override", "final",
+        "implements", "null", "true", "false", "type"
+      ],
+      typeKeywords: ["integer", "float", "string", "boolean", "var", "any", "void", "int"],
+      builtins: ["print", "println", "typeOf", "System"],
+      operators: [
+        "=", ">", "<", "!", "~", "?", ":",
+        "==", "<=", ">=", "!=", "&&", "||", "++", "--",
+        "+", "-", "*", "/", "%", "&", "|", "^", ".", "...",
+        "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "=>"
+      ],
+      symbols: /[=><!~?:&|+\-*/^%]+/,
+      escapes: /\\(?:[abfnrtv\\"'0]|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/,
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, "comment"],
+          [/\/\*/, { token: "comment", next: "@blockComment" }],
+          [/`/, { token: "string.quote", bracket: "@open", next: "@templateString" }],
+          [/"/, { token: "string.quote", bracket: "@open", next: "@doubleString" }],
+          [/'/, { token: "string.quote", bracket: "@open", next: "@singleString" }],
+          [/@[\w.]+/, "annotation"],
+          [/\d+\.\d+([eE][-+]?\d+)?/, "number.float"],
+          [/0[xX][0-9a-fA-F]+/, "number.hex"],
+          [/\d+/, "number"],
+          [/[a-zA-Z_]\w*/, {
+            cases: {
+              "@typeKeywords": "type",
+              "@keywords": "keyword",
+              "@builtins": "constant",
+              "@default": "identifier"
+            }
+          }],
+          [/[{}()[\]]/, "delimiter.bracket"],
+          [/@symbols/, { cases: { "@operators": "operator", "@default": "" } }],
+          [/[;,.]/, "delimiter"],
+          [/[ \t\r\n]+/, "white"]
+        ],
+        blockComment: [
+          [/[^/*]+/, "comment"],
+          [/\*\//, { token: "comment", next: "@pop" }],
+          [/[/*]/, "comment"]
+        ],
+        doubleString: [
+          [/[^\\"]+/, "string"],
+          [/@escapes/, "string.escape"],
+          [/\\./, "string.escape.invalid"],
+          [/"/, { token: "string.quote", bracket: "@close", next: "@pop" }]
+        ],
+        singleString: [
+          [/[^\\']+/, "string"],
+          [/@escapes/, "string.escape"],
+          [/\\./, "string.escape.invalid"],
+          [/'/, { token: "string.quote", bracket: "@close", next: "@pop" }]
+        ],
+        templateString: [
+          [/[^\\`$]+/, "string"],
+          [/\\./, "string.escape"],
+          [/`\{/, { token: "delimiter", next: "@templateExpr" }],
+          [/`/, { token: "string.quote", bracket: "@close", next: "@pop" }]
+        ],
+        templateExpr: [
+          [/`/, "delimiter"],
+          [/[{}]/, "delimiter"],
+          [/[^`{}]+/, "expression"],
+          [/`/, { token: "string.quote", next: "@pop" }]
+        ]
+      }
+    });
+
+    monaco.languages.registerCompletionItemProvider("x", {
+      // Only "." triggers the suggest widget. Space/":" were removed —
+      // they made every keystroke open suggestions and stole the spacebar.
+      triggerCharacters: ["."],
+      provideCompletionItems: function (model, position) {
+        return { suggestions: buildCompletions(model, position) };
+      }
+    });
+  }
+
+  function initEditor() {
+    registerXLanguage();
+
+    var host = $("editor");
+    if (host) {
+      host.textContent = "";
+    }
+
+    var mainFile = activeFile() || project.files[0];
+    var initialModel = getModelFor(mainFile);
+
+    editor = monaco.editor.create(host, {
+      model: initialModel,
+      theme: monacoThemeName(),
+      automaticLayout: true,
+      fontSize: 14,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      lineNumbers: "on",
+      renderLineHighlight: "all",
+      matchBrackets: "always",
+      autoClosingBrackets: "always",
+      autoClosingQuotes: "always",
+      autoSurround: "languageDefined",
+      tabSize: 4,
+      insertSpaces: true,
+      wordWrap: "off",
+      smoothScrolling: true,
+      padding: { top: 8, bottom: 8 },
+      unicodeHighlight: { ambiguousCharacters: false },
+      overviewRulerLanes: 0,
+      scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 }
+    });
+
+    editor.onDidChangeModelContent(function () {
       if (!suppressChange) {
         syncActiveFromEditor();
       }
     });
 
-    editor.on("inputRead", function (cm, change) {
-      if (!shouldAutoHint(cm, change)) {
-        return;
-      }
-      cm.showHint({ hint: cm.getOption("hint"), completeSingle: false });
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, function () {
+      run();
     });
-
-    editor.setOption("hint", xHint);
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
+      formatActive();
+    });
+    // Ctrl+Space only — Alt+Space is the window menu on many Linux desktops.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, function () {
+      editor.trigger("playground", "editor.action.triggerSuggest", {});
+    });
   }
 
   function init() {
@@ -1144,25 +1250,62 @@
     };
 
     initThemeToggle();
-    initEditor();
     initSplitter();
-    populateExamples();
-    loadInitialCode();
-    renderFileBar();
 
-    els.run.addEventListener("click", run);
-    if (els.format) {
-      els.format.addEventListener("click", formatActive);
+    setStatus("Loading editor…", "busy");
+
+    if (typeof require !== "function") {
+      setFatal(
+        "Could not load the Monaco editor runtime.\n" +
+        "Expected playground/monaco/vs/loader.js to be served over HTTP."
+      );
+      setStatus("Editor failed to load", "error");
+      return;
     }
-    els.reset.addEventListener("click", function () {
-      if (window.X_PLAYGROUND_EXAMPLES && window.X_PLAYGROUND_EXAMPLES[0]) {
-        loadExample(window.X_PLAYGROUND_EXAMPLES[0]);
-        els.examples.selectedIndex = 0;
-      }
-    });
 
-    setStatus("Loading WebAssembly runtime…", "busy");
-    spawnWorker();
+    window.MonacoEnvironment = {
+      getWorkerUrl: function () {
+        return MONACO_BASE + "/base/worker/workerMain.js";
+      }
+    };
+
+    require.config({ paths: { vs: MONACO_BASE } });
+    require(["vs/editor/editor.main"], function () {
+      try {
+        initEditor();
+        populateExamples();
+        loadInitialCode();
+        renderFileBar();
+      } catch (error) {
+        setFatal("Editor failed to start: " + (error && error.message ? error.message : error));
+        setStatus("Editor failed to load", "error");
+        return;
+      }
+
+      els.run.addEventListener("click", run);
+      if (els.format) {
+        els.format.addEventListener("click", formatActive);
+      }
+      els.reset.addEventListener("click", function () {
+        if (window.X_PLAYGROUND_EXAMPLES && window.X_PLAYGROUND_EXAMPLES[0]) {
+          loadExample(window.X_PLAYGROUND_EXAMPLES[0]);
+          els.examples.selectedIndex = 0;
+        }
+      });
+
+      setStatus("Loading WebAssembly runtime…", "busy");
+      spawnWorker();
+    }, function (err) {
+      setFatal(
+        "Could not load Monaco from " + MONACO_BASE + ".\n" +
+        "Serve the repo over HTTP from the project root:\n" +
+        "  python3 -m http.server 8080"
+      );
+      setStatus("Editor failed to load", "error");
+      try {
+        console.error(err);
+      } catch (ignore) { /* ignore */ }
+    });
   }
 
   document.addEventListener("DOMContentLoaded", init);
