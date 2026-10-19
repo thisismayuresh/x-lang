@@ -2509,8 +2509,12 @@ python3 -m http.server 8080
 ```
 
 Then open the docs at `http://127.0.0.1:8080/docs-site/` and the playground at
-`http://127.0.0.1:8080/docs-site/playground.html`. The site needs no build, but
-the interpreter itself does: after changing anything under `xlang/`, rebuild
+`http://127.0.0.1:8080/docs-site/playground.html`. The docs shell is plain
+HTML/CSS/JS (no build step); the playground uses a **vendored** Monaco editor
+and the same WebAssembly runtime. Release notes live at
+`http://127.0.0.1:8080/docs-site/?page=about/changelog.md` (source:
+`docs-site/about/changelog.md`). The interpreter itself does need a rebuild
+after changing anything under `xlang/`: rebuild
 the wheel the playground loads with
 
 ```sh

@@ -5,19 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>X playground</title>
     <link rel="icon" href="data:,">
-    <meta name="description" content="Try the X programming language in your browser. Multi-file editor with format, live output. The interpreter runs as WebAssembly via Pyodide.">
+    <meta name="description" content="Try the X programming language in your browser. Multi-file Monaco editor with format, live output. The interpreter runs as WebAssembly via Pyodide.">
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="playground/playground.css">
-    <link rel="stylesheet" href="playground/codemirror/codemirror.min.css">
-    <link rel="stylesheet" href="playground/codemirror/addon/hint/show-hint.min.css">
     <script>
         (function () {
             try {
                 var theme = localStorage.getItem("x-docs-theme");
-                if (theme === "dark" || theme === "light") {
-                    document.documentElement.setAttribute("data-theme", theme);
-                }
-            } catch (error) { /* private mode */ }
+                // Playground defaults to dark unless the user chose light.
+                document.documentElement.setAttribute(
+                    "data-theme",
+                    theme === "light" ? "light" : "dark"
+                );
+            } catch (error) {
+                document.documentElement.setAttribute("data-theme", "dark");
+            }
         })();
     </script>
 </head>
@@ -37,7 +39,9 @@
         <span class="run-hint" id="run-status" data-tone="busy" role="status">Starting…</span>
     </div>
     <span class="topbar-spacer"></span>
-    <a class="topbar-link" href="./">Docs</a>
+    <nav class="topbar-nav" aria-label="Site sections">
+        <a class="topbar-link" href="./">Docs</a>
+    </nav>
 </header>
 
 <main class="playground-main" id="playground-main">
@@ -47,9 +51,7 @@
             <span>Editor — <span id="active-file-name">main.x</span></span>
             <span class="run-hint">Ctrl+Enter run · Ctrl+S format · Ctrl+Space hints</span>
         </div>
-        <div class="pane-body editor-wrap">
-            <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
-        </div>
+        <div class="pane-body editor-wrap" id="editor" aria-label="Code editor"></div>
     </section>
 
     <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"
@@ -67,15 +69,16 @@
     </section>
 </main>
 
-<script src="playground/codemirror/codemirror.min.js"></script>
-<script src="playground/codemirror/addon/edit/close-brackets.min.js"></script>
-<script src="playground/codemirror/addon/edit/matchbrackets.min.js"></script>
-<script src="playground/codemirror/addon/selection/active-line.min.js"></script>
-<script src="playground/codemirror/addon/hint/show-hint.min.js"></script>
-<script src="playground/x-mode.js"></script>
-<script src="playground/bracket-guides.js"></script>
 <script src="playground/completions.js"></script>
 <script src="playground/examples.js"></script>
+<script src="playground/monaco/vs/loader.js"></script>
+<script>
+    window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+            return "playground/monaco/vs/base/worker/workerMain.js";
+        }
+    };
+</script>
 <script src="playground/playground.js"></script>
 </body>
 </html>

@@ -93,92 +93,36 @@ body.playground-body .topbar {
 .pane-body {
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
 }
 
+/* Monaco host — fills the editor pane. */
 .editor-wrap {
     height: 100%;
+    width: 100%;
+    overflow: hidden;
 }
 
-.editor-wrap .CodeMirror {
-    height: 100%;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-        "Liberation Mono", monospace;
-    font-size: 14px;
-    line-height: 1.55;
-    background: var(--bg);
-    color: var(--code-text);
-    caret-color: var(--text);
+.editor-wrap .monaco-editor,
+.editor-wrap .monaco-editor-background,
+.editor-wrap .monaco-editor .inputarea.ime-input {
+    background-color: var(--bg) !important;
 }
 
-/* Selection must never hide code: translucent tint over the normal text colour. */
-.editor-wrap .CodeMirror-selected,
-.editor-wrap .CodeMirror-focused .CodeMirror-selected,
-.editor-wrap .CodeMirror-selectedbackground {
-    background: rgba(90, 120, 180, 0.32) !important;
+.editor-wrap .monaco-editor .margin,
+.editor-wrap .monaco-editor .monaco-editor-background {
+    background-color: var(--sidebar-bg) !important;
 }
 
-.editor-wrap .CodeMirror-focused .CodeMirror-selected {
-    background: rgba(90, 120, 180, 0.42) !important;
+.editor-wrap .monaco-editor .line-numbers {
+    color: var(--muted) !important;
 }
 
-.editor-wrap .CodeMirror-line::selection,
-.editor-wrap .CodeMirror-line > span::selection,
-.editor-wrap .CodeMirror-line > span > span::selection {
-    background: rgba(90, 120, 180, 0.42) !important;
-    color: inherit !important;
-}
-
-.editor-wrap .CodeMirror-line::-moz-selection,
-.editor-wrap .CodeMirror-line > span::-moz-selection,
-.editor-wrap .CodeMirror-line > span > span::-moz-selection {
-    background: rgba(90, 120, 180, 0.42) !important;
-    color: inherit !important;
-}
-
-[data-theme="dark"] .editor-wrap .CodeMirror-selected,
-[data-theme="dark"] .editor-wrap .CodeMirror-focused .CodeMirror-selected,
-[data-theme="dark"] .editor-wrap .CodeMirror-selectedbackground {
-    background: rgba(130, 170, 255, 0.28) !important;
-}
-
-[data-theme="dark"] .editor-wrap .CodeMirror-focused .CodeMirror-selected {
-    background: rgba(130, 170, 255, 0.38) !important;
-}
-
-[data-theme="dark"] .editor-wrap .CodeMirror-line::selection,
-[data-theme="dark"] .editor-wrap .CodeMirror-line > span::selection,
-[data-theme="dark"] .editor-wrap .CodeMirror-line > span > span::selection {
-    background: rgba(130, 170, 255, 0.38) !important;
-    color: inherit !important;
-}
-
-/* Matching pair highlight — colour only, no bar/outline. */
-.editor-wrap .CodeMirror-matchingbracket {
-    color: inherit !important;
+/* Soften Monaco's default bracket match to match the docs look. */
+.editor-wrap .monaco-editor .bracket-match {
     background: transparent !important;
-    outline: none !important;
-    border: none !important;
-    box-shadow: none !important;
-    text-decoration: underline;
-    text-decoration-color: currentColor;
-    text-decoration-thickness: 2px;
-    text-underline-offset: 3px;
+    border-bottom: 2px solid currentColor !important;
     font-weight: 700;
-}
-
-.editor-wrap .CodeMirror-nonmatchingbracket {
-    color: #c0392b !important;
-    background: transparent !important;
-    outline: none !important;
-    border: none !important;
-    box-shadow: none !important;
-    text-decoration: underline wavy;
-    text-underline-offset: 3px;
-}
-
-[data-theme="dark"] .editor-wrap .CodeMirror-nonmatchingbracket {
-    color: #e07a7a !important;
 }
 
 /* ---- File tabs / multi-file bar ---- */
@@ -338,19 +282,6 @@ body.splitter-dragging .splitter {
     border-left: none;
 }
 
-.editor-wrap .CodeMirror-gutters {
-    background: var(--sidebar-bg);
-    border-right: 1px solid var(--border);
-}
-
-.editor-wrap .CodeMirror-linenumber {
-    color: var(--muted);
-}
-
-.editor-wrap .CodeMirror-activeline-background {
-    background: var(--accent-soft);
-}
-
 .editor-wrap .error-marker {
     width: 10px;
     height: 10px;
@@ -417,185 +348,3 @@ body.splitter-dragging .splitter {
     background: #3a1a1a;
     border-top-color: #6b3030;
 }
-
-/* CodeMirror hint popup themed to the docs palette. */
-.CodeMirror-hints {
-    position: absolute;
-    z-index: 60;
-    overflow: hidden;
-    overflow-y: auto;
-    margin: 0;
-    padding: 4px 0;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-        monospace;
-    font-size: 13px;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
-    max-width: min(420px, 90vw);
-}
-
-.CodeMirror-hint {
-    padding: 3px 10px;
-    white-space: nowrap;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-}
-
-.CodeMirror-hint-active {
-    background: var(--accent);
-    color: var(--bg);
-}
-
-.CodeMirror-hint-active .cm-hint-detail {
-    color: var(--bg);
-    opacity: 0.75;
-}
-
-.cm-hint-detail {
-    margin-left: auto;
-    padding-left: 12px;
-    font-size: 11.5px;
-    color: var(--muted);
-    opacity: 0.95;
-}
-
-.cm-hint-type,
-.cm-hint-keyword {
-    font-weight: 600;
-}
-
-.cm-hint-builtin,
-.cm-hint-method {
-    color: var(--fn);
-}
-
-.cm-hint-variable,
-.cm-hint-parameter {
-    color: var(--accent);
-}
-
-.CodeMirror-hint-active.cm-hint-builtin,
-.CodeMirror-hint-active.cm-hint-method,
-.CodeMirror-hint-active.cm-hint-type,
-.CodeMirror-hint-active.cm-hint-keyword,
-.CodeMirror-hint-active.cm-hint-variable,
-.CodeMirror-hint-active.cm-hint-parameter {
-    color: var(--bg);
-}
-
-/* Material theme (dark) inside the editor pane only. */
-.editor-wrap .cm-s-material.CodeMirror {
-    background: #1e1e1e;
-    color: #d8d8d6;
-}
-
-.editor-wrap .cm-s-material .CodeMirror-gutters {
-    background: #1a1a1a;
-    border-right-color: #2c2c2c;
-}
-
-.editor-wrap .cm-s-material .CodeMirror-linenumber {
-    color: #77777c;
-}
-
-.editor-wrap .cm-s-material .CodeMirror-cursor {
-    border-left-color: #e7e7e5;
-}
-
-.editor-wrap .cm-s-material .CodeMirror-activeline-background {
-    background: #292929;
-}
-
-.editor-wrap .cm-s-material span.cm-keyword { color: #e7e7e5; font-weight: 600; }
-.editor-wrap .cm-s-material span.cm-def { color: #d9a44a; }
-.editor-wrap .cm-s-material span.cm-variable { color: #d8d8d6; }
-.editor-wrap .cm-s-material span.cm-type { color: #a9adb3; }
-.editor-wrap .cm-s-material span.cm-string { color: #8fca9f; }
-.editor-wrap .cm-s-material span.cm-number { color: #e59a63; }
-.editor-wrap .cm-s-material span.cm-comment { color: #77777c; font-style: italic; }
-.editor-wrap .cm-s-material span.cm-operator { color: #c8c8ca; }
-.editor-wrap .cm-s-material span.cm-punctuation { color: #a9adb3; }
-
-/* Light theme syntax (CodeMirror default + docs palette overrides). */
-.editor-wrap .cm-s-default span.cm-keyword { color: var(--kw); font-weight: 600; }
-.editor-wrap .cm-s-default span.cm-def { color: var(--fn); }
-.editor-wrap .cm-s-default span.cm-variable { color: var(--code-text); }
-.editor-wrap .cm-s-default span.cm-type { color: var(--type); }
-.editor-wrap .cm-s-default span.cm-string { color: var(--str); }
-.editor-wrap .cm-s-default span.cm-number { color: var(--num); }
-.editor-wrap .cm-s-default span.cm-comment { color: var(--com); font-style: italic; }
-.editor-wrap .cm-s-default span.cm-operator { color: var(--code-text); }
-.editor-wrap .cm-s-default span.cm-punctuation { color: var(--type); }
-
-/* ---- Bracket pair guide lines (disabled by default) ---- */
-/* Layer sits on the editor wrapper (viewport-fixed) and is redrawn on
-   scroll/refresh so guides track the text. */
-.bracket-guide-layer {
-    position: absolute;
-    left: 0;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    pointer-events: none;
-    z-index: 4;
-    overflow: hidden;
-}
-
-.bracket-guide-line {
-    position: absolute;
-    width: 2px;
-    margin-left: -1px;
-    border-radius: 1px;
-    opacity: 0.7;
-}
-
-.bracket-guide-depth-0 { background: #c0392b; }
-.bracket-guide-depth-1 { background: #1f6b39; }
-.bracket-guide-depth-2 { background: #a54a1c; }
-.bracket-guide-depth-3 { background: #875800; }
-.bracket-guide-depth-4 { background: #5b4a9e; }
-.bracket-guide-depth-5 { background: #0e6b7a; }
-
-[data-theme="dark"] .bracket-guide-depth-0 { background: #e07a7a; }
-[data-theme="dark"] .bracket-guide-depth-1 { background: #8fca9f; }
-[data-theme="dark"] .bracket-guide-depth-2 { background: #e59a63; }
-[data-theme="dark"] .bracket-guide-depth-3 { background: #d9a44a; }
-[data-theme="dark"] .bracket-guide-depth-4 { background: #b8a4e8; }
-[data-theme="dark"] .bracket-guide-depth-5 { background: #7ec8d4; }
-
-.editor-wrap .cm-s-material ~ .bracket-guide-layer .bracket-guide-depth-0,
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-0 { background: #e07a7a; }
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-1 { background: #8fca9f; }
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-2 { background: #e59a63; }
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-3 { background: #d9a44a; }
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-4 { background: #b8a4e8; }
-.editor-wrap .CodeMirror.cm-s-material .bracket-guide-depth-5 { background: #7ec8d4; }
-
-/* ---- Paired bracket colourisation (both themes) ----
-   Token classes come from x-mode.js: cm-bracket-0 … cm-bracket-5.
-   Matching open/close at the same nesting depth share a colour. */
-.editor-wrap span.cm-bracket-0 { color: #c0392b; }
-.editor-wrap span.cm-bracket-1 { color: #1f6b39; }
-.editor-wrap span.cm-bracket-2 { color: #a54a1c; }
-.editor-wrap span.cm-bracket-3 { color: #875800; }
-.editor-wrap span.cm-bracket-4 { color: #5b4a9e; }
-.editor-wrap span.cm-bracket-5 { color: #0e6b7a; }
-
-[data-theme="dark"] .editor-wrap span.cm-bracket-0 { color: #e07a7a; }
-[data-theme="dark"] .editor-wrap span.cm-bracket-1 { color: #8fca9f; }
-[data-theme="dark"] .editor-wrap span.cm-bracket-2 { color: #e59a63; }
-[data-theme="dark"] .editor-wrap span.cm-bracket-3 { color: #d9a44a; }
-[data-theme="dark"] .editor-wrap span.cm-bracket-4 { color: #b8a4e8; }
-[data-theme="dark"] .editor-wrap span.cm-bracket-5 { color: #7ec8d4; }
-
-/* Material dark theme mirrors the dark palette above. */
-.editor-wrap .cm-s-material span.cm-bracket-0 { color: #e07a7a; }
-.editor-wrap .cm-s-material span.cm-bracket-1 { color: #8fca9f; }
-.editor-wrap .cm-s-material span.cm-bracket-2 { color: #e59a63; }
-.editor-wrap .cm-s-material span.cm-bracket-3 { color: #d9a44a; }
-.editor-wrap .cm-s-material span.cm-bracket-4 { color: #b8a4e8; }
-.editor-wrap .cm-s-material span.cm-bracket-5 { color: #7ec8d4; }

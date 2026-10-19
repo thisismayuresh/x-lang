@@ -11,13 +11,14 @@ interpreter printed. Run any example yourself with `x run file.x` after
 
 Curious how this page turns a README into a website? See
 [How this site is built](?page=about/how-it-works.md) and the
-[project ideas](?page=about/project-ideas.md) behind it.
+[project ideas](?page=about/project-ideas.md) behind it. Release notes are
+in the top bar under **Changelog**.
 
 Want to try a snippet without leaving the browser? Open the
-[playground](playground.html) — an editor with X syntax highlighting and
-code suggestions on the left, live output on the right. The same interpreter
-you run with `x run` executes in WebAssembly inside a Web Worker, so nothing
-is sent to a server.
+[playground](playground.html) — a Monaco editor with X syntax highlighting
+and code suggestions on the left, live output on the right. The same
+interpreter you run with `x run` executes in WebAssembly inside a Web
+Worker, so nothing is sent to a server.
 
 ## Browser playground (WebAssembly)
 
@@ -34,7 +35,7 @@ TypeScript on disk; the playground does not use it.)
 | **Pyodide** | CPython (the same language family as the `xlang` interpreter) compiled to **WebAssembly**. Vendored under `docs-site/playground/pyodide/`. |
 | **Pure-Python wheel** | `docs-site/playground/wheels/x_language-*.whl` — a packaging of the `xlang/` package. Installed into Pyodide with **micropip**. |
 | **ES-module Web Worker** | `docs-site/playground/worker.js` loads Pyodide off the main thread so an infinite loop can be terminated without freezing the tab. It must be spawned as a **module** worker (`{ type: "module" }`) — Pyodide ≥ 314 rejects classic workers that use `importScripts`. |
-| **CodeMirror 5** | Editor: X mode, auto-close brackets/quotes (`(` → `()`), bracket colours (guides off by default), autocomplete. Matching brackets are underline/bold only — no bar or outline. CodeMirror + addons are **vendored** under `docs-site/playground/codemirror/` (no CDN). |
+| **Monaco editor** | Microsoft’s VS Code editor core, **vendored** under `docs-site/playground/monaco/` (no CDN). Light/dark (`vs` / `vs-dark`), X Monarch highlighting, auto-close brackets/quotes, completions. |
 | **Completions** | **Ctrl+Space** (or as you type): keywords, types, builtins, snippets **plus names declared in the current buffer** (variables, parameters, functions, classes/interfaces/enums, imports). After `.` the member list is picked from the receiver’s inferred type (`let s = "hi"` → string methods, `let xs = [1]` → list methods). Static catalog: `playground/completions.js`; declared-name scan: `collectDeclarations` in `playground.js`. |
 | **`xlang.playground`** | Thin API (`run_files`, `run_source`, `format_file`) that the worker calls via `pyodide.runPython`. It always runs with the interpreter’s default feature set — language features are configured through `x.toml` for the CLI, not toggled in the browser. |
 
@@ -65,12 +66,15 @@ into `wheels/manifest.json`, and the worker loads the wheel with
 
 - Up to **5 files** under the `playground/` virtual folder (entry is
   `main.x`). `import util.greet` in `main.x` loads `util.x`, same as the CLI.
+  Each file is a separate Monaco **model**.
 - **Format** (or **Ctrl+S**) runs `x format` / `xlang.formatter.format_source`
   on the active file inside the worker.
 - Drag the vertical splitter between the editor and the output pane.
 - Every launch starts clean on the **Hello, world** example — the playground
   no longer restores a previous session from `localStorage`. **Reset** at any
   time returns to the same starter program.
+- Error lines get Monaco **markers** (squiggles) plus a rustc-style
+  diagnostic in the output pane.
 - The strip under the output pane is reserved for **fatal errors** (WASM
   boot failure, worker crash). Ordinary program errors stay in the
   `#errors` box above it, rendered like the CLI’s rustc-style blocks:
@@ -114,7 +118,7 @@ setting only offers `/ (root)` or `/docs`, which is why a folder named
 Because the playground loads Pyodide, the interpreter wheel, and a module
 worker, it needs a real HTTP(S) origin — GitHub Pages qualifies. The committed
 `docs-site/.nojekyll` keeps Pages from running Jekyll, so the vendored
-CodeMirror/Pyodide assets are served verbatim.
+Monaco/Pyodide assets are served verbatim.
 
 The published URL is `https://<user>.github.io/<repo>/` for a project site, or
 `https://<user>.github.io/` for a `<user>.github.io` repository. If you would

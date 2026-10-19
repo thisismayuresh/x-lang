@@ -302,19 +302,40 @@ function refresh() {
 
 /* ---------- Boot ---------- */
 
+function markTopbarNav() {
+    var source = window.XMarkdown.pageUrl().replace(/^\.\//, "");
+    var docs = document.getElementById("nav-docs");
+    var changelog = document.getElementById("nav-changelog");
+    if (!docs || !changelog) {
+        return;
+    }
+    var onChangelog = source === "about/changelog.md";
+    docs.classList.toggle("active", !onChangelog);
+    changelog.classList.toggle("active", onChangelog);
+    if (onChangelog) {
+        docs.removeAttribute("aria-current");
+        changelog.setAttribute("aria-current", "page");
+    } else {
+        changelog.removeAttribute("aria-current");
+        docs.setAttribute("aria-current", "page");
+    }
+}
+
 document.addEventListener("DOMContentLoaded", function () {
     initTheme();
     initMobileMenu();
+    markTopbarNav();
 
     var source = window.XMarkdown.pageUrl().replace(/^\.\//, "");
-    setStatus("Loading " + source + "\u2026");
+    setStatus("Loading " + source + "…");
     window.XMarkdown.load()
         .then(function () {
             setStatus("Source: " + source);
+            markTopbarNav();
             if (source !== "README.md") {
                 var h1 = document.querySelector("#doc-view h1");
                 if (h1) {
-                    document.title = h1.textContent + " \u2014 X language documentation";
+                    document.title = h1.textContent + " — X language documentation";
                 }
                 var nav = document.getElementById("doc-nav");
                 var home = document.createElement("div");
@@ -323,7 +344,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 parent.className = "nav-parent";
                 var link = document.createElement("a");
                 link.href = "./";
-                link.textContent = "\u2190 Main documentation";
+                link.textContent = "← Main documentation";
                 parent.appendChild(link);
                 home.appendChild(parent);
                 nav.insertBefore(home, nav.firstChild);
