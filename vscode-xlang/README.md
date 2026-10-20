@@ -3,7 +3,8 @@
 VS Code extension for the X programming language providing:
 - Syntax highlighting
 - Real-time type checking (diagnostics), import-aware (cross-file `implements`/`extends`)
-- Code completion (IntelliSense)
+- Code completion (IntelliSense), including auto-import of local modules
+- Quick fixes for missing imports (`Add \`import …\``)
 - Hover type information
 - Go to Definition (crosses direct `import` statements)
 - Find All References
@@ -55,6 +56,14 @@ Full TextMate grammar for `.x` files covering:
 - Uses the existing X language type checker
 - Supports strict typing mode
 
+### Quick Fixes (Code Actions)
+When the checker reports `Name 'greet' is not defined in this module` with an
+``add `import utils.greet` `` suggestion, the light bulb / quick-fix menu
+offers **`Add \`import utils.greet\``**. Accepting it inserts the statement
+after the file's last import (or at the top when there are none). The
+suggestions come from the checker itself, so a fix is only offered when the
+name really is exported by a sibling module.
+
 ### Code Completion (Ctrl+Space)
 - Keywords, built-in types and built-in functions
 - Classes, interfaces, enums and type aliases from the current document
@@ -74,6 +83,10 @@ Full TextMate grammar for `.x` files covering:
   from the static catalog shared with the playground.
 - Import path completion: after `import ` and after `import System.`, paths are
   filtered to what actually exists on disk.
+- **Auto-import of local exports** — typing a name that another `.x` file in
+  the project exports (`gre…`) offers it with an `import utils.greet` edit
+  applied on accept. Names already declared or imported in the buffer are
+  skipped, as are modules the file already imports whole or with a wildcard.
 
 ### Hover (Type Information)
 Hover over symbols to see:
@@ -211,8 +224,8 @@ comment toggling, bracket matching/auto-close, folding.
   Python interpreter, spawns `server.py`, and creates a `LanguageClient`.
 * **Server side** — `server.py` subclasses `pygls.lsp.server.LanguageServer`
   and registers handlers for `didOpen` / `didChange` / `didSave`,
-  `completion`, `hover`, `definition`, `initialize` and the configuration
-  notifications.
+  `completion`, `codeAction`, `hover`, `definition`, `initialize` and the
+  configuration notifications.
 * **Diagnostics** — on every keystroke the server re-lexes, re-parses
   (`recover_errors=True`, so one bad line does not hide the rest of the file)
   and re-type-checks, then pushes `textDocument/publishDiagnostics`. Type
@@ -281,8 +294,9 @@ file outside `~/.vscode/extensions/` and `/tmp/`.
    `entity.name.function.x`, `entity.name.type.class.x`, `comment.block.x`);
    escape sequences and `${...}` interpolation both tokenized.
 2. **Server handshake** — scripted LSP client: `initialize` returns full
-   capabilities (`completionProvider`, `hoverProvider`, `definitionProvider`,
-   `referencesProvider`, `textDocumentSync.change = 1`).
+   capabilities (`completionProvider`, `codeActionProvider`, `hoverProvider`,
+   `definitionProvider`, `referencesProvider`,
+   `textDocumentSync.change = 1`).
 3. **Diagnostics parity** — the LSP's diagnostics were diffed against
    `x check` on the example files: identical wherever the two report the same
    scope, including the 9 strict-typing errors in
