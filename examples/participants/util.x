@@ -2,7 +2,6 @@
 // participant id (integer) → fields (name/gender/age/foo/array/isMarried; age
 // may be an int or a string, gender is either a plain string or a Gender enum
 // value, array is an integer list).
-// export type Participants = Object<integer, Object<string, string|integer|Gender|integer[]|boolean>>
 
 
 
@@ -21,6 +20,10 @@ interface IParticipantValue {
 }
 
 export type Participant = Object<integer, IParticipantValue>
+
+// Ultra-nested registration shape: participant id → field name → value,
+// where each value spans the union of every field type.
+export type Participants = Object<integer, Object<string, string|integer|Gender|integer[]|boolean>>
 
 
 /*
