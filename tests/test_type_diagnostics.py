@@ -1045,12 +1045,21 @@ class TryWithResourcesCheckTests(unittest.TestCase):
             source_file = Path(temporary_directory) / "main.x"
             source_file.write_text(dedent(source), encoding="utf-8")
             config_file = Path(temporary_directory) / "x.toml"
-            config_file.write_text("strict_typing = true\n", encoding="utf-8")
+            config_file.write_text(
+                "[features]\nstrict_typing = true\n", encoding="utf-8"
+            )
             output = io.StringIO()
             errors = io.StringIO()
             with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
                 return_code = cli_main(
-                    ["check", "--color", "never", str(source_file)]
+                    [
+                        "check",
+                        "--color",
+                        "never",
+                        "--config",
+                        str(config_file),
+                        str(source_file),
+                    ]
                 )
         self.assertEqual(return_code, 1, output.getvalue())
         self.assertIn(

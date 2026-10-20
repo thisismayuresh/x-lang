@@ -6,6 +6,12 @@ learning project, not as a production compiler. The implementation requires
 Python 3.10 or newer. Python 3.11+ uses the standard-library TOML reader;
 Python 3.10 installs the small `tomli` compatibility dependency.
 
+The documentation site is published at
+<https://thisismayuresh.github.io/x-lang/>, including the
+**[browser playground](https://thisismayuresh.github.io/x-lang/playground.html)**
+— it runs this interpreter compiled to WebAssembly through Pyodide, so you can
+try X without installing anything.
+
 ## Setup
 
 Create and activate the virtual environment, then install the local package:
@@ -2547,7 +2553,9 @@ The site is published to GitHub Pages by
 artifact. GitHub Pages' branch-based picker only offers `/` or `/docs`, so
 `docs-site/` is not selectable there — the Actions deploy is what ships the
 folder and its WebAssembly playground. Enable it once under **Settings → Pages
-→ Source = GitHub Actions**.
+→ Source = GitHub Actions**. The deployed site lives at
+<https://thisismayuresh.github.io/x-lang/> (playground:
+<https://thisismayuresh.github.io/x-lang/playground.html>).
 
 ## Tests
 
@@ -2613,6 +2621,34 @@ python csv_tests/generate_corpus.py --no-verify # write without verifying
 Regeneration is deterministic: running the generator twice produces
 byte-identical CSVs, so a diff after regeneration means the corpus or the
 interpreter changed.
+
+### Continuous integration
+
+`.github/workflows/tests.yml` runs on every push and pull request to
+`development` and `main` with three jobs:
+
+- **pytest** on Python **3.10** and **3.14**: installs the package with the
+  dev extra (`python -m pip install -e ".[dev]"` — pytest plus the
+  `pygls`/`lsprotocol` dependencies the LSP tests need), installs `tsc` for
+  the TypeScript-compile tests, then runs
+  `python -m pytest tests/ csv_tests/ -q`. A commented `--deselect` list keeps
+  the known typeOf/showcase failures from turning CI red — remove an entry as
+  soon as its test is fixed.
+- **playground wheel freshness**: `python docs-site/playground/build.py --check`
+  fails when anything under `xlang/` changed but the wheel in
+  `docs-site/playground/wheels/` was not rebuilt, so the browser playground
+  can never silently run an old interpreter.
+- **docs-site JS syntax**: `node --check` over every authored `.js` file,
+  skipping the vendored `monaco/` and `pyodide/` trees.
+
+The dev extra (defined in `pyproject.toml`) installs pytest and the LSP
+test dependencies:
+
+```sh
+python -m pip install -e ".[dev]"
+```
+
+Docs are deployed separately by `.github/workflows/deploy-docs.yml`.
 
 ## Feature examples
 

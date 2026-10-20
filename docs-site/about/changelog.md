@@ -72,6 +72,21 @@ trains, not published packages. The VS Code extension versions on its own
   `.x` file offers it with the matching `import` edit applied on accept.
   Already-declared names and already-imported modules are skipped.
 
+### Tooling / CI
+
+- **GitHub Actions test workflow** (`.github/workflows/tests.yml`): runs the
+  full suite (interpreter tests + CSV corpus) on Python 3.10 and 3.14, checks
+  the playground wheel is not stale against `xlang/`, and `node --check`s the
+  authored docs-site JavaScript on every push and pull request. Known
+  typeOf/showcase failures are deselected with a commented list to burn down.
+- `pyproject.toml` gained a `dev` extra (`pip install -e ".[dev]"`: pytest
+  plus `pygls`/`lsprotocol` for the LSP tests) so CI and local runs install
+  the same test dependencies.
+- The suite's config-discovery test now passes `--config` explicitly (the
+  repository's own `x.toml` used to shadow the fixture's), and corpus row
+  `R0441` was updated to the documented `new Collections.HashMap()` instance
+  style — so the pre-CI baseline is green apart from the deselected list.
+
 ### Documentation
 
 - The docs renderer understands **CommonMark code spans**: closing on an
@@ -83,6 +98,9 @@ trains, not published packages. The VS Code extension versions on its own
 - "Current limitations" now records that interfaces have no
   TypeScript-style index signatures (`[key: number]: T` reports
   `Expected a name`) and shows the `object<K, V>` alias equivalent.
+- The root README links the published site and the
+  **[browser playground](https://thisismayuresh.github.io/x-lang/playground.html)**
+  up top and documents the new CI workflow under Tests.
 
 ## 0.1.0 — Monaco playground, topbar navigation & changelog (2026-10-19)
 
