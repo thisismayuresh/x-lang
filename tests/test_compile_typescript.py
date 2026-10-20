@@ -1181,6 +1181,9 @@ class CompileCommandTests(unittest.TestCase):
                     "--target",
                     "typescript",
                     "compile",
+                    # Config discovery would walk up into the repository's own
+                    # x.toml; this test only cares about option placement.
+                    "--no-config",
                     str(source_file),
                     "--out",
                     str(root / "out.ts"),
