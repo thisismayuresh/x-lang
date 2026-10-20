@@ -177,7 +177,9 @@ x help
   (implemented by `xlang/formatter.py`): two-space indentation, normalized
   spacing around operators and commas, `if`/`else` and `try`/`catch` kept on
   one line, one statement per line, comments and string literals preserved
-  verbatim, and at most one blank line between statements. Formatting is
+  verbatim, and at most one blank line between statements. Object literals
+  that do not fit in 80 columns are broken one `key: value` field per line
+  with a trailing comma; match-arm patterns are never broken. Formatting is
   idempotent; a file that is already formatted is left untouched. Files with
   syntax errors are diagnosed instead of rewritten.
 - `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
@@ -818,9 +820,10 @@ splices an element out and the array shrinks.
 
 ## Objects
 
-Object literals use curly braces with identifier or string keys, shorthand
-properties, and spread. Values behave like dictionaries: dot access,
-bracket access, and `in` all work.
+Object literals use curly braces with identifier, string, or integer/float
+keys, shorthand properties, and spread. Values behave like dictionaries: dot
+access (including integer keys, `order.200`), bracket access, and `in` all
+work.
 
 ```x objects.x
 function main() {
@@ -2172,9 +2175,9 @@ Common mistakes and the exact failures they produce:
 - Decorator name not in scope — `Name 'nope' is not defined`.
 - Using a plain function where a factory is needed (`@Logged()` with
   `function Logged(var target)`) — `No overload of 'Logged' accepts 0
-argument(s)`.
+  argument(s)`.
 - Forgetting to return the target — `Decorator for 'f' must return a
-function` or `Decorator for class 'Thing' must return a class`.
+  function` or `Decorator for class 'Thing' must return a class`.
 - Decorating an enum or a variable — a parse error, see Placement above.
 
 A larger, fully commented example combining factories with arguments,
@@ -2833,8 +2836,8 @@ error instead of quietly coming back:
 - containers that cannot lose an entry refuse with `TypeException`:
   `strings are immutable`, `tuples do not support index deletion`,
   `class members are shared by every instance`, `imports declare their own
-members`, and `builtins are declared in the standard library and cannot be
-removed` (so `delete(Math.abs)` fails).
+  members`, and `builtins are declared in the standard library and cannot be
+  removed` (so `delete(Math.abs)` fails).
 
 Because `for (let key in object)` iterates a snapshot of the keys, deleting
 inside the loop is safe and empties the object:
@@ -4100,9 +4103,11 @@ sliding windows, two pointers, binary search, stacks, recursion, matrix
 traversal, and string encoding. Each `.x` file can be run independently.
 
 `Object` currently operates on X object literals and dictionaries. Object
-literals support identifier/string keys, shorthand properties, and spread;
-computed keys, symbols, prototypes, getters/setters, and anonymous methods are
-not implemented. Destructuring supports nested array/object bindings, defaults
+literals support identifier/string keys plus integer and float keys
+(`{ 200: "a" }`, accessed as `m.200` or `m[200]` — integer and string keys
+are distinct), shorthand properties, and spread; computed keys, symbols,
+prototypes, getters/setters, and anonymous methods are not implemented.
+Destructuring supports nested array/object bindings, defaults
 in declarations, rest bindings, and variable-target assignment. It does not yet
 support computed property targets or every JavaScript destructuring edge case.
 ASI is statement-boundary insertion, not a complete ECMAScript parser rule
@@ -4221,7 +4226,7 @@ Implemented and currently demonstrated features:
 - [x] Ternary conditional expressions and null-safe optional chaining for member
       access (`?.`), calls (`?.()`), and indexing (`?[index]`).
 - [x] `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
-of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
+      of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
 - [x] Rust-inspired `match` expressions with wildcard, binding, literal, enum,
       array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
@@ -4299,6 +4304,13 @@ error: Class 'Animal' does not implement 'getGender()' from interface 'Person'
 x: found 1 type error(s)
 ```
 
+When the target is an interface or a record annotation, the notes name
+exactly what does not line up instead of only showing the two types: each
+missing member is listed (``= note: missing required member `age: integer` ``,
+``= note: missing required method `greet()` ``) and each mismatched one
+(``member `name`: expected `string`, found `integer` ``). This applies to
+returns, variable initialisers, and call arguments alike.
+
 `x check` and `x run` report a type error identically, block for block, and
 one run can report several errors at once:
 `x check examples/test/test_multiple_errors.x` prints two independent
@@ -4326,6 +4338,10 @@ remaining implementation goals and documented constraints:
       `null` is rejected for non-null types; inline `record{...}` annotations are
       checked structurally today
 - [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
+- Interfaces have no TypeScript-style index signatures — a TS-style
+      `[key: number]: IParticipant` member reports `Expected a name`; declare
+      the map as an alias over the builtin instead:
+      `type Participants = object<integer, IParticipant>`
 - [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
 - [ ] A broader standard library beyond the built-ins documented here
 
