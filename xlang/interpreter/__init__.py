@@ -431,13 +431,17 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if self.config.enabled("object_literals"):
             self.globals.define("Object", self._object_members())
         system_namespace = Environment()
+        system_namespace.display_label = "namespace System"
         io_namespace = Environment(system_namespace)
+        io_namespace.display_label = "namespace io"
         if self.config.enabled("filesystem"):
             io_namespace.define("FileSystem", self._filesystem_members())
         io_namespace.define("Console", self._console_members())
         if self.config.enabled("network"):
             network_namespace = Environment(io_namespace)
+            network_namespace.display_label = "namespace Network"
             http_namespace = Environment(network_namespace)
+            http_namespace.display_label = "namespace http"
             http_namespace.define(
                 "fetch", BuiltinFunction("http.fetch", self._http_fetch)
             )
@@ -445,13 +449,16 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             io_namespace.define("Network", network_namespace)
         system_namespace.define("io", io_namespace)
         concurrent_namespace = Environment(system_namespace)
+        concurrent_namespace.display_label = "namespace concurrent"
         if self.config.enabled("threads"):
             concurrent_namespace.define("Thread", self._thread_members())
         if self.config.enabled("async"):
             concurrent_namespace.define("Async", self._async_members())
         system_namespace.define("concurrent", concurrent_namespace)
         utils_namespace = Environment(system_namespace)
+        utils_namespace.display_label = "namespace utils"
         collections_namespace = Environment(utils_namespace)
+        collections_namespace.display_label = "namespace Collections"
         if self.config.enabled("collections"):
             hashmap_ns       = self._make_collection_ns("HashMap",       self._hashmap_members())
             linkedlist_ns    = self._make_collection_ns("LinkedList",     self._linkedlist_members())
@@ -498,7 +505,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         # System.process holds everything that talks to the host process:
         # environment variables and process termination.
         process_namespace = Environment(system_namespace)
+        process_namespace.display_label = "namespace process"
         environment_namespace = Environment()
+        environment_namespace.display_label = "namespace Environment"
         for name, value in self.environment.items():
             environment_namespace.values[name] = value
         environment_namespace.define(
@@ -900,6 +909,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             existing_value = namespace_environment.values.get(name)
             if existing_value is None:
                 nested_environment = Environment(namespace_environment)
+                nested_environment.display_label = f"namespace {name}"
                 namespace_environment.define(name, nested_environment)
                 namespace_environment = nested_environment
             elif isinstance(existing_value, Environment):
@@ -1062,6 +1072,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
     def _define_enum(self, declaration: EnumDeclaration, environment: Environment) -> None:
         self._set_declaration_location(declaration)
         enum_values = Environment()
+        enum_values.display_label = f"enum {declaration.name}"
         enum_identity = object()
         for index, (name, expression) in enumerate(declaration.members):
             value = index if expression is None else self._evaluate(expression, environment)
@@ -1561,7 +1572,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     items.append(self._evaluate(item, environment))
             return items
         if isinstance(expression, ObjectLiteral):
-            fields: dict[str, Any] = {}
+            fields: dict[Any, Any] = {}
             for entry in expression.entries:
                 name = entry.key
                 value = entry.value
@@ -1573,7 +1584,15 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         raise RuntimeErrorX("Object spread requires an object value")
                     fields.update(spread_fields)
                 else:
-                    fields[name] = self._evaluate(value, environment)
+                    key: Any = name
+                    if entry.key_is_number:
+                        # ``200: value`` stores a real numeric key so
+                        # ``m[200]`` finds it (string keys stay strings).
+                        try:
+                            key = float(name) if "." in name else int(name)
+                        except ValueError:
+                            key = name
+                    fields[key] = self._evaluate(value, environment)
             return fields
         if isinstance(expression, FunctionExpression):
             return self._arrow_function(expression, environment)
@@ -1737,6 +1756,34 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return self._evaluate(arm.body, arm_environment)
         raise RuntimeErrorX("No pattern matched the value")
 
+    @staticmethod
+    def _numeric_pattern_key(name: str) -> Any | None:
+        """Numeric object key a decimal pattern name also matches.
+
+        Patterns store field names as strings (``{ 200: x }`` keeps ``"200"``),
+        so a plain decimal name is also tried as the int/float key that
+        ``200: value`` stores.  Identifiers, signs, and hex stay strings.
+        """
+        if not name.isascii():
+            return None
+        if name.isdecimal():
+            return int(name)
+        if "." in name and name.replace(".", "", 1).isdecimal():
+            return float(name)
+        return None
+
+    @classmethod
+    def _object_pattern_value(
+        cls, fields: dict[Any, Any], name: str
+    ) -> tuple[bool, Any]:
+        """``(found, value)`` for a pattern key against possibly-numeric keys."""
+        if name in fields:
+            return True, fields[name]
+        numeric_key = cls._numeric_pattern_key(name)
+        if numeric_key is not None and numeric_key in fields:
+            return True, fields[numeric_key]
+        return False, None
+
     def _match_pattern(
         self, pattern: Any, value: Any, environment: Environment
     ) -> dict[str, Any] | None:
@@ -1795,11 +1842,19 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             if not isinstance(object_value, dict):
                 return None
             object_bindings: dict[str, Any] = {}
+            excluded_keys: set[Any] = set()
             for name, child_pattern in pattern.fields:
-                if name not in object_value:
+                excluded_keys.add(name)
+                numeric_key = self._numeric_pattern_key(name)
+                if numeric_key is not None:
+                    excluded_keys.add(numeric_key)
+                found, child_value = self._object_pattern_value(
+                    object_value, name
+                )
+                if not found:
                     return None
                 child_bindings = self._match_pattern(
-                    child_pattern, object_value[name], environment
+                    child_pattern, child_value, environment
                 )
                 if child_bindings is None:
                     return None
@@ -1808,7 +1863,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 object_bindings[pattern.rest_name] = {
                     name: field_value
                     for name, field_value in object_value.items()
-                    if name not in {field_name for field_name, _ in pattern.fields}
+                    if name not in excluded_keys
                 }
             return object_bindings
         return None
@@ -1857,12 +1912,18 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 source_fields = value
             else:
                 raise RuntimeErrorX("Object destructuring requires an object value")
-            used_names: set[str] = set()
+            used_names: set[Any] = set()
             for field_name, field_pattern in pattern.fields:
                 used_names.add(field_name)
+                numeric_key = self._numeric_pattern_key(field_name)
+                if numeric_key is not None:
+                    used_names.add(numeric_key)
+                _found, field_value = self._object_pattern_value(
+                    source_fields, field_name
+                )
                 self._bind_destructuring(
                     field_pattern,
-                    source_fields.get(field_name),
+                    field_value,
                     environment,
                     constant,
                     declare,
@@ -3500,4 +3561,19 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return value.name
         if isinstance(value, XExceptionValue):
             return value.message
+        if isinstance(value, Environment):
+            if value.display_label is not None:
+                return f"[{value.display_label}]"
+            identity = id(value)
+            if identity in seen:
+                return "[Circular]"
+            seen.add(identity)
+            try:
+                fields = ", ".join(
+                    f"{name}: {self._stringify_within(item, seen)}"
+                    for name, item in value.values.items()
+                )
+                return "{" + fields + "}"
+            finally:
+                seen.discard(identity)
         return str(value)
