@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
+import sys
 import tempfile
 import threading
 import time
@@ -77,13 +79,34 @@ class _Handler(BaseHTTPRequestHandler):
     do_DELETE = do_POST
 
 
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """Threaded HTTP server that ignores client-abort write errors.
+
+    The timeout tests hang up on ``/slow`` while its handler thread is still
+    sleeping; the subsequent write to the dead socket would otherwise dump a
+    ``socketserver`` traceback into the test log even though every assertion
+    already passed.
+    """
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+            return
+        if isinstance(error, OSError) and error.errno in (
+            errno.EPIPE,
+            errno.ECONNRESET,
+        ):
+            return
+        super().handle_error(request, client_address)
+
+
 class HttpTestBase(unittest.TestCase):
-    server: ThreadingHTTPServer
+    server: _QuietHTTPServer
     base_url: str
 
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        cls.server = _QuietHTTPServer(("127.0.0.1", 0), _Handler)
         host, port = cls.server.server_address
         cls.base_url = f"http://{host}:{port}"
         cls.server_thread = threading.Thread(
