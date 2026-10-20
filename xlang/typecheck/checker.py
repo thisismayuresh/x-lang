@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import fields, is_dataclass
+from pathlib import Path
 from typing import Any
 
 from ..ast_nodes import (
@@ -36,6 +38,7 @@ from ..ast_nodes import (
     ModuleImport,
     NamespaceDeclaration,
     NewExpression,
+    ObjectEntry,
     ObjectLiteral,
     OptionalChain,
     Program,
@@ -78,6 +81,37 @@ from .types import (
     substitute,
 )
 
+#: Names the builtin scope predefines (see ``TypeChecker._builtin_scope``).
+#: Never import-gated: a project module declaring ``print`` must not rename
+#: the language's own ``print`` for every other file.
+BUILTIN_SCOPE_NAMES = frozenset(
+    {
+        "print",
+        "range",
+        "typeOf",
+        # delete(...) comes from Object.delete (see DELETE_BUILTIN_NAME in
+        # xlang/interpreter/_native_builtins.py) but is callable unqualified.
+        "delete",
+        "sleep",
+        "args",
+        "Object",
+        "System",
+        "HashMap",
+        "LinkedList",
+        "List",
+        "Stack",
+        "Queue",
+        "PriorityQueue",
+        "Trie",
+        "Set",
+        "TreeMap",
+        "TreeSet",
+        "LinkedHashMap",
+        "LRUCache",
+        "ConcurrentHashMap",
+        "ConcurrentList",
+    }
+)
 
 #: Dot-callable methods on arrays, mirroring the interpreter's table.
 ARRAY_METHOD_NAMES = frozenset(
@@ -193,7 +227,7 @@ class TypeChecker:
         self._config = config
         self._classes: dict[str, ClassDeclaration] = {}
         self._interfaces: dict[str, ClassDeclaration] = {}
-        self._enums: set[str] = set()
+        self._enums: dict[str, EnumDeclaration] = {}
         self._aliases: dict[str, XType] = {}
         self._functions: dict[str, list[FunctionDeclaration]] = {}
         self._generic_params: dict[str, list[str]] = {}
@@ -212,6 +246,18 @@ class TypeChecker:
         self._in_constructor = False
         self._try_depth = 0
         self._current_node: Any | None = None
+        # Import-scoping state, filled from Program by _apply_program_info.
+        self._module_visibility: dict[str, frozenset[str]] | None = None
+        self._name_provenance: dict[str, str] | None = None
+        self._root_scope: TypeScope | None = None
+        # Node whose "is a type, not a value" check is waived: the object of
+        # `x.y` (`Gender.MALE`) or the callee of `x()` (`IFoo()`).
+        self._deferred_type_value: Any | None = None
+
+    def _apply_program_info(self, program: Program) -> None:
+        """Pick up the loader's per-file import visibility, if present."""
+        self._module_visibility = getattr(program, "module_visibility", None)
+        self._name_provenance = getattr(program, "name_provenance", None)
 
     def _record_depth_error(self) -> None:
         """Turn a stack overflow into a diagnostic on the deepest known node."""
@@ -225,7 +271,9 @@ class TypeChecker:
             )
         )
 
-    def check(self, program: Program, source_name: str | None = None, config=None) -> list[TypeCheckError]:
+    def check(
+        self, program: Program, source_name: str | None = None, config=None
+    ) -> list[TypeCheckError]:
         """Type-check ``program`` and return all diagnostics (does not raise)."""
         self._reset(source_name, config)
         try:
@@ -235,6 +283,7 @@ class TypeChecker:
         return self.errors
 
     def _check_program(self, program: Program) -> None:
+        self._apply_program_info(program)
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -246,11 +295,14 @@ class TypeChecker:
         for module_declarations in program.modules.values():
             self._check_strict_typing(module_declarations, self._source_name)
         scope = self._builtin_scope()
+        self._root_scope = scope
         self._check_declarations(program.declarations, scope)
         for module_declarations in program.modules.values():
             self._check_declarations(module_declarations, scope.child())
 
-    def check_or_raise(self, program: Program, source_name: str | None = None, config=None) -> None:
+    def check_or_raise(
+        self, program: Program, source_name: str | None = None, config=None
+    ) -> None:
         """Type-check and raise the first error when diagnostics exist."""
         errors = self.check(program, source_name, config)
         if errors:
@@ -272,6 +324,7 @@ class TypeChecker:
         return self.errors
 
     def _check_program_declarations(self, program: Program) -> None:
+        self._apply_program_info(program)
         self._collect_types(program.declarations)
         for module_declarations in program.modules.values():
             self._collect_types(module_declarations)
@@ -289,32 +342,7 @@ class TypeChecker:
 
     def _builtin_scope(self) -> TypeScope:
         scope = TypeScope()
-        for name in (
-            "print",
-            "range",
-            "typeOf",
-            # delete(...) comes from Object.delete (see DELETE_BUILTIN_NAME in
-            # xlang/interpreter/_native_builtins.py) but is callable unqualified.
-            "delete",
-            "sleep",
-            "args",
-            "Object",
-            "System",
-            "HashMap",
-            "LinkedList",
-            "List",
-            "Stack",
-            "Queue",
-            "PriorityQueue",
-            "Trie",
-            "Set",
-            "TreeMap",
-            "TreeSet",
-            "LinkedHashMap",
-            "LRUCache",
-            "ConcurrentHashMap",
-            "ConcurrentList",
-        ):
+        for name in BUILTIN_SCOPE_NAMES:
             scope.define(name, ANY, True)
         return scope
 
@@ -337,7 +365,7 @@ class TypeChecker:
                 if nested:
                     self._collect_types(nested)
             elif isinstance(declaration, EnumDeclaration):
-                self._enums.add(declaration.name)
+                self._enums[declaration.name] = declaration
             elif isinstance(declaration, TypeDeclaration):
                 self._aliases[declaration.name] = parse_type(declaration.type_name)
             elif isinstance(declaration, NamespaceDeclaration):
@@ -346,9 +374,7 @@ class TypeChecker:
             elif isinstance(declaration, FunctionDeclaration):
                 self._register_function(declaration)
                 if declaration.generic_parameters:
-                    registered = self._generic_params.setdefault(
-                        declaration.name, []
-                    )
+                    registered = self._generic_params.setdefault(declaration.name, [])
                     for parameter in declaration.generic_parameters:
                         if parameter not in registered:
                             registered.append(parameter)
@@ -406,7 +432,7 @@ class TypeChecker:
             if node.generic_parameters:
                 self._generic_params[node.name] = list(node.generic_parameters)
         elif isinstance(node, EnumDeclaration):
-            self._enums.add(node.name)
+            self._enums[node.name] = node
         elif isinstance(node, TypeDeclaration):
             self._aliases[node.name] = parse_type(node.type_name)
         elif isinstance(node, FunctionDeclaration):
@@ -440,7 +466,10 @@ class TypeChecker:
                         self._collect_local_functions(statement.else_branch.statements)
                     else:
                         self._collect_local_functions([statement.else_branch])
-            elif isinstance(statement, (WhileStatement, DoWhileStatement, ForStatement, ClassicForStatement)):
+            elif isinstance(
+                statement,
+                (WhileStatement, DoWhileStatement, ForStatement, ClassicForStatement),
+            ):
                 self._collect_local_functions(statement.body.statements)
             elif isinstance(statement, TryStatement):
                 self._collect_local_functions(statement.body.statements)
@@ -473,7 +502,10 @@ class TypeChecker:
                 elif statement.else_branch is not None:
                     if self._contains_throw([statement.else_branch]):
                         return True
-            elif isinstance(statement, (WhileStatement, DoWhileStatement, ForStatement, ClassicForStatement)):
+            elif isinstance(
+                statement,
+                (WhileStatement, DoWhileStatement, ForStatement, ClassicForStatement),
+            ):
                 if self._contains_throw(statement.body.statements):
                     return True
             elif isinstance(statement, TryStatement):
@@ -509,7 +541,9 @@ class TypeChecker:
             elif isinstance(declaration, TypeDeclaration):
                 scope.define(
                     declaration.name,
-                    self._aliases.get(declaration.name, parse_type(declaration.type_name)),
+                    self._aliases.get(
+                        declaration.name, parse_type(declaration.type_name)
+                    ),
                     True,
                 )
         for declaration in declarations:
@@ -628,6 +662,7 @@ class TypeChecker:
                     f"Return type '{actual.display()}' is not compatible with "
                     f"'{expected.display()}'",
                     declaration,
+                    notes=self._incompatibility_notes(actual, expected),
                 )
         elif self._expected_return is not None:
             self._saw_value_return = True
@@ -677,9 +712,7 @@ class TypeChecker:
                 )
             self._check_statements(catch_body.statements, catch_scope)
         if declaration.finally_body is not None:
-            self._check_statements(
-                declaration.finally_body.statements, scope.child()
-            )
+            self._check_statements(declaration.finally_body.statements, scope.child())
 
     def _check_switch(self, declaration: SwitchStatement, scope: TypeScope) -> None:
         self._infer(declaration.expression, scope)
@@ -819,9 +852,7 @@ class TypeChecker:
             parent_name = declaration.parent_name.split("<")[0].strip()
             parent = self._classes.get(parent_name)
             if parent is not None and "final" in parent.modifiers:
-                self._error(
-                    f"Cannot extend final class '{parent_name}'", declaration
-                )
+                self._error(f"Cannot extend final class '{parent_name}'", declaration)
         if "abstract" in declaration.modifiers:
             return
         for member in declaration.members:
@@ -856,7 +887,10 @@ class TypeChecker:
             if parent is None:
                 break
             for member in parent.members:
-                if isinstance(member, FunctionDeclaration) and "abstract" in member.modifiers:
+                if (
+                    isinstance(member, FunctionDeclaration)
+                    and "abstract" in member.modifiers
+                ):
                     methods[member.name] = member
                 elif isinstance(member, FunctionDeclaration) and member.name in methods:
                     del methods[member.name]
@@ -880,7 +914,9 @@ class TypeChecker:
                     expected_return = self._resolve_return_type(signature.return_type)
                     actual_return = self._resolve_return_type(member.return_type)
                     if expected_return is not None and actual_return is not None:
-                        if not is_compatible(actual_return, expected_return, relations=self):
+                        if not is_compatible(
+                            actual_return, expected_return, relations=self
+                        ):
                             return False
                     return True
             if current.parent_name is None:
@@ -943,7 +979,9 @@ class TypeChecker:
                                 ],
                             )
 
-    def _check_strict_typing(self, declarations: list[Any], source_name: str | None = None) -> None:
+    def _check_strict_typing(
+        self, declarations: list[Any], source_name: str | None = None
+    ) -> None:
         """Check that all types are explicitly specified when strict_typing is enabled.
 
         Traverses top-level declarations, class members, function bodies and all
@@ -952,7 +990,7 @@ class TypeChecker:
         """
         if not self._config or not self._config.enabled("strict_typing"):
             return
-        
+
         for declaration in declarations:
             self._check_strict_typing_declaration(declaration, source_name=source_name)
 
@@ -982,18 +1020,28 @@ class TypeChecker:
             if isinstance(statement, Block):
                 self._check_strict_typing_statements(statement.statements, source_name)
             elif isinstance(statement, IfStatement):
-                self._check_strict_typing_statements(statement.then_branch.statements, source_name)
+                self._check_strict_typing_statements(
+                    statement.then_branch.statements, source_name
+                )
                 else_branch = statement.else_branch
                 if isinstance(else_branch, Block):
-                    self._check_strict_typing_statements(else_branch.statements, source_name)
+                    self._check_strict_typing_statements(
+                        else_branch.statements, source_name
+                    )
                 elif else_branch is not None:
                     self._check_strict_typing_statement(else_branch, source_name)
             elif isinstance(statement, (WhileStatement, DoWhileStatement)):
-                self._check_strict_typing_statements(statement.body.statements, source_name)
+                self._check_strict_typing_statements(
+                    statement.body.statements, source_name
+                )
             elif isinstance(statement, ForStatement):
-                self._check_strict_typing_statements(statement.body.statements, source_name)
+                self._check_strict_typing_statements(
+                    statement.body.statements, source_name
+                )
             elif isinstance(statement, ClassicForStatement):
-                self._check_strict_typing_statements(statement.body.statements, source_name)
+                self._check_strict_typing_statements(
+                    statement.body.statements, source_name
+                )
             elif isinstance(statement, TryStatement):
                 for resource in statement.resources:
                     if resource.type_name is None:
@@ -1002,18 +1050,30 @@ class TypeChecker:
                             "explicit type (strict_typing enabled)",
                             statement,
                         )
-                self._check_strict_typing_statements(statement.body.statements, source_name)
+                self._check_strict_typing_statements(
+                    statement.body.statements, source_name
+                )
                 for _, _, catch_body in statement.catches:
-                    self._check_strict_typing_statements(catch_body.statements, source_name)
+                    self._check_strict_typing_statements(
+                        catch_body.statements, source_name
+                    )
                 if statement.finally_body is not None:
                     self._check_strict_typing_statements(
                         statement.finally_body.statements, source_name
                     )
             elif isinstance(statement, SwitchStatement):
                 for case in statement.cases:
-                    self._check_strict_typing_statements(case.body.statements, source_name)
+                    self._check_strict_typing_statements(
+                        case.body.statements, source_name
+                    )
             elif isinstance(
-                statement, (ExpressionStatement, Assignment, FunctionDeclaration, VariableDeclaration)
+                statement,
+                (
+                    ExpressionStatement,
+                    Assignment,
+                    FunctionDeclaration,
+                    VariableDeclaration,
+                ),
             ):
                 self._check_strict_typing_declaration(
                     statement, class_name=None, source_name=source_name, local=True
@@ -1025,9 +1085,7 @@ class TypeChecker:
                             f"Parameter '{param.name}' in arrow function must have "
                             "an explicit type (strict_typing enabled)",
                             statement,
-                            helps=[
-                                _parameter_type_help("Function", "", None)
-                            ],
+                            helps=[_parameter_type_help("Function", "", None)],
                         )
         finally:
             if previous_location is not None:
@@ -1051,7 +1109,7 @@ class TypeChecker:
         """
         if declaration is None:
             return
-        
+
         if isinstance(declaration, FunctionDeclaration):
             kind = callable_kind(declaration.name, class_name, is_interface)
             # Check return type.  Constructors return nothing, so the
@@ -1075,7 +1133,9 @@ class TypeChecker:
                         ],
                     )
             if declaration.body:
-                self._check_strict_typing_statements(declaration.body, source_name=source_name)
+                self._check_strict_typing_statements(
+                    declaration.body, source_name=source_name
+                )
         elif isinstance(declaration, VariableDeclaration):
             if declaration.type_name is None:
                 if local:
@@ -1120,11 +1180,13 @@ class TypeChecker:
                     spelling=declaration.type_name,
                 )
                 if not reported:
+                    gap = self._incompatibility_notes(actual, annotated)
                     self._error(
                         f"Cannot assign '{actual.display()}' to "
                         f"'{declaration.name}' of type '{annotated.display()}'",
                         declaration,
-                        notes=[
+                        notes=gap
+                        or [
                             f"expected `{annotated.display()}`, "
                             f"found `{actual.display()}`"
                         ],
@@ -1154,6 +1216,25 @@ class TypeChecker:
             if part.literal is not None
         ]
         return names or None
+
+    @staticmethod
+    def _object_entry_key_type(entry: ObjectEntry) -> XType:
+        """Key type of one object-literal entry.
+
+        ``200: value`` is an integer key (``1.5: value`` a float key) so it
+        checks against ``object<integer, ...>``; identifier/string keys keep
+        their string-literal type.
+        """
+        if entry.key is None:
+            return ANY
+        if entry.key_is_number:
+            try:
+                if "." in entry.key:
+                    return XType("float", literal=float(entry.key))
+                return XType("integer", literal=int(entry.key))
+            except ValueError:
+                pass
+        return XType("string", literal=entry.key)
 
     def _report_typed_object_literal(
         self,
@@ -1190,7 +1271,7 @@ class TypeChecker:
                 # Spread: the checker cannot see every key; stay permissive.
                 continue
             if not is_compatible(
-                XType("string", literal=entry.key), key_type, relations=self
+                self._object_entry_key_type(entry), key_type, relations=self
             ):
                 notes = [f"{subject} is typed `{spelling}`"]
                 if allowed is not None:
@@ -1234,9 +1315,7 @@ class TypeChecker:
         generics: list[str] | set[str] | None = None,
         keep_generics: bool = False,
     ) -> XType:
-        active = (
-            set(generics) if generics is not None else set(self._active_generics)
-        )
+        active = set(generics) if generics is not None else set(self._active_generics)
         resolved = self._resolve_named(parse_type(type_name), active, set())
         if active and not keep_generics:
             resolved = substitute(resolved, {name: ANY for name in active})
@@ -1420,7 +1499,7 @@ class TypeChecker:
             self._infer(expression.value, scope)
             return ANY
         if isinstance(expression, OptionalChain):
-            self._infer(expression.object, scope)
+            self._infer_qualified_object(expression.object, scope)
             for segment in expression.segments:
                 if not isinstance(segment.value, str):
                     self._infer(segment.value, scope)
@@ -1438,11 +1517,36 @@ class TypeChecker:
                 f"assigned",
                 expression,
             )
+        if (
+            self._root_scope is not None
+            and scope.lookup_owner(expression.name) is self._root_scope
+        ):
+            # A name this file never imported: it only reaches here because a
+            # module import flattened the whole module into the shared scope.
+            if self._report_not_imported(expression.name, expression):
+                return type_value
+            if expression is not self._deferred_type_value:
+                if (
+                    expression.name in self._interfaces
+                    and type_value.name == expression.name
+                ):
+                    self._error(
+                        f"Interface '{expression.name}' is a type, not a value",
+                        expression,
+                    )
+                    return ANY
+                if (
+                    expression.name in self._enums
+                    and type_value.name == expression.name
+                ):
+                    self._error(
+                        f"Enum '{expression.name}' is a type, not a value",
+                        expression,
+                    )
+                    return ANY
         return type_value
 
-    def _infer_array_literal(
-        self, expression: ArrayLiteral, scope: TypeScope
-    ) -> XType:
+    def _infer_array_literal(self, expression: ArrayLiteral, scope: TypeScope) -> XType:
         if not expression.items:
             return XType("any", is_array=True, is_any=True)
         element_types: list[XType] = []
@@ -1555,11 +1659,7 @@ class TypeChecker:
             target = expression.operand
             if isinstance(target, Identifier):
                 found = scope.lookup(target.name)
-                if (
-                    found is not None
-                    and found[1]
-                    and scope.is_constant(target.name)
-                ):
+                if found is not None and found[1] and scope.is_constant(target.name):
                     self._error(
                         f"Cannot reassign constant '{target.name}'",
                         expression,
@@ -1660,9 +1760,7 @@ class TypeChecker:
             return BOOLEAN
         return ANY
 
-    def _infer_assignment(
-        self, expression: Assignment, scope: TypeScope
-    ) -> XType:
+    def _infer_assignment(self, expression: Assignment, scope: TypeScope) -> XType:
         value_type = self._infer(expression.value, scope)
         target = expression.target
         if isinstance(target, Identifier):
@@ -1714,9 +1812,7 @@ class TypeChecker:
             self._infer(target.index, scope)
             if container.is_array:
                 element = _strip_array(container)
-                if not self._value_matches(
-                    expression.value, value_type, element
-                ):
+                if not self._value_matches(expression.value, value_type, element):
                     self._error(
                         f"Cannot assign '{value_type.display()}' to array element "
                         f"of type '{element.display()}'",
@@ -1753,9 +1849,7 @@ class TypeChecker:
         self._error(
             f"Cannot modify {noun} of constant '{root}'",
             node,
-            helps=[
-                f"declare '{root}' with `let` instead of `const` to allow mutation"
-            ],
+            helps=[f"declare '{root}' with `let` instead of `const` to allow mutation"],
         )
 
     def _check_member_write(
@@ -1800,28 +1894,41 @@ class TypeChecker:
                         )
                     return
 
+    def _infer_qualified_object(
+        self, object_expression: Any, scope: TypeScope
+    ) -> XType:
+        """Infer the object of ``x.y`` / ``x[..]`` / ``x?.y``.
+
+        Waives the "is a type, not a value" diagnostic for bare enum/
+        interface identifiers, since ``Gender.MALE`` is a value even though
+        ``Gender`` alone is only a type.
+        """
+        previous = self._deferred_type_value
+        if isinstance(object_expression, Identifier):
+            self._deferred_type_value = object_expression
+        try:
+            return self._infer(object_expression, scope)
+        finally:
+            self._deferred_type_value = previous
+
     def _infer_member(self, expression: Member, scope: TypeScope) -> XType:
-        object_type = self._infer(expression.object, scope)
+        object_type = self._infer_qualified_object(expression.object, scope)
         name = expression.name
         if object_type.name in self._classes or object_type.name in self._interfaces:
             found, owner = self._find_class_member(object_type.name, name)
             if found is not None and owner is not None:
-                self._check_visibility(found, owner, expression, kind=None, verb="access")
+                self._check_visibility(
+                    found, owner, expression, kind=None, verb="access"
+                )
                 if isinstance(found, VariableDeclaration):
                     return self._resolve_annotation(found.type_name)
                 if isinstance(found, FunctionDeclaration):
                     return FUNCTION
                 if isinstance(found, ClassDeclaration):
                     return parse_type(found.name)
-            if (
-                found is None
-                and owner is None
-                and object_type.name in self._classes
-            ):
+            if found is None and owner is None and object_type.name in self._classes:
                 helps: Sequence[str] = ()
-                suggestion = _closest_match(
-                    name, self._member_names(object_type.name)
-                )
+                suggestion = _closest_match(name, self._member_names(object_type.name))
                 if suggestion is not None:
                     helps = [f"did you mean `{suggestion}`?"]
                 self._error(
@@ -1837,8 +1944,7 @@ class TypeChecker:
             if name in {"name", "value"}:
                 return STRING if name == "name" else ANY
             if enum_declaration is not None and any(
-                member_name == name
-                for member_name, _ in enum_declaration.members
+                member_name == name for member_name, _ in enum_declaration.members
             ):
                 return parse_type(object_type.name)
             return ANY
@@ -1846,7 +1952,53 @@ class TypeChecker:
             for field_name, field_type in object_type.record_fields:
                 if field_name == name:
                     return field_type
-        return self._builtin_member(object_type, name)
+        fallback = self._builtin_member(object_type, name)
+        if (
+            isinstance(expression.object, Identifier)
+            and not object_type.is_any
+            and fallback.is_any
+            and self._report_alias_member(expression, scope)
+        ):
+            return ANY
+        return fallback
+
+    def _report_alias_member(self, expression: Member, scope: TypeScope) -> bool:
+        """Report member access through a type alias whose target has no such
+        member (`Participants.Gender`).
+
+        Returns False when the object isn't a (non-shadowed) type alias, so
+        ordinary unresolved members keep their old silent-ANY behaviour.
+        Accesses that DO resolve through the alias target (class statics,
+        enum members, record fields, string/array builtins) never get here.
+        """
+        alias_name = expression.object.name
+        alias_type = self._aliases.get(alias_name)
+        if alias_type is None or self._root_scope is None:
+            return False
+        if scope.lookup_owner(alias_name) is not self._root_scope:
+            return False
+        found = scope.lookup(alias_name)
+        if found is None or found[0] != alias_type:
+            return False
+        # When this file never imported the alias's module, import visibility
+        # already reported the real problem; don't pile on.
+        if self._visibility_gap(alias_name, expression.object) is not None:
+            return True
+        helps: Sequence[str] = ()
+        member_source = getattr(expression, "source_name", None)
+        declaring = self._visibility_gap(expression.name, expression)
+        if member_source is not None and declaring is not None:
+            helps = [
+                "add `import "
+                f"{self._import_suggestion(declaring, member_source)}."
+                f"{expression.name}`"
+            ]
+        self._error(
+            f"Type alias '{alias_name}' has no member '{expression.name}'",
+            expression,
+            helps=helps,
+        )
+        return True
 
     def _builtin_member(self, object_type: XType, name: str) -> XType:
         if name in {"length", "size"}:
@@ -1876,10 +2028,28 @@ class TypeChecker:
 
     def _infer_call(self, expression: Call, scope: TypeScope) -> XType:
         callee = expression.callee
-        self._infer(callee, scope)
-        argument_types = [
-            self._infer(argument, scope) for argument in expression.arguments
-        ]
+        previous_deferred = self._deferred_type_value
+        if isinstance(callee, Identifier):
+            # `IFoo()` — the interface-construct error below owns this line.
+            self._deferred_type_value = callee
+        try:
+            self._infer(callee, scope)
+        finally:
+            self._deferred_type_value = previous_deferred
+        # typeOf is introspection: passing a type name (typeOf(Bar),
+        # typeOf(Gender)) is the whole point, so waive the
+        # "is a type, not a value" check for its direct arguments.
+        introspection = isinstance(callee, Identifier) and callee.name == "typeOf"
+        argument_types = []
+        for argument in expression.arguments:
+            if introspection and isinstance(argument, Identifier):
+                self._deferred_type_value = argument
+                try:
+                    argument_types.append(self._infer(argument, scope))
+                finally:
+                    self._deferred_type_value = previous_deferred
+            else:
+                argument_types.append(self._infer(argument, scope))
         if isinstance(callee, Identifier):
             name = callee.name
             registered = self._functions.get(name)
@@ -1892,9 +2062,7 @@ class TypeChecker:
                     expression.type_arguments,
                 )
             if name in self._classes:
-                return self._check_constructor_call(
-                    name, expression, argument_types
-                )
+                return self._check_constructor_call(name, expression, argument_types)
             if name in self._interfaces:
                 self._error(f"Cannot construct interface '{name}'", expression)
                 return parse_type(name)
@@ -1917,7 +2085,7 @@ class TypeChecker:
                         )
                     return XType("any", is_array=True, is_any=True)
             if callee.name == "filter":
-                source = self._infer(callee.object, scope)
+                source = self._infer_qualified_object(callee.object, scope)
                 if source.is_array:
                     return source
             return self._method_return(callee, scope, expression.type_arguments)
@@ -1929,7 +2097,7 @@ class TypeChecker:
         scope: TypeScope,
         type_arguments: list[str],
     ) -> XType:
-        object_type = self._infer(callee.object, scope)
+        object_type = self._infer_qualified_object(callee.object, scope)
         name = callee.name
         if object_type.name in self._classes or object_type.name in self._interfaces:
             found, owner = self._find_class_member(object_type.name, name)
@@ -2029,7 +2197,7 @@ class TypeChecker:
         )
 
     def _infer_index(self, expression: Index, scope: TypeScope) -> XType:
-        container = self._infer(expression.object, scope)
+        container = self._infer_qualified_object(expression.object, scope)
         self._infer(expression.index, scope)
         if container.is_array:
             return _strip_array(container)
@@ -2079,7 +2247,9 @@ class TypeChecker:
         """Whether an annotation contains any string-literal member."""
         if type_value.literal is not None:
             return True
-        if any(TypeChecker._references_literal(part) for part in type_value.union_parts):
+        if any(
+            TypeChecker._references_literal(part) for part in type_value.union_parts
+        ):
             return True
         if any(TypeChecker._references_literal(arg) for arg in type_value.arguments):
             return True
@@ -2100,11 +2270,48 @@ class TypeChecker:
 
         When the target names string-literal members, a literal expression is
         compared by value (``"theme"`` only fits ``"theme"``); otherwise the
-        inferred type is used as before.
+        inferred type is used as before.  An object literal checks its own
+        entries so a numeric key (``200:``) can satisfy
+        ``object<integer, ...>`` while the inferred shape still has to hold.
         """
         literal = self._string_literal_type(expression)
         if literal is not None and self._references_literal(target):
             return is_compatible(literal, target, relations=self)
+        if (
+            isinstance(expression, ObjectLiteral)
+            and target.name == "object"
+            and len(target.arguments) == 2
+        ):
+            return self._object_literal_matches(expression, inferred, target)
+        return is_compatible(inferred, target, relations=self)
+
+    def _object_literal_matches(
+        self,
+        expression: ObjectLiteral,
+        inferred: XType,
+        target: XType,
+    ) -> bool:
+        """Per-entry check of a literal against ``object<K, V>``.
+
+        Key and value entries are checked individually (numeric keys against
+        ``integer``/``float``, string keys against their literal type), then
+        the inferred record type still has to be compatible so fields coming
+        from an opaque or wider spread keep their strictness.
+        """
+        key_type, value_type = target.arguments
+        value_types = dict(inferred.record_fields)
+        for entry in expression.entries:
+            if entry.key is None:
+                continue
+            if not is_compatible(
+                self._object_entry_key_type(entry), key_type, relations=self
+            ):
+                return False
+            value_actual = value_types.get(entry.key)
+            if value_actual is None:
+                continue
+            if not self._value_matches(entry.value, value_actual, value_type):
+                return False
         return is_compatible(inferred, target, relations=self)
 
     # ------------------------------------------------------------------
@@ -2201,6 +2408,7 @@ class TypeChecker:
                         f"Argument {index + 1} of '{name}' has type "
                         f"'{actual.display()}', expected '{expected.display()}'",
                         node,
+                        notes=self._incompatibility_notes(actual, expected),
                     )
         return ANY
 
@@ -2250,8 +2458,7 @@ class TypeChecker:
             if not parameter.is_rest
             and not parameter.has_default
             and not (
-                parameter.type_name is not None
-                and parameter.type_name.endswith("?")
+                parameter.type_name is not None and parameter.type_name.endswith("?")
             )
         )
         if has_rest:
@@ -2310,7 +2517,7 @@ class TypeChecker:
         return names
 
     def _find_enum(self, name: str) -> EnumDeclaration | None:
-        return None
+        return self._enums.get(name)
 
     def _check_visibility(
         self,
@@ -2338,11 +2545,7 @@ class TypeChecker:
         if allowed:
             return
         if kind is None:
-            kind = (
-                "method"
-                if isinstance(member, FunctionDeclaration)
-                else "field"
-            )
+            kind = "method" if isinstance(member, FunctionDeclaration) else "field"
         self._error(
             f"Cannot {verb} {visibility} {kind} '{owner_name}.{node.name}'",
             node,
@@ -2415,9 +2618,7 @@ class TypeChecker:
             current = base
         return False
 
-    def _satisfies_interface(
-        self, source: XType, interface: ClassDeclaration
-    ) -> bool:
+    def _satisfies_interface(self, source: XType, interface: ClassDeclaration) -> bool:
         if source.is_any:
             return True
         required = self._interface_members(interface)
@@ -2436,9 +2637,7 @@ class TypeChecker:
                     if member.name not in fields:
                         return False
                     expected = self._resolve_annotation(member.type_name)
-                    if not is_compatible(
-                        fields[member.name], expected, relations=self
-                    ):
+                    if not is_compatible(fields[member.name], expected, relations=self):
                         return False
             return True
         if source.name in self._classes:
@@ -2505,6 +2704,58 @@ class TypeChecker:
         if interface is None:
             return []
         return self._interface_members(interface)
+
+    def _incompatibility_notes(
+        self, inferred: XType, target: XType
+    ) -> list[str]:
+        """Explain why *inferred* failed *target*, naming the exact gaps.
+
+        Only a structural view can be explained: an object literal checked
+        against an interface or a record annotation lists the members it is
+        missing and the ones whose type does not match.  Opaque or nominal
+        mismatches return no notes and keep the caller's generic message.
+        """
+        if not inferred.record_fields or inferred.name == "object":
+            return []
+        fields = dict(inferred.record_fields)
+        notes: list[str] = []
+        if target.name in self._interfaces:
+            for member in self._interface_members(self._interfaces[target.name]):
+                if isinstance(member, FunctionDeclaration):
+                    found = fields.get(member.name)
+                    if found is None:
+                        notes.append(f"missing required method `{member.name}()`")
+                    elif not is_compatible(found, FUNCTION, relations=self):
+                        notes.append(
+                            f"member `{member.name}`: expected a function, "
+                            f"found `{found.display()}`"
+                        )
+                elif isinstance(member, VariableDeclaration):
+                    expected = self._resolve_annotation(member.type_name)
+                    found = fields.get(member.name)
+                    if found is None:
+                        notes.append(
+                            f"missing required member "
+                            f"`{member.name}: {expected.display()}`"
+                        )
+                    elif not is_compatible(found, expected, relations=self):
+                        notes.append(
+                            f"member `{member.name}`: expected "
+                            f"`{expected.display()}`, found `{found.display()}`"
+                        )
+        elif target.record_fields:
+            for field_name, field_type in target.record_fields:
+                found = fields.get(field_name)
+                if found is None:
+                    notes.append(
+                        f"missing field `{field_name}: {field_type.display()}`"
+                    )
+                elif not is_compatible(found, field_type, relations=self):
+                    notes.append(
+                        f"field `{field_name}`: expected "
+                        f"`{field_type.display()}`, found `{found.display()}`"
+                    )
+        return notes
 
     # ------------------------------------------------------------------
     # Declaration-level type-name validation
@@ -2599,7 +2850,7 @@ class TypeChecker:
             if len(candidate) >= 2 and candidate[0] == '"' and candidate[-1] == '"':
                 continue
             if candidate.startswith("record"):
-                remainder = candidate[len("record"):].lstrip()
+                remainder = candidate[len("record") :].lstrip()
                 if remainder.startswith("{"):
                     candidate = remainder
             if candidate.startswith("{") and candidate.endswith("}"):
@@ -2632,6 +2883,11 @@ class TypeChecker:
                 stack.append(current)
                 continue
             if candidate in known:
+                # The type registry is flat, so a sibling module's type is
+                # always "known" — visibility decides whether it may be used
+                # here without an import.
+                if "." not in candidate:
+                    self._report_not_imported(candidate, anchor, noun="Type")
                 continue
             if (
                 self._primitive_aliases_enabled()
@@ -2668,9 +2924,7 @@ class TypeChecker:
             return f"{parameter.type_name or 'any'} ...{parameter.name}"
         return f"{parameter.type_name or 'any'} {parameter.name}"
 
-    def _format_signature(
-        self, declaration: Any, kind: str = "Function"
-    ) -> str:
+    def _format_signature(self, declaration: Any, kind: str = "Function") -> str:
         """Render a copy-pasteable signature for a function-like node.
 
         ``kind`` follows :func:`callable_kind`: a top-level ``Function`` needs
@@ -2690,6 +2944,64 @@ class TypeChecker:
             return f"{keyword} {declaration.name}({parameters})"
         prefix = f"{declaration.return_type} " if declaration.return_type else ""
         return f"{prefix}{declaration.name}({parameters})"
+
+    def _import_suggestion(self, declaring_path: str, source_name: str) -> str:
+        """How the source file should spell an import of the module at
+        *declaring_path* (sibling-relative, matching loader resolution)."""
+        try:
+            relative = os.path.relpath(declaring_path, str(Path(source_name).parent))
+        except (OSError, ValueError):
+            relative = None
+        if relative is not None and not relative.startswith(".."):
+            return ".".join(Path(relative).with_suffix("").parts)
+        return Path(declaring_path).stem
+
+    def _visibility_gap(self, name: str, node: Any) -> str | None:
+        """Declaring module of *name* when node's file may not see *name*.
+
+        Returns the declaring file's path (for the import suggestion) or
+        ``None`` when the name is visible, not project-declared, or there is
+        no import information (hand-built programs keep the flat behaviour).
+        """
+        if not self._name_provenance or not self._module_visibility:
+            return None
+        if name in self._active_generics:
+            return None
+        if any(name in params for params in self._generic_params.values()):
+            return None
+        source = getattr(node, "source_name", None)
+        if source is None:
+            return None
+        visible = self._module_visibility.get(source)
+        if visible is None or name in visible:
+            return None
+        return self._name_provenance.get(name)
+
+    def _report_not_imported(self, name: str, node: Any, noun: str = "Name") -> bool:
+        # Language builtins can be shadowed by a project declaration
+        # (`let string string = "Maya"`); that must not turn every other
+        # file's use of the builtin into an import error.
+        if noun == "Name" and name in BUILTIN_SCOPE_NAMES:
+            return False
+        if noun == "Type" and (
+            name in BUILTIN_TYPE_NAMES or canonical_primitive_alias(name) is not None
+        ):
+            return False
+        declaring = self._visibility_gap(name, node)
+        if declaring is None:
+            return False
+        helps: Sequence[str] = ()
+        source = getattr(node, "source_name", None)
+        if source is not None:
+            helps = [
+                "add `import " f"{self._import_suggestion(declaring, source)}.{name}`"
+            ]
+        self._error(
+            f"{noun} '{name}' is not defined in this module",
+            node,
+            helps=helps,
+        )
+        return True
 
     def _error(
         self,
