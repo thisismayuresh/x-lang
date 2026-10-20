@@ -129,6 +129,10 @@ class Environment:
         self.array_types: dict[str, str] = {}
         self.object_types: dict[str, str] = {}
         self.value_types: dict[str, str] = {}
+        #: How print() should show this namespace ("enum Gender",
+        #: "namespace util"); None falls back to a {member: value} listing
+        #: so environments never render as Python <...object at 0x...> reprs.
+        self.display_label: str | None = None
 
     def define(
         self,

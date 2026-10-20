@@ -10,13 +10,35 @@ def code_tokens(source):
     return [(token.kind, token.value) for token in tokens if token.kind != "EOF"]
 
 
+def without_trailing_commas(tokens):
+    """Drop ``comma`` tokens that sit right before a ``}``.
+
+    Prettier-style object expansion adds a trailing comma, which is the
+    one token-stream change the formatter is allowed to make.
+    """
+    cleaned = list(tokens)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(cleaned) - 1):
+            if cleaned[i][0] == "," and cleaned[i + 1][0] == "}":
+                del cleaned[i]
+                changed = True
+                break
+    return cleaned
+
+
 class FormatterTests(unittest.TestCase):
     def assert_formats(self, source, expected):
         formatted = format_source(source, "<test>")
         self.assertEqual(formatted, expected)
-        # Formatting must be idempotent and must not change the token stream.
+        # Formatting must be idempotent and must not change the token
+        # stream (modulo Prettier-style trailing commas).
         self.assertEqual(format_source(formatted, "<test>"), expected)
-        self.assertEqual(code_tokens(source), code_tokens(formatted))
+        self.assertEqual(
+            without_trailing_commas(code_tokens(source)),
+            without_trailing_commas(code_tokens(formatted)),
+        )
 
     def test_normalises_spacing_and_indentation(self):
         self.assert_formats(
@@ -41,6 +63,106 @@ class FormatterTests(unittest.TestCase):
             "let o={a:1,b:2};\nlet e={};\n",
             "let o = { a: 1, b: 2 };\nlet e = {};\n",
         )
+
+    def test_long_object_literals_break_with_trailing_commas(self):
+        self.assert_formats(
+            "function main() {\n"
+            "let config = {alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, "
+            "zeta: 6, eta: 7, theta: 8};\n"
+            "}\n",
+            "function main() {\n"
+            "  let config = {\n"
+            "    alpha: 1,\n"
+            "    beta: 2,\n"
+            "    gamma: 3,\n"
+            "    delta: 4,\n"
+            "    epsilon: 5,\n"
+            "    zeta: 6,\n"
+            "    eta: 7,\n"
+            "    theta: 8,\n"
+            "  };\n"
+            "}\n",
+        )
+
+    def test_nested_short_object_stays_inline_when_outer_breaks(self):
+        self.assert_formats(
+            "function main() {\n"
+            'let o = {point: {x: 1, y: 2}, name: "somewhat long name to force '
+            'the outer object over eighty columns"};\n'
+            "}\n",
+            "function main() {\n"
+            "  let o = {\n"
+            '    point: { x: 1, y: 2 },\n'
+            '    name: "somewhat long name to force the outer object over eighty columns",\n'
+            "  };\n"
+            "}\n",
+        )
+
+    def test_object_inside_call_parens_breaks_with_joined_close(self):
+        self.assert_formats(
+            "function main() {\n"
+            "report({alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, "
+            "zeta: 6, eta: 7, theta: 8});\n"
+            "}\n",
+            "function main() {\n"
+            "  report({\n"
+            "    alpha: 1,\n"
+            "    beta: 2,\n"
+            "    gamma: 3,\n"
+            "    delta: 4,\n"
+            "    epsilon: 5,\n"
+            "    zeta: 6,\n"
+            "    eta: 7,\n"
+            "    theta: 8,\n"
+            "  });\n"
+            "}\n",
+        )
+
+    def test_object_with_line_comment_still_breaks(self):
+        self.assert_formats(
+            "function main() {\n"
+            "let b = {\n"
+            "// note\n"
+            "alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, zeta: 6, "
+            "eta: 7, theta: 8};\n"
+            "}\n",
+            "function main() {\n"
+            "  let b = {\n"
+            "    // note\n"
+            "    alpha: 1,\n"
+            "    beta: 2,\n"
+            "    gamma: 3,\n"
+            "    delta: 4,\n"
+            "    epsilon: 5,\n"
+            "    zeta: 6,\n"
+            "    eta: 7,\n"
+            "    theta: 8,\n"
+            "  };\n"
+            "}\n",
+        )
+
+    def test_match_arm_patterns_never_break(self):
+        # The pattern alone exceeds 80 columns; it must stay on one line.
+        pattern = (
+            "{alpha: a, beta: b, gamma: c, delta: d, epsilon: e, "
+            "zeta: f, eta: g, theta: h, iota: i}"
+        )
+        source = (
+            "function main() {\n"
+            "let value = {alpha: 1};\n"
+            f"match value {{ {pattern} => a, _ => 0 }}\n"
+            "}\n"
+        )
+        formatted = format_source(source, "<test>")
+        self.assertEqual(formatted, format_source(formatted, "<test>"))
+        arm_lines = [line for line in formatted.splitlines() if "=>" in line]
+        self.assertEqual(len(arm_lines), 2)
+        expected_pattern = (
+            "{ alpha: a, beta: b, gamma: c, delta: d, epsilon: e, "
+            "zeta: f, eta: g, theta: h, iota: i }"
+        )
+        self.assertIn(expected_pattern, arm_lines[0])
+        self.assertTrue(arm_lines[0].startswith("    "))
 
     def test_arrays_keep_inner_spacing(self):
         self.assert_formats("let a=[1,  2,3];\n", "let a = [1, 2, 3];\n")

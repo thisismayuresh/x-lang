@@ -5,8 +5,8 @@ color = "auto"
 [features]
 strict_typing = false
 # Allow capitalized/any-case spellings of built-in type names (String,
-# INTEGER, Object, ...). Off by default: lowercase is required.
-primitive_aliases = false
+# INTEGER, Object, ...). Off in the language default: lowercase is required.
+primitive_aliases = true
 
 [run]
 args = []

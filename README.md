@@ -58,7 +58,9 @@ x help
   (implemented by `xlang/formatter.py`): two-space indentation, normalized
   spacing around operators and commas, `if`/`else` and `try`/`catch` kept on
   one line, one statement per line, comments and string literals preserved
-  verbatim, and at most one blank line between statements. Formatting is
+  verbatim, and at most one blank line between statements. Object literals
+  that do not fit in 80 columns are broken one `key: value` field per line
+  with a trailing comma; match-arm patterns are never broken. Formatting is
   idempotent; a file that is already formatted is left untouched. Files with
   syntax errors are diagnosed instead of rewritten.
 - `-w`/`--watch` (also spelled `-watch`) runs the command once and re-runs it
@@ -362,6 +364,13 @@ error: Class 'Animal' does not implement 'getGender()' from interface 'Person'
 x: found 1 type error(s)
 ```
 
+When the target is an interface or a record annotation, the notes name
+exactly what does not line up instead of only showing the two types: each
+missing member is listed (``= note: missing required member `age: integer` ``,
+``= note: missing required method `greet()` ``) and each mismatched one
+(``member `name`: expected `string`, found `integer` ``). This applies to
+returns, variable initialisers, and call arguments alike.
+
 `x check` and `x run` report a type error identically, block for block, and
 one run can report several errors at once:
 `x check examples/test/test_multiple_errors.x` prints two independent
@@ -634,7 +643,10 @@ function main() {
 `export` marks a declaration as public. It may prefix the declaration —
 `export type`, `export const`, `export let`, `export function`, `export class`,
 `export enum` — or be a bulk list, `export { name, other as alias };`, which
-also exports variables. A file cannot re-export a name it only imported. The
+also exports variables. A file cannot re-export a name it only imported. A
+member import (`import tools.Greeting`) binds only the named declaration;
+the imported module's other declarations stay private to that module, and
+using one is a type error that suggests the missing import line. The
 [settings types example](./examples/settings_types/) declares types in one file,
 imports them into a second, and uses them from a third.
 
@@ -2652,9 +2664,12 @@ sliding windows, two pointers, binary search, stacks, recursion, matrix
 traversal, and string encoding. Each `.x` file can be run independently.
 
 `Object` currently operates on X object literals and dictionaries. Object
-literals support identifier/string keys, shorthand properties, and spread;
-computed keys, symbols, prototypes, getters/setters, and anonymous methods are
-not implemented. Destructuring supports nested array/object bindings, defaults
+literals support identifier/string keys plus integer and float keys
+(`{ 200: "a" }`, accessed as `m.200` or `m[200]` — integer and string keys
+are distinct: `m[200]` and `m["200"]` are different entries), shorthand
+properties, and spread; computed keys, symbols,
+prototypes, getters/setters, and anonymous methods are not implemented.
+Destructuring supports nested array/object bindings, defaults
 in declarations, rest bindings, and variable-target assignment. It does not yet
 support computed property targets or every JavaScript destructuring edge case.
 ASI is statement-boundary insertion, not a complete ECMAScript parser rule
@@ -2735,6 +2750,10 @@ remaining implementation goals and documented constraints:
   `null` is rejected for non-null types; inline `record{...}` annotations are
   checked structurally today
 - [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
+- Interfaces have no TypeScript-style index signatures — a TS-style
+  `[key: number]: IParticipant` member reports `Expected a name`; declare the
+  map as an alias over the builtin instead:
+  `type Participants = object<integer, IParticipant>`
 - [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
 - [ ] A broader standard library beyond the built-ins documented here
 
@@ -2758,101 +2777,40 @@ remaining implementation goals and documented constraints:
 - Recursive algorithms (flood fill, deep trees) can hit Python's default recursion limit on large inputs
 - The run-length codec example is intended for letter-only input, not a general-purpose escaping format
 
-### Known issue: `import B.greet` leaks the whole module scope
+### Fixed: `import B.greet` no longer exposes the whole module scope
 
-**Status:** known limitation, not yet fixed. Documented here rather than
-silently worked around so the shape of the bug and the options for fixing it
-are recorded.
-
-**Symptom.** A member import such as `import main_tests.greet("Maya")` (the
-feature shown in the import-function section above) is supposed to bind only
-`greet`. Instead the loader pulls in *every* top-level declaration of the
-imported module — interfaces, classes, enums, helpers — into the importing
-file's global scope. If the importing file happens to declare a name with the
-same identifier, loading fails with a confusing collision error that appears
-to be a duplicate declaration in your own file:
+**Status:** fixed. A member import (`import lib.greet`) now binds only the
+declaration it names. Sibling declarations of the imported module are no
+longer visible in the importing file; using one is a type error that suggests
+the exact import line to add:
 
 ```text
-$ x run examples/main.x
-error: 'Serializable' is already declared in this scope
-   --> main.x:297:1
-    |
-297 | interface Serializable {
-    | ^ 'Serializable' is already declared in this scope
+$ x check app.x
+error: Name 'Marker' is not defined in this module
+ --> app.x:3:1
+  |
+3 | interface Marker {
+  | ^ Name 'Marker' is not defined in this module
+  |
+  = help: add `import lib.Marker`
 ```
 
-**Reproduction.** `examples/main.x` (unmodified, present on `development`)
-hits it today:
+Whole-module (`import lib`), grouped (`import lib.{A, B as C}`), alias
+(`import lib.A as X`), and wildcard (`import lib.*`) imports behave as
+before: they expose exactly what they name. Enum and interface names imported
+by any form are types, not values — `print(Gender)` reports
+`Enum 'Gender' is a type, not a value`, while `typeOf(Gender)` and
+`Gender.MALE` are accepted. The runtime still shares one namespace across
+modules (helpers used by an imported function resolve through that shared
+scope), but the type checker gates what user-visible code can reference, so
+the old silent leak and its confusing `'X' is already declared` collisions
+are gone.
 
-- `main.x:4` — `import main_tests.greet("Maya")`
-- `main.x:297` — declares `interface Serializable { string serialize(); }`
-- `main_tests.x:236` — declares `interface Serializable { string serialize();
-  void deserialize(string data); }`
-
-Because the import flattens `main_tests`' scope into `main.x`, the two
-`Serializable` interfaces collide and `x run examples/main.x` aborts. Note
-`x check examples/main.x` reports `syntax is valid` / `types are valid` — the
-collision is raised by the **module loader** when declarations are merged at
-load time, not by the parser or the type checker. A minimal standalone
-repro (any name works, not just `Serializable`):
-
-```x
-// lib.x
-export string function greet(string name) { return "Hello, " + name; }
-interface Marker { void m(); }
-```
-
-```x
-// app.x
-import lib.greet
-interface Marker { void m(); }   // error: 'Marker' is already declared in this scope
-print(greet("Ada"));
-```
-
-**Root cause.** `xlang/module_loader.py`, the member-import branch of
-`_load_file` (around line 257): after loading the source module it does
-`combined_declarations.extend(imported_declarations)`, splicing the whole
-module's declarations into the importer. The collision check that runs just
-before (`_check_flatten_collision(import_name, ...)`) only guards the single
-name you asked for (`greet`), so every *other* leaked name bypasses it.
-
-**Why it is a spec conflict, not a typo.** The two authoritative documents
-disagree:
-
-- `README.md` (import-function section) says the import "behaves exactly
-  like `import B.greet`" — implying only `greet` binds.
-- The `module_loader.py` module docstring says declarations are "no longer
-  arbitrarily flattened ... flattening occurs only when necessary for
-  backward compatibility and never when it would create a collision between
-  different exported declarations. When a collision would occur from
-  flattening, an error is raised."
-
-So the loader is behaving as *its* design intends (flatten for backward
-compat, then raise on collision), while the README describes the *intended*
-member-import semantics. That contradiction is why this was documented rather
-than patched in place.
-
-**What we can do (options).**
-
-1. *Minimal unblock (no interpreter change).* Rename one of the colliding
-   declarations — e.g. give `examples/main.x`'s `Serializable` a distinct
-   name — so `main.x` runs. Cheapest and safest, but leaves the scope leak
-   for the next file to trip over.
-2. *Correct fix (interpreter change).* Make member imports bind only the
-   named declaration and stop flattening siblings. The catch: module-level
-   helpers referenced by the imported `greet` resolve today *because*
-   everything shares one flattened scope, so the real fix is per-module
-   scope isolation — which is exactly the separate open limitation
-   *"Independent module namespaces"* in the list above. This is
-   architectural: full test suite, WebAssembly playground wheel rebuild
-   (`x playground`), and doc updates are all required.
-3. *Status quo (chosen).* Leave the code as-is and document the issue here,
-   as recorded above.
-
-**Practical guidance until fixed.** Avoid declaring a top-level name in an
-importing file that also exists in any module you member-import; or import
-the module wholesale (`import main_tests`) and reference members through the
-namespace rather than splicing a single member's scope in.
+Historical note: this used to be an open limitation — the loader flattened
+every imported module's declarations into the importer, so `import
+main_tests.greet` also pulled in `main_tests`' interfaces, classes, and
+helpers, colliding with any same-named local declaration. The fix records
+per-module visibility in the loader and enforces it in the checker.
 
 The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
 behavior is narrower than that draft, this README describes what can currently

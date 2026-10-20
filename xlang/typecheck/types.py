@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -117,6 +118,18 @@ class TypeRelations(Protocol):
         ...
 
 
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NUMERIC_KEY_RE = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+
+
+def _record_field_label(name: str) -> str:
+    """Render a record field name the way source spells it."""
+    if _IDENTIFIER_RE.match(name) or _NUMERIC_KEY_RE.match(name):
+        return name
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 @dataclass(frozen=True)
 class XType:
     """A parsed X type annotation.
@@ -160,14 +173,17 @@ class XType:
             return text
         text = self.name
         if self.arguments:
-            inner = ",".join(argument.display() for argument in self.arguments)
+            inner = ", ".join(argument.display() for argument in self.arguments)
             text = f"{text}<{inner}>"
         if self.record_fields:
-            fields = ";".join(
-                f"{field_type.display()} {field_name}"
+            # Object-literal style so diagnostics read like the source:
+            # `{ 200: { name: string, age: integer } }` rather than the
+            # internal `record{...}` spelling.
+            fields = ", ".join(
+                f"{_record_field_label(field_name)}: {field_type.display()}"
                 for field_name, field_type in self.record_fields
             )
-            text = f"record{{{fields}}}"
+            text = f"{{ {fields} }}" if fields else "{}"
         if self.is_array:
             text += "[]" * self.dimensions
         if self.is_nullable:
@@ -335,6 +351,39 @@ def _strip_nullable(type_value: XType) -> XType:
     )
 
 
+def _numeric_field_literal(name: str) -> XType | None:
+    """Integer/float literal for a plain decimal record key like ``"200"``.
+
+    Object literals store numeric keys (``200:``) as record field names, so
+    the name is consulted as a number as well as a string when checking the
+    field against ``object<K, ...>``.  Anything else — identifiers, signs,
+    hex, non-ASCII digits — stays a plain string key.
+    """
+    if not name.isascii():
+        return None
+    if name.isdecimal():
+        return XType("integer", literal=int(name))
+    if "." in name and name.replace(".", "", 1).isdecimal():
+        return XType("float", literal=float(name))
+    return None
+
+
+def _record_field_key_fits(
+    field_name: str,
+    key_type: XType,
+    relations: TypeRelations | None,
+) -> bool:
+    """Whether one record field name satisfies an ``object<K, ...>`` key type."""
+    if is_compatible(
+        XType("string", literal=field_name), key_type, relations=relations
+    ):
+        return True
+    numeric = _numeric_field_literal(field_name)
+    if numeric is None:
+        return False
+    return is_compatible(numeric, key_type, relations=relations)
+
+
 def is_compatible(
     source: XType,
     target: XType,
@@ -401,9 +450,7 @@ def is_compatible(
         if source.record_fields and len(target.arguments) == 2:
             key_type, value_type = target.arguments
             return all(
-                is_compatible(
-                    XType("string", literal=field_name), key_type, relations=relations
-                )
+                _record_field_key_fits(field_name, key_type, relations)
                 and is_compatible(field_type, value_type, relations=relations)
                 for field_name, field_type in source.record_fields
             )
@@ -517,6 +564,14 @@ class TypeScope:
             return self.types[name], self.assigned.get(name, False)
         if self.parent is not None:
             return self.parent.lookup(name)
+        return None
+
+    def lookup_owner(self, name: str) -> "TypeScope | None":
+        """The scope that defines *name* (for shadow-safety checks), or None."""
+        if name in self.types:
+            return self
+        if self.parent is not None:
+            return self.parent.lookup_owner(name)
         return None
 
     def is_constant(self, name: str) -> bool:

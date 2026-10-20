@@ -60,7 +60,14 @@
         var codeSpans = [];
         var out = escapeHtml(text);
 
-        out = out.replace(/`([^`]+)`/g, function (_, code) {
+        /* Code spans close on an equal run of backticks (CommonMark), so a
+           help string like ``add `import lib.X` `` keeps its inner backticks. */
+        out = out.replace(/(?<!`)(`+)([\s\S]*?)(?<!`)\1(?!`)/g, function (_, _ticks, code) {
+            if (code.length > 2 && code.charAt(0) === " " &&
+                    code.charAt(code.length - 1) === " " &&
+                    !/^\s+$/.test(code)) {
+                code = code.slice(1, -1);
+            }
             codeSpans.push(code);
             return "\u0000" + (codeSpans.length - 1) + "\u0000";
         });

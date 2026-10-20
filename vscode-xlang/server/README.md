@@ -27,7 +27,8 @@ The server communicates via stdio (LSP standard).
 ## Features
 
 - Real-time diagnostics (type errors, parse errors)
-- Completion (Ctrl+Space)
+- Completion (Ctrl+Space), including auto-import of local module exports
+- Quick fixes for missing imports (`Add \`import …\``)
 - Hover (type information)
 - Go to Definition
 - Find References (placeholder)

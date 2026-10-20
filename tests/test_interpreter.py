@@ -275,7 +275,7 @@ class InterpreterTests(unittest.TestCase):
             """
         with self.assertRaisesRegex(
             RuntimeErrorX,
-            "Cannot assign 'record\\{integer name\\}' to 'user' of type 'Profile'",
+            "Cannot assign '\\{ name: integer \\}' to 'user' of type 'Profile'",
         ):
             self.run_x(profile_mismatch)
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Profile'"):
@@ -308,7 +308,7 @@ class InterpreterTests(unittest.TestCase):
             """
         with self.assertRaisesRegex(
             RuntimeErrorX,
-            "Cannot assign 'record\\{integer name\\}\\[\\]' to 'users' "
+            "Cannot assign '\\{ name: integer \\}\\[\\]' to 'users' "
             "of type 'Profile\\[\\]'",
         ):
             self.run_x(profile_array_mismatch)

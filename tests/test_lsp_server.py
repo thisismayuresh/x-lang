@@ -11,15 +11,26 @@ for path in (REPO_ROOT, SERVER_DIR):
         sys.path.insert(0, path)
 
 try:
-    from lsprotocol.types import CompletionItemKind, CompletionParams, Position
+    from lsprotocol.types import (
+        CodeActionKind,
+        CompletionItemKind,
+        CompletionParams,
+        Diagnostic,
+        DiagnosticSeverity,
+        Position,
+        Range,
+    )
 
     from server import (  # noqa: E402
         XLanguageServer,
+        _auto_import_items,
         _declared_symbols,
         _expression_completions,
         _find_declaration,
         _import_completions,
+        _import_edit,
         _module_matches,
+        code_actions,
     )
 
     AVAILABLE = True
@@ -424,6 +435,194 @@ class BuiltinCollectionCompletionTests(unittest.TestCase):
         self.assertIn("union", labels)
         self.assertIn("intersection", labels)
         self.assertNotIn("contains", labels)
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class ImportEditTests(unittest.TestCase):
+    """``_import_edit`` inserts after the last import, or at the top."""
+
+    def test_inserts_at_top_when_no_imports(self):
+        edit = _import_edit("let x = 1;\n", "utils.greet")
+        self.assertEqual(edit.new_text, "import utils.greet\n")
+        self.assertEqual(edit.range.start.line, 0)
+        self.assertEqual(edit.range.start.character, 0)
+        self.assertEqual(edit.range.end.line, 0)
+        self.assertEqual(edit.range.end.character, 0)
+
+    def test_inserts_after_the_last_import(self):
+        edit = _import_edit("import System.io.Console\n\nlet x = 1;\n", "utils.greet")
+        self.assertEqual(edit.new_text, "import utils.greet\n")
+        self.assertEqual(edit.range.start.line, 1)
+
+    def test_existing_import_returns_none(self):
+        self.assertIsNone(_import_edit("import utils.greet\n", "utils.greet"))
+
+    def test_import_mentioned_only_in_a_comment_still_inserts(self):
+        edit = _import_edit("// import utils.greet\nlet x = 1;\n", "utils.greet")
+        self.assertIsNotNone(edit)
+        self.assertEqual(edit.new_text, "import utils.greet\n")
+        self.assertEqual(edit.range.start.line, 0)
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class AutoImportCompletionTests(unittest.TestCase):
+    """Exported names of local modules complete with an auto-import edit."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        cls._tmp = tempfile.TemporaryDirectory(prefix="x-lsp-autoimport-")
+        cls.directory = cls._tmp.name
+        with open(os.path.join(cls.directory, "utils.x"), "w", encoding="utf-8") as fh:
+            fh.write(
+                'export string function greet(string name) {\n'
+                '  return "hi " + name;\n'
+                '}\n'
+                'export class Widget {\n'
+                '  string name;\n'
+                '}\n'
+            )
+        cls.server = XLanguageServer()
+        cls.uri = "file://" + os.path.join(cls.directory, "main.x")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def items(self, source, line, character, declared=None):
+        return _auto_import_items(
+            self.server, self.uri, source, line, character, declared or set()
+        )
+
+    def test_exported_name_is_offered_with_an_import_edit(self):
+        source = "function main() {\n  print(gre\n}\n"
+        items = self.items(source, 1, 10)
+        self.assertEqual([item.label for item in items], ["greet"])
+        item = items[0]
+        self.assertEqual(item.kind, CompletionItemKind.Reference)
+        self.assertEqual(item.detail, "import utils.greet")
+        self.assertEqual(item.sort_text, "0a_greet")
+        edits = item.additional_text_edits or []
+        self.assertEqual([edit.new_text for edit in edits], ["import utils.greet\n"])
+        self.assertEqual(edits[0].range.start.line, 0)
+
+    def test_already_declared_name_is_skipped(self):
+        source = "function main() {\n  print(gre\n}\n"
+        self.assertEqual(self.items(source, 1, 10, declared={"greet"}), [])
+
+    def test_typed_prefix_filters_candidates(self):
+        source = "function main() {\n  print(Wid\n}\n"
+        labels = [item.label for item in self.items(source, 1, 10)]
+        self.assertIn("Widget", labels)
+        self.assertNotIn("greet", labels)
+
+    def test_whole_module_import_skips_its_candidates(self):
+        source = "import utils\nfunction main() {\n  print(gre\n}\n"
+        self.assertEqual(self.items(source, 2, 10), [])
+
+    def test_no_word_at_cursor_returns_no_items(self):
+        self.assertEqual(self.items("let x = ;\n", 0, 8), [])
+
+    def test_completion_handler_includes_auto_import_items(self):
+        from lsprotocol.types import CompletionParams, TextDocumentIdentifier
+
+        from server import completions
+
+        source = "function main() {\n  print(gre\n}\n"
+        self.server.documents[self.uri] = source
+        result = completions(
+            self.server,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri=self.uri),
+                position=Position(line=1, character=10),
+            ),
+        )
+        labels = [item.label for item in result["items"]]
+        self.assertIn("greet", labels)
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class CodeActionTests(unittest.TestCase):
+    """Checker ``add `import …` `` helps become quick-fix code actions."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        cls._tmp = tempfile.TemporaryDirectory(prefix="x-lsp-codeaction-")
+        cls.directory = cls._tmp.name
+        with open(os.path.join(cls.directory, "utils.x"), "w", encoding="utf-8") as fh:
+            fh.write(
+                'export string function greet(string name) {\n'
+                '  return "hi " + name;\n'
+                '}\n'
+            )
+        cls.server = XLanguageServer()
+        cls.uri = "file://" + os.path.join(cls.directory, "main.x")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def actions_for(self, source, helps):
+        from lsprotocol.types import (
+            CodeActionContext,
+            CodeActionParams,
+            TextDocumentIdentifier,
+        )
+
+        self.server.documents[self.uri] = source
+        diagnostic = Diagnostic(
+            range=Range(
+                start=Position(line=1, character=8),
+                end=Position(line=1, character=13),
+            ),
+            severity=DiagnosticSeverity.Error,
+            message="Name 'greet' is not defined in this module",
+            data={"helps": helps} if helps else None,
+        )
+        params = CodeActionParams(
+            text_document=TextDocumentIdentifier(uri=self.uri),
+            range=diagnostic.range,
+            context=CodeActionContext(diagnostics=[diagnostic]),
+        )
+        return code_actions(self.server, params), diagnostic
+
+    def test_import_help_becomes_a_quick_fix(self):
+        actions, diagnostic = self.actions_for(
+            "function main() {\n  print(greet(\"x\"));\n}\n",
+            ["add `import utils.greet`"],
+        )
+        self.assertIsNotNone(actions)
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        self.assertEqual(action.title, "Add `import utils.greet`")
+        self.assertEqual(action.kind, CodeActionKind.QuickFix)
+        self.assertTrue(action.is_preferred)
+        self.assertEqual(action.diagnostics, [diagnostic])
+        edits = action.edit.changes[self.uri]
+        self.assertEqual([edit.new_text for edit in edits], ["import utils.greet\n"])
+        self.assertEqual(edits[0].range.start.line, 0)
+
+    def test_insertion_goes_after_existing_imports(self):
+        actions, _ = self.actions_for(
+            "import System.io.Console\nfunction main() {\n  print(greet(\"x\"));\n}\n",
+            ["add `import utils.greet`"],
+        )
+        edits = actions[0].edit.changes[self.uri]
+        self.assertEqual(edits[0].range.start.line, 1)
+
+    def test_diagnostics_without_helps_yield_no_actions(self):
+        actions, _ = self.actions_for("function main() {}\n", None)
+        self.assertIsNone(actions)
+
+    def test_import_already_present_yields_no_actions(self):
+        actions, _ = self.actions_for(
+            "import utils.greet\nfunction main() {\n  print(greet(\"x\"));\n}\n",
+            ["add `import utils.greet`"],
+        )
+        self.assertIsNone(actions)
 
 
 if __name__ == "__main__":
