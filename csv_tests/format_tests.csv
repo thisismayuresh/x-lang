@@ -4265,11 +4265,14 @@ function main() {
   return [""a"", ""b""];
 }
 class MyDecorator {
-  static var foo = { bar: { parametrizedDecorator: (name, cases) => (target) => {
-    print(""suite "" + name + "" with "" + cases.length + "" cases"");
-    return target;
-  }
-  } };
+  static var foo = {
+    bar: {
+      parametrizedDecorator: (name, cases) => (target) => {
+        print(""suite "" + name + "" with "" + cases.length + "" cases"");
+        return target;
+      },
+    },
+  };
 }
 @MyDecorator.foo.bar.parametrizedDecorator(""case"", load_test_cases())
 function demo() {
@@ -8343,9 +8346,15 @@ import System.utils.JSON.toJSON
 async function main() {
   // Headers pass straight through to the request — including User-Agent,
   // which beats the userAgent option and the library default.
-  let headers = { ""User-Agent"": ""X-Lang-Demo/1.0 (fetch_demo.x)"", ""Accept"": ""application/json"" };
+  let headers = {
+    ""User-Agent"": ""X-Lang-Demo/1.0 (fetch_demo.x)"",
+    ""Accept"": ""application/json"",
+  };
   try {
-    let response = await fetch(""https://dummyjson.com/posts"", { headers: headers, timeout: 15 });
+    let response = await fetch(""https://dummyjson.com/posts"", {
+      headers: headers,
+      timeout: 15,
+    });
 
     print(""status: "" + response.status + "" "" + response.statusText);
     print(""ok: "" + response.ok);
@@ -8360,7 +8369,12 @@ async function main() {
 
     // toJSON(value) is compact, toJSON(value, indent) pretty-prints —
     // same shapes as JavaScript's JSON.stringify.
-    let summary = { url: response.url, status: response.status, ok: response.ok, fetched: true };
+    let summary = {
+      url: response.url,
+      status: response.status,
+      ok: response.ok,
+      fetched: true,
+    };
     print(toJSON(summary));
   } catch (System.Throwable.Exception.IOException.HttpException error) {
     // Fully-qualified catch type, written inline: no cast, no wrapper.
@@ -10361,7 +10375,14 @@ any function addNote() {
 
   let notes = loadNotes()
   let id = generateId()
-  let note = { ""id"": id, ""title"": title, ""content"": content, ""tags"": tags, ""created"": now(), ""updated"": now() }
+  let note = {
+    ""id"": id,
+    ""title"": title,
+    ""content"": content,
+    ""tags"": tags,
+    ""created"": now(),
+    ""updated"": now(),
+  }
   notes.set(id, note)
   saveNotes(notes)
   Console.print(""Note added successfully! ID: "" + id)
@@ -12179,7 +12200,13 @@ string function myX(Function myfunc) {
 }
 
 any function main() {
-  let IMyInterface service = { getMessage: getMessage, getData: getData, primary: { name: ""primary"" }, records: [{ name: ""cached"" }], onComplete: onComplete };
+  let IMyInterface service = {
+    getMessage: getMessage,
+    getData: getData,
+    primary: { name: ""primary"" },
+    records: [{ name: ""cached"" }],
+    onComplete: onComplete,
+  };
   let function callback = service.onComplete;
 
   print(service.getMessage(""Maya""));
@@ -12272,7 +12299,11 @@ F0614,format,,reuse check,example type_of.x,"any function main() {
   print(typeOf(profile.age)); // number
   print(typeOf(null)); // object, matching JavaScript typeof
 
-  let object < string, string > user = { ""name"": ""Maya"", ""age"": ""21"", ""gender"": ""Rather not to say"" };
+  let object < string, string > user = {
+    ""name"": ""Maya"",
+    ""age"": ""21"",
+    ""gender"": ""Rather not to say"",
+  };
 
   print(typeOf(user)); // object
 }
