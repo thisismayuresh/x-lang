@@ -13,7 +13,7 @@ no dependencies.
 | --- | --- |
 | `index.html` | The fixed shell: top bar (**Docs** · **Changelog** · **Playground**; the active item is highlighted), sidebar, content area, table of contents, script tags. Never changes when content changes. The playground shell (`playground.html`) only links **Docs** in its top bar. |
 | `README.md` | The content source. This is a copy of the repository README, extended for the website. Editing this file is all a documentation writer does. |
-| `markdown.js` | Fetches the markdown, parses it to HTML, builds the sidebar navigation. |
+| `markdown.js` | Fetches the markdown, parses it to HTML (code spans follow CommonMark backtick-run rules), builds the sidebar navigation. |
 | `script.js` | Everything the page does after render: theme, mobile menu, table of contents, scroll spy, syntax highlighting, copy buttons. |
 | `styles.css` | All styling, light and dark themes, responsive layout. |
 | `about/` | Extra pages like this one (how-it-works, project-ideas, changelog), each a plain markdown file. |
@@ -56,7 +56,9 @@ and the page assembles itself:
 - Ordinary fenced blocks (`text`, `markdown`, ...) render as labelled code
   cards.
 - Tables, nested lists, blockquotes, `---` rules, and `**bold**` / `*em*` /
-  `` `code` `` / `[links](...)` inline.
+  `` `code` `` / `[links](...)` inline. A code span closes on an equal run of
+  backticks, so ``add `import X` `` keeps its inner backticks (and a literal
+  backtick pair like `` ```x file.x `` works too).
 - Links to `?page=about/...` switch to another page; links starting with
   `../` or `./` resolve one directory up from `docs-site/`, which is how
   repository paths like `../examples/hello.x` work.
