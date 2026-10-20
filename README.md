@@ -648,13 +648,39 @@ function main() {
 
 `export` marks a declaration as public. It may prefix the declaration —
 `export type`, `export const`, `export let`, `export function`, `export class`,
-`export enum` — or be a bulk list, `export { name, other as alias };`, which
-also exports variables. A file cannot re-export a name it only imported. A
-member import (`import tools.Greeting`) binds only the named declaration;
-the imported module's other declarations stay private to that module, and
-using one is a type error that suggests the missing import line. The
+`export enum`, `export namespace` — or be a bulk list,
+`export { name, other as alias };`, which also exports variables and names
+declared inside a top-level namespace. A file cannot re-export a name it only
+imported. A member import (`import tools.Greeting`) binds only the named
+declaration; the imported module's other declarations stay private to that
+module, and using one is a type error that suggests the missing import line. The
 [settings types example](./examples/settings_types/) declares types in one file,
 imports them into a second, and uses them from a third.
+
+Namespace chains work in member imports too: when the prefix before the last
+dot is not a file, the loader looks for the shortest existing prefix file and
+walks the remaining parts as exported namespaces inside it (see
+`examples/namespace_demo`):
+
+```x
+// util.x
+export namespace MyNamespace {
+    export string function greet(string who) {
+        return "hi, " + who;
+    }
+}
+
+export { greet };   // also valid: export members declared without `export`
+
+// main.x
+import util.MyNamespace.greet   // binds greet directly
+print(greet("Ada"));            // "hi, Ada"
+```
+
+Every namespace in the chain and the final member must be exported.
+`import util.MyNamespace` binds the namespace itself, and whole-module
+`import util` still exposes `util.MyNamespace.greet()` through the module
+object.
 
 Grouped imports are also supported:
 

@@ -68,6 +68,10 @@ class ImportNamespaceAlias:
 class NamespaceDeclaration:
     name: str
     declarations: list[Any]
+    # `export namespace N { ... }` marks the namespace itself as exported so
+    # `import module.N` (and namespace chains like `import module.N.fun`) can
+    # bind it, mirroring the export modifier on other declarations.
+    modifiers: set[str] = field(default_factory=set)
 
 
 @dataclass
