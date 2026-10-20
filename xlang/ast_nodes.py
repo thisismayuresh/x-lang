@@ -8,6 +8,14 @@ from typing import Any
 class Program:
     declarations: list[Any]
     modules: dict[str, list[Any]] = field(default_factory=dict)
+    # Import scoping, recorded by the module loader and enforced by the type
+    # checker: which bare names each source file may see (its own declarations
+    # plus what that file's imports actually bind), and which project module
+    # declares each name (used for "add `import ...`" suggestions).  ``None``
+    # means "no import information" — programs built by hand keep the old
+    # flat-scope behaviour.
+    module_visibility: dict[str, frozenset[str]] | None = None
+    name_provenance: dict[str, str] | None = None
 
 
 @dataclass
@@ -310,6 +318,9 @@ class ObjectEntry:
 
     ``key`` is ``None`` for a spread entry.  The span points at the key
     token so diagnostics can underline the offending key itself.
+    ``key_is_number`` marks a numeric field name (``200: value``) so the
+    typechecker can check it against integer/float key types and the runtime
+    can store a real numeric key instead of a string.
     """
 
     key: str | None
@@ -318,6 +329,7 @@ class ObjectEntry:
     column: int | None = None
     end_line: int | None = None
     end_column: int | None = None
+    key_is_number: bool = False
 
 
 @dataclass
