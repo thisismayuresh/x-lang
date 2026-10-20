@@ -129,6 +129,18 @@ class ModuleLoader:
         self._flattened_bindings: dict[str, Path] = {}  # name -> source module path
         self._emitted_declarations: set[int] = set()
         self._emitted_namespaces: set[tuple[str, str]] = set()
+        # Import scoping for the type checker.  ``_module_visibility`` maps a
+        # source file (as the parser spells it) to every bare name that file
+        # may reference: its own top-level declarations plus exactly what its
+        # imports bind.  ``_name_provenance`` maps a name to the dotted import
+        # path of the project module declaring it, so the checker can reject
+        # sibling leaks and suggest the right ``import`` line.  ``_combined_
+        # names`` remembers each loaded module's flattened declaration names
+        # for importers that load it a second time (``_load_file`` returns
+        # ``[]`` for files already loaded).
+        self._module_visibility: dict[str, frozenset[str]] = {}
+        self._name_provenance: dict[str, str] = {}
+        self._combined_names: dict[Path, set[str]] = {}
 
     def load_program(self, entry_file: Path) -> Program:
         declarations = self._load_file(entry_file)
@@ -139,7 +151,11 @@ class ModuleLoader:
                 continue
             self._emitted_declarations.add(identity)
             unique_declarations.append(declaration)
-        return Program(unique_declarations)
+        return Program(
+            unique_declarations,
+            module_visibility=dict(self._module_visibility),
+            name_provenance=dict(self._name_provenance),
+        )
 
     def _load_file(self, source_path: Path) -> list[Any]:
         resolved_path = source_path.resolve()
@@ -197,6 +213,16 @@ class ModuleLoader:
         self._warn_about_bare_main_reference(
             direct_declarations, str(resolved_path)
         )
+        module_spelling = str(resolved_path)
+        visible: set[str] = set()
+        for declaration in direct_declarations:
+            name = self._declaration_name(declaration)
+            if name is None:
+                continue
+            visible.add(name)
+            # value = declaring file, so the checker can suggest the right
+            # importer-relative `import ...` line.
+            self._name_provenance.setdefault(name, module_spelling)
         self.loading_files.add(resolved_path)
 
         combined_declarations: list[Any] = []
@@ -221,8 +247,15 @@ class ModuleLoader:
                         resolved_path,
                         direct_declarations,
                     )
+                    visible.update(
+                        self._combined_names.get(
+                            imported_resolved_path,
+                            self._names_of(imported_declarations),
+                        )
+                    )
                     combined_declarations.extend(imported_declarations)
                     if alias is not None:
+                        visible.add(alias)
                         combined_declarations.append(
                             ImportNamespaceAlias(exported_names, alias)
                         )
@@ -254,6 +287,12 @@ class ModuleLoader:
                             import_name, imported_resolved_path
                         )
                         self._record_flatten(import_name, imported_resolved_path)
+                        # Member imports bind only the named declaration:
+                        # `import util.Gender` lets you say `Gender`, not the
+                        # rest of util's scope.
+                        visible.add(import_name)
+                        if alias is not None:
+                            visible.add(alias)
                         combined_declarations.extend(imported_declarations)
                         if alias is not None:
                             combined_declarations.append(
@@ -264,6 +303,7 @@ class ModuleLoader:
                 if module_path in self.STANDARD_LIBRARY_MODULES:
                     self._require_standard_library_feature(module_path)
                     import_name = module_path.split(".")[-1]
+                    visible.add(alias or import_name)
                     combined_declarations.append(
                         ImportAlias(module_path, alias or import_name)
                     )
@@ -278,17 +318,25 @@ class ModuleLoader:
                 )
                 import_name = module_path.split(".")[-1]
                 exported_names = self._exported_names(imported_resolved_path)
+                visible.update(
+                    self._combined_names.get(
+                        imported_resolved_path,
+                        self._names_of(imported_declarations),
+                    )
+                )
                 if alias is not None:
                     if import_name in exported_names:
                         self._check_flatten_collision(
                             import_name, imported_resolved_path
                         )
                         self._record_flatten(import_name, imported_resolved_path)
+                        visible.add(alias)
                         combined_declarations.extend(imported_declarations)
                         combined_declarations.append(
                             ImportAlias(import_name, alias)
                         )
                     else:
+                        visible.add(alias)
                         combined_declarations.extend(imported_declarations)
                         combined_declarations.append(
                             NamespaceDeclaration(
@@ -312,10 +360,15 @@ class ModuleLoader:
                         imported_resolved_path,
                         exported_names,
                     )
+                    visible.add(import_name)
 
         combined_declarations.extend(direct_declarations)
         self.loading_files.remove(resolved_path)
         self.loaded_files.add(resolved_path)
+        self._module_visibility[str(resolved_path)] = frozenset(visible)
+        self._combined_names[resolved_path] = self._names_of(
+            combined_declarations
+        )
         return combined_declarations
 
     def _emit_namespace(
@@ -501,6 +554,14 @@ class ModuleLoader:
         ):
             return declaration.name
         return None
+
+    def _names_of(self, declarations: list[Any]) -> set[str]:
+        names: set[str] = set()
+        for declaration in declarations:
+            name = self._declaration_name(declaration)
+            if name is not None:
+                names.add(name)
+        return names
 
     def _module_name_from_path(self, module_path: Path) -> str:
         try:
