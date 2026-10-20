@@ -143,6 +143,69 @@ class TypeCheckCliTests(unittest.TestCase):
             "Return type 'integer' is not compatible with 'string'",
         )
 
+    def test_check_return_to_interface_notes_missing_members(self):
+        self.assertTypeError(
+            """
+            interface IThing {
+                string name,
+                integer age,
+            }
+            IThing function make() {
+                return { name: "a", other: 1 };
+            }
+            function main() {
+                print(make().name);
+            }
+            """,
+            "missing required member `age: integer`",
+        )
+
+    def test_check_return_to_interface_notes_mismatched_members(self):
+        self.assertTypeError(
+            """
+            interface IThing {
+                string name,
+            }
+            IThing function make() {
+                return { name: 5 };
+            }
+            function main() {
+                print(make().name);
+            }
+            """,
+            "member `name`: expected `string`, found `integer`",
+        )
+
+    def test_check_variable_to_interface_notes_missing_members(self):
+        self.assertTypeError(
+            """
+            interface IThing {
+                integer age,
+            }
+            function main() {
+                let IThing t = { name: "a" };
+                print(t);
+            }
+            """,
+            "missing required member `age: integer`",
+        )
+
+    def test_check_argument_to_interface_notes_missing_members(self):
+        self.assertTypeError(
+            """
+            interface IThing {
+                integer age,
+            }
+            function take(IThing t) {
+                print(t);
+            }
+            function main() {
+                take({ name: "a" });
+            }
+            """,
+            "missing required member `age: integer`",
+        )
+
     def test_check_rejects_definite_assignment_violation(self):
         self.assertTypeError(
             """
@@ -220,8 +283,8 @@ class TypeCheckCliTests(unittest.TestCase):
                 print(p);
             }
             """,
-            "Cannot assign 'record{integer x;string y}' to 'p' "
-            "of type 'record{integer x;integer y}'",
+            "Cannot assign '{ x: integer, y: string }' to 'p' "
+            "of type '{ x: integer, y: integer }'",
         )
 
     def test_check_accepts_matching_record(self):
