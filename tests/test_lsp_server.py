@@ -388,6 +388,93 @@ any function main() {
 
 
 @unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
+class ImportedTypeMemberCompletionTests(unittest.TestCase):
+    """`Receiver.` resolves enum/interface declarations across imports."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        cls._tmp = tempfile.TemporaryDirectory(prefix="x-lsp-typemembers-")
+        cls.directory = cls._tmp.name
+        with open(os.path.join(cls.directory, "util.x"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "export enum Gender {\n"
+                '  MALE = "Male",\n'
+                '  FEMALE = "Female",\n'
+                "}\n"
+                "export interface IThing {\n"
+                "  string name,\n"
+                "  integer count,\n"
+                "}\n"
+                "export type Thing = object<integer, IThing>\n"
+            )
+        cls.server = XLanguageServer()
+        cls.uri = "file://" + os.path.join(cls.directory, "main.x")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def members(self, source, line, character):
+        from server import _member_completions
+
+        return _member_completions(self.server, self.uri, source, line, character)
+
+    def test_imported_enum_offers_its_members(self):
+        source = "import util.Gender\nany function f() {\n    Gender.\n}\n"
+        self.assertEqual(_labels(self.members(source, 2, 12)), ["MALE", "FEMALE"])
+
+    def test_imported_enum_members_are_tagged(self):
+        source = "import util.Gender\nany function f() {\n    Gender.\n}\n"
+        details = {
+            item.label: item.detail for item in self.members(source, 2, 12) or []
+        }
+        self.assertEqual(details["MALE"], "Gender.MALE")
+        self.assertEqual(details["FEMALE"], "Gender.FEMALE")
+
+    def test_same_file_enum_offers_its_members(self):
+        source = (
+            "enum Color {\n"
+            '    RED = "red",\n'
+            '    GREEN = "green",\n'
+            "}\n"
+            "any function f() {\n"
+            "    Color.\n"
+            "}\n"
+        )
+        self.assertEqual(_labels(self.members(source, 5, 11)), ["RED", "GREEN"])
+
+    def test_interface_fields_behind_an_object_alias(self):
+        source = (
+            "import util.Thing\n"
+            "any function f() {\n"
+            "    let t: Thing = {};\n"
+            "    t.200.\n"
+            "}\n"
+        )
+        self.assertEqual(_labels(self.members(source, 3, 10)), ["name", "count"])
+
+    def test_imported_interface_is_reachable_without_a_chain(self):
+        source = "import util.IThing\nlet t: IThing = {};\nt.\n"
+        self.assertEqual(_labels(self.members(source, 2, 2)), ["name", "count"])
+
+    def test_object_literal_offers_its_keys_first(self):
+        source = (
+            "let object<string, any> obj = {\n"
+            '    "name": "Maya",\n'
+            "};\n"
+            "obj.\n"
+        )
+        labels = _labels(self.members(source, 3, 4))
+        self.assertEqual(labels[0], "name")
+        self.assertIn("keys", labels)
+
+    def test_non_member_text_returns_none(self):
+        self.assertIsNone(self.members("let x = 1;\n", 1, 0))
+
+
+@unittest.skipUnless(AVAILABLE, "pygls/lsprotocol is not installed")
 class BuiltinCollectionCompletionTests(unittest.TestCase):
     """`m.` after `new HashMap()` offers the collection's instance methods,
     including when the constructor is spelled as a full dotted path
