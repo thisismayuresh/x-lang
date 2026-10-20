@@ -47,11 +47,14 @@ trains, not published packages. The VS Code extension versions on its own
   a top-level namespace, and `import util.MyNamespace.fun` walks exported
   namespaces inside the shortest existing prefix file to bind the member
   flat — keeping its namespace closure, so sibling references still resolve.
-  Aliases (`import util.MyNamespace.greet as sayHi`), enums, and nested
-  chains work the same way; missing or unexported chain parts report the
-  same style of error as top-level member imports. See
+  Aliases (`import util.MyNamespace.greet as sayHi`), enums, nested chains,
+  and `import util.MyNamespace.*` (wildcard over the namespace's exports,
+  optionally aliased) work the same way; missing or unexported chain parts
+  report the same style of error as top-level member imports. See
   `examples/namespace_demo`. Also fixes a latent crash when a flatten
-  collision was reported for a module outside the project root.
+  collision was reported for a module outside the project root, and stops
+  repeated imports of the same namespace member from emitting duplicate
+  `const` bindings in TypeScript codegen.
 - **Enums and interfaces used as values are rejected**: `print(Gender)`
   reports `Enum 'Gender' is a type, not a value`; `IFoo(...)` reports only
   `Cannot construct interface`; `typeOf(Gender)` stays accepted.

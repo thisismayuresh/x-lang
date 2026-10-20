@@ -680,7 +680,9 @@ print(greet("Ada"));            // "hi, Ada"
 Every namespace in the chain and the final member must be exported.
 `import util.MyNamespace` binds the namespace itself, and whole-module
 `import util` still exposes `util.MyNamespace.greet()` through the module
-object.
+object. `import util.MyNamespace.*` wildcard-imports every exported member
+of the namespace (the alias form `import util.MyNamespace.* as N` collects
+them under `N` instead).
 
 Grouped imports are also supported:
 

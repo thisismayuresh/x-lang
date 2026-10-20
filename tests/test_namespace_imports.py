@@ -272,6 +272,110 @@ namespace Secret {
         self.assertIn("'MAX' does not name a namespace in module 'util'", errors)
 
 
+class NamespaceWildcardImportTests(unittest.TestCase):
+    def test_wildcard_binds_all_exported_members(self):
+        output = run_modules(
+            "import util.MyNamespace.*\n"
+            'print(greet("Ada"))\n'
+            "print(add(2, 3))\n"
+            "fun()\n",
+            {"util.x": UTIL_MODULE},
+        )
+        self.assertEqual(output, ["hi, Ada", "5", "{name: Maya}"])
+
+    def test_wildcard_skips_unexported_members(self):
+        util_module = """
+export namespace MyNamespace {
+    export string function greet(string who) {
+        return "hi, " + who;
+    }
+    function hidden() {
+        print("hidden")
+    }
+}
+"""
+        return_code, _, errors = run_modules_cli(
+            "import util.MyNamespace.*\n" "hidden()\n",
+            {"util.x": util_module},
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("Name 'hidden' is not defined", errors)
+
+    def test_wildcard_with_an_alias(self):
+        output = run_modules(
+            "import util.MyNamespace.* as N\n" 'print(N.greet("Bo"))\n',
+            {"util.x": UTIL_MODULE},
+        )
+        self.assertEqual(output, ["hi, Bo"])
+
+    def test_wildcard_over_a_nested_namespace_chain(self):
+        nested_util = """
+export namespace Outer {
+    export namespace Inner {
+        export string function tag() {
+            return "outer-inner"
+        }
+    }
+}
+"""
+        output = run_modules(
+            "import util.Outer.Inner.*\n" 'print(tag())\n',
+            {"util.x": nested_util},
+        )
+        self.assertEqual(output, ["outer-inner"])
+
+    def test_wildcard_and_member_import_of_the_same_module(self):
+        output = run_modules(
+            "import util.MyNamespace.*\n"
+            "import util.MyNamespace.greet as sayHi\n"
+            'print(greet("Ada"))\n'
+            'print(sayHi("Bo"))\n',
+            {"util.x": UTIL_MODULE},
+        )
+        self.assertEqual(output, ["hi, Ada", "hi, Bo"])
+
+    def test_wildcard_of_a_namespace_without_exports_is_rejected(self):
+        util_module = """
+export namespace MyNamespace {
+    string function greet(string who) {
+        return "hi, " + who;
+    }
+}
+"""
+        return_code, _, errors = run_modules_cli(
+            "import util.MyNamespace.*\n" 'print(greet("X"))\n',
+            {"util.x": util_module},
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn(
+            "Namespace 'util.MyNamespace' does not export any declarations",
+            errors,
+        )
+
+    def test_wildcard_chain_part_that_is_not_a_namespace_is_rejected(self):
+        return_code, _, errors = run_modules_cli(
+            "import util.MAX.*\n" "print(MAX)\n",
+            {"util.x": UTIL_MODULE},
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("'MAX' does not name a namespace in module 'util'", errors)
+
+    def test_wildcard_over_an_unexported_namespace_is_rejected(self):
+        util_module = """
+namespace Secret {
+    export string function peek() {
+        return "secret"
+    }
+}
+"""
+        return_code, _, errors = run_modules_cli(
+            "import util.Secret.*\n" "print(peek())\n",
+            {"util.x": util_module},
+        )
+        self.assertEqual(return_code, 1)
+        self.assertIn("'Secret' is not exported by module 'util'", errors)
+
+
 class NamespaceMemberImportCheckTests(unittest.TestCase):
     def test_check_accepts_namespace_member_imports(self):
         return_code, output, errors = check_modules_cli(
