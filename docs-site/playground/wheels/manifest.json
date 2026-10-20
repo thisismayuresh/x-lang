@@ -1,7 +1,7 @@
 {
   "wheel": "x_language-0.1.0-py3-none-any.whl",
-  "sourceFingerprint": "79ac62f55dc131fa",
+  "sourceFingerprint": "ff910e7877032e3a",
   "pyodideVersion": "314.0.7",
-  "builtAt": "2026-10-20T05:48:12Z",
+  "builtAt": "2026-10-20T06:46:13Z",
   "note": "Built by docs-site/playground/build.py. Re-run (or use --watch) after changing xlang/."
 }
