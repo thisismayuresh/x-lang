@@ -11,6 +11,7 @@ if os.path.isdir(os.path.join(_REPO_ROOT, "xlang")) and _REPO_ROOT not in sys.pa
 
 from lsprotocol.types import (
     INITIALIZE,
+    TEXT_DOCUMENT_CODE_ACTION,
     TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_CHANGE,
     TEXT_DOCUMENT_DID_CLOSE,
@@ -21,6 +22,9 @@ from lsprotocol.types import (
     TEXT_DOCUMENT_REFERENCES,
     WORKSPACE_DID_CHANGE_CONFIGURATION,
     WORKSPACE_DID_CHANGE_WATCHED_FILES,
+    CodeAction,
+    CodeActionKind,
+    CodeActionParams,
     CompletionItem,
     CompletionItemKind,
     CompletionOptions,
@@ -45,6 +49,7 @@ from lsprotocol.types import (
     ReferenceParams,
     TextDocumentSyncKind,
     TextEdit,
+    WorkspaceEdit,
 )
 
 from pygls.lsp.server import LanguageServer
@@ -140,11 +145,13 @@ class XLanguageServer(LanguageServer):
         token_value = getattr(token, "value", None) if token is not None else None
         length = cls._length(source, start.line, start.character, token_value)
         end = Position(line=start.line, character=start.character + length)
+        helps = [str(help_line) for help_line in getattr(error, "helps", ()) or ()]
         return Diagnostic(
             range=Range(start=start, end=end),
             severity=severity,
             message=getattr(error, "message", str(error)),
             source=source_name,
+            data={"helps": helps} if helps else None,
         )
 
     def _update_diagnostics(self, uri: str) -> None:
@@ -288,6 +295,8 @@ TYPES = ["int", "string", "float", "boolean", "void", "any", "null", "undefined"
 BUILTINS = ["print", "range", "typeOf", "delete", "sleep", "input", "parseInt", "parseFloat"]
 
 IMPORT_LINE_RE = re.compile(r"^\s*import\s+(.*)$")
+# Checker help lines look like: add `import util.Gender`
+IMPORT_HELP_RE = re.compile(r"add `import ([A-Za-z_][\w.]*)`")
 DOTTED_EXPRESSION_RE = re.compile(
     r"(?P<path>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\.$"
 )
@@ -548,6 +557,38 @@ def _import_completions(
     )
 
 
+def _import_insert_line(lines: list[str]) -> int:
+    """0-based line index where a new ``import`` should be inserted.
+
+    New imports go after the last existing ``import`` line, or at the top
+    of the file when there are none.
+    """
+    insert_at = 0
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*import\s", line):
+            insert_at = index + 1
+    return insert_at
+
+
+def _import_edit(source: str, import_path: str) -> TextEdit | None:
+    """A ``TextEdit`` inserting ``import import_path`` or ``None`` if present.
+
+    ``source`` is the live buffer; comments and strings are blanked first so
+    an ``import`` mentioned in prose does not count as an existing import.
+    """
+    statement = f"import {import_path}"
+    lines = code_lines(source)
+    for line in lines:
+        if line.strip() in (statement, statement + ";"):
+            return None
+    insert_at = _import_insert_line(lines)
+    position = Position(line=insert_at, character=0)
+    return TextEdit(
+        range=Range(start=position, end=position),
+        new_text=statement + "\n",
+    )
+
+
 def _expression_completions(
     ls: XLanguageServer, uri: str, source: str, line: int, character: int
 ) -> list[CompletionItem] | None:
@@ -768,6 +809,86 @@ def _declared_symbols(source: str) -> list[CompletionItem]:
     return items
 
 
+def _auto_import_items(
+    ls: XLanguageServer,
+    uri: str,
+    source: str,
+    line: int,
+    character: int,
+    declared: set[str],
+) -> list[CompletionItem]:
+    """Completions for exported names of local modules, with auto-import.
+
+    Typing a name that another ``.x`` file exports offers it with an
+    ``additionalTextEdit`` that inserts the matching ``import`` line — so
+    ``gre<Ctrl+Space>`` can complete to ``greet`` and add
+    ``import utils.greet`` in one accept.  Names already declared or
+    imported in this buffer are skipped, as are modules the file already
+    imports whole (``import utils``) or with a wildcard.
+    """
+    lines = code_lines(source)
+    if line >= len(lines):
+        return []
+    word_match = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", lines[line][:character])
+    if word_match is None:
+        return []
+    typed_word = word_match.group(0)
+    if typed_word in declared:
+        return []
+
+    try:
+        fs_path = to_fs_path(uri)
+    except Exception:
+        fs_path = ""
+    directory = os.path.dirname(fs_path) if fs_path else ""
+    features: dict = {}
+    try:
+        features = dict(ls.project_config(uri).features)
+    except Exception:
+        features = {}
+
+    already: set[str] = set()
+    for raw in lines:
+        match = re.match(r"^\s*import\s+([A-Za-z_][\w.]*)(?:\.\*)?", raw)
+        if match:
+            already.add(match.group(1))
+
+    insert_at = _import_insert_line(lines)
+    position = Position(line=insert_at, character=0)
+    items: list[CompletionItem] = []
+    seen: set[str] = set()
+    for module_path, full_path, _display in _local_modules(ls, uri, directory, fs_path):
+        if any(
+            module_path == imported or module_path.startswith(imported + ".")
+            for imported in already
+        ):
+            continue
+        for name in _exported_names(full_path, features):
+            if (
+                name in declared
+                or name in seen
+                or not name.startswith(typed_word)
+            ):
+                continue
+            statement = f"import {module_path}.{name}"
+            seen.add(name)
+            items.append(
+                CompletionItem(
+                    label=name,
+                    kind=CompletionItemKind.Reference,
+                    detail=statement,
+                    sort_text="0a_" + name,
+                    additional_text_edits=[
+                        TextEdit(
+                            range=Range(start=position, end=position),
+                            new_text=statement + "\n",
+                        )
+                    ],
+                )
+            )
+    return items
+
+
 def _split_top_level(text: str) -> list[str]:
     """Split *text* on commas that sit outside ``<...>`` nesting."""
     parts: list[str] = []
@@ -869,6 +990,9 @@ def completions(ls: XLanguageServer, params: CompletionParams):
         for f in BUILTINS
         if f not in declared
     ]
+    items += _auto_import_items(
+        ls, uri, source, params.position.line, params.position.character, declared
+    )
 
     for match in re.finditer(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)", source):
         if match.group(1) not in declared:
@@ -887,6 +1011,42 @@ def completions(ls: XLanguageServer, params: CompletionParams):
 
     _add_class_members(source, items)
     return {"items": items, "isIncomplete": False}
+
+
+@server.feature(TEXT_DOCUMENT_CODE_ACTION)
+def code_actions(ls: XLanguageServer, params: CodeActionParams):
+    """Quick fixes for diagnostics that carry an ``add `import …` `` help.
+
+    The checker attaches its import suggestions to ``Diagnostic.data``; this
+    handler turns each one into an ``Add `import …` `` action that inserts
+    the statement after the file's last import (or at the top).
+    """
+    uri = str(params.text_document.uri)
+    source = ls._source(uri)
+    actions: list[CodeAction] = []
+    for diagnostic in params.context.diagnostics or ():
+        data = getattr(diagnostic, "data", None)
+        helps = data.get("helps") if isinstance(data, dict) else None
+        if not helps:
+            continue
+        for help_line in helps:
+            match = IMPORT_HELP_RE.search(str(help_line))
+            if match is None:
+                continue
+            import_path = match.group(1)
+            edit = _import_edit(source, import_path)
+            if edit is None:
+                continue
+            actions.append(
+                CodeAction(
+                    title=f"Add `import {import_path}`",
+                    kind=CodeActionKind.QuickFix,
+                    diagnostics=[diagnostic],
+                    edit=WorkspaceEdit(changes={uri: [edit]}),
+                    is_preferred=True,
+                )
+            )
+    return actions or None
 
 
 _FIELD_DECL_RE = re.compile(
