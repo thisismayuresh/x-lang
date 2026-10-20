@@ -235,6 +235,23 @@ class ModuleLoader:
                     imported_path = self._path_for_module(
                         module_path, resolved_path
                     )
+                    # `import util.MyNamespace.*`: wildcard over a namespace
+                    # chain, not a file path. Guarded to user modules so
+                    # `System.*` stdlib file paths keep their resolution.
+                    if (
+                        not imported_path.is_file()
+                        and module_path not in self.STANDARD_LIBRARY_MODULES
+                        and not module_path.startswith("System.")
+                        and self._import_namespace_wildcard(
+                            module_path,
+                            resolved_path,
+                            direct_declarations,
+                            alias,
+                            visible,
+                            combined_declarations,
+                        )
+                    ):
+                        continue
                     imported_declarations = self._load_file(imported_path)
                     imported_resolved_path = imported_path.resolve()
                     exported_names = self._exported_names(imported_resolved_path)
@@ -299,6 +316,24 @@ class ModuleLoader:
                                 ImportAlias(import_name, alias)
                             )
                         continue
+
+                # `import util.MyNamespace.fun`: a namespace chain inside the
+                # shortest existing prefix module file, not a plain file path
+                # (`util/MyNamespace/fun.x`). Guarded to user modules so
+                # `System.*` stdlib file paths keep their resolution.
+                if (
+                    module_path not in self.STANDARD_LIBRARY_MODULES
+                    and not module_path.startswith("System.")
+                    and self._import_namespace_path(
+                        module_path,
+                        resolved_path,
+                        direct_declarations,
+                        alias,
+                        visible,
+                        combined_declarations,
+                    )
+                ):
+                    continue
 
                 if module_path in self.STANDARD_LIBRARY_MODULES:
                     self._require_standard_library_feature(module_path)
@@ -388,6 +423,174 @@ class ModuleLoader:
                 self._namespace_members(source_module, exported_names),
             )
         )
+
+    def _namespace_prefix_file(
+        self, module_path: str, importer_path: Path
+    ) -> tuple[Path | None, list[str]]:
+        """Shortest existing prefix module file for a dotted import.
+
+        Returns ``(source_path, remaining_parts)`` where ``remaining_parts``
+        are the dots still to resolve inside that file, or ``(None, [])``
+        when no prefix file exists.
+        """
+        parts = module_path.split(".")
+        for cut in range(len(parts) - 1, 0, -1):
+            candidate = self._path_for_module(".".join(parts[:cut]), importer_path)
+            if candidate.is_file():
+                return candidate, parts[cut:]
+        return None, []
+
+    def _append_flat_alias(
+        self, combined_declarations: list[Any], source: str, name: str
+    ) -> None:
+        """Bind ``name`` from the dotted ``source`` unless already flat-bound.
+
+        Equivalent ``ImportAlias`` nodes from repeated imports of the same
+        member would emit duplicate ``const`` bindings in TypeScript
+        codegen, so a second binding of the same name is skipped.
+        """
+        for item in combined_declarations:
+            if isinstance(item, ImportAlias) and item.alias_name == name:
+                return
+        combined_declarations.append(ImportAlias(source, name))
+
+    def _namespace_in_chain(
+        self, current: list[Any], part: str, source_module: str
+    ) -> NamespaceDeclaration:
+        """Find exported namespace *part* among *current* declarations."""
+        namespace = next(
+            (
+                item
+                for item in current
+                if isinstance(item, NamespaceDeclaration) and item.name == part
+            ),
+            None,
+        )
+        if namespace is None:
+            raise RuntimeErrorX(
+                f"'{part}' does not name a namespace in module '{source_module}'"
+            )
+        if "export" not in getattr(namespace, "modifiers", set()):
+            raise RuntimeErrorX(
+                f"'{part}' is not exported by module '{source_module}'"
+            )
+        return namespace
+
+    def _import_namespace_path(
+        self,
+        module_path: str,
+        importer_path: Path,
+        direct_declarations: list[Any],
+        alias: str | None,
+        visible: set[str],
+        combined_declarations: list[Any],
+    ) -> bool:
+        """Bind `import util.MyNamespace.fun`: a namespace chain inside the
+        shortest existing prefix module file.
+
+        Returns False when no prefix file exists (the caller falls back to
+        plain file-path imports). Raises RuntimeErrorX when a file was found
+        but the namespace chain or the member is missing or not exported.
+        """
+        parts = module_path.split(".")
+        source_path, remaining = self._namespace_prefix_file(
+            module_path, importer_path
+        )
+        if source_path is None or not remaining:
+            return False
+        source_module = ".".join(parts[: len(parts) - len(remaining)])
+        declarations = self._load_file(source_path)
+        # `_load_file` returns [] for already-loaded files; the declarations
+        # themselves live in the persistent cache (same as `_is_exported`).
+        current = self.direct_declarations.get(source_path.resolve(), declarations)
+        for part in remaining[:-1]:
+            current = self._namespace_in_chain(current, part, source_module).declarations
+        import_name = remaining[-1]
+        member = next(
+            (item for item in current if self._declaration_name(item) == import_name),
+            None,
+        )
+        if member is None or "export" not in getattr(member, "modifiers", set()):
+            raise RuntimeErrorX(
+                f"'{import_name}' is not exported by module '{source_module}'"
+            )
+        imported_resolved_path = source_path.resolve()
+        self._warn_duplicate_main(
+            imported_resolved_path, importer_path, direct_declarations
+        )
+        self._check_flatten_collision(import_name, imported_resolved_path)
+        self._record_flatten(import_name, imported_resolved_path)
+        visible.add(import_name)
+        if alias is not None:
+            visible.add(alias)
+        combined_declarations.extend(declarations)
+        if len(remaining) > 1:
+            # The member lives inside a namespace: bind the ORIGINAL value via
+            # ImportAlias. Re-declaring it flat would rebind with a globals
+            # closure and break sibling references like `print(obj)`.
+            self._append_flat_alias(
+                combined_declarations, ".".join(remaining), import_name
+            )
+        if alias is not None:
+            combined_declarations.append(ImportAlias(import_name, alias))
+        return True
+
+    def _import_namespace_wildcard(
+        self,
+        module_path: str,
+        importer_path: Path,
+        direct_declarations: list[Any],
+        alias: str | None,
+        visible: set[str],
+        combined_declarations: list[Any],
+    ) -> bool:
+        """Bind `import util.MyNamespace.*`: every exported member of the
+        namespace chain inside the shortest existing prefix module file.
+
+        Returns False when no prefix file exists (the caller falls back to
+        plain file-path wildcard imports).
+        """
+        parts = module_path.split(".")
+        source_path, remaining = self._namespace_prefix_file(
+            module_path, importer_path
+        )
+        if source_path is None or not remaining:
+            return False
+        source_module = ".".join(parts[: len(parts) - len(remaining)])
+        declarations = self._load_file(source_path)
+        current = self.direct_declarations.get(source_path.resolve(), declarations)
+        for part in remaining[:-1]:
+            current = self._namespace_in_chain(current, part, source_module).declarations
+        namespace = self._namespace_in_chain(current, remaining[-1], source_module)
+        exported_members = [
+            (name, member)
+            for member in namespace.declarations
+            if (name := self._declaration_name(member)) is not None
+            and "export" in getattr(member, "modifiers", set())
+        ]
+        if not exported_members:
+            raise RuntimeErrorX(
+                f"Namespace '{module_path}' does not export any declarations"
+            )
+        imported_resolved_path = source_path.resolve()
+        self._warn_duplicate_main(
+            imported_resolved_path, importer_path, direct_declarations
+        )
+        # Bind the namespace itself so the flat aliases below resolve through
+        # it even when nothing else has imported the module.
+        combined_declarations.append(namespace)
+        target = remaining[-1]
+        for name, _member in exported_members:
+            self._check_flatten_collision(name, imported_resolved_path)
+            self._record_flatten(name, imported_resolved_path)
+            visible.add(name)
+            self._append_flat_alias(combined_declarations, f"{target}.{name}", name)
+        if alias is not None:
+            visible.add(alias)
+            combined_declarations.append(
+                ImportNamespaceAlias([name for name, _ in exported_members], alias)
+            )
+        return True
 
     def _namespace_members(
         self, source_module: Path, exported_names: list[str]
@@ -548,6 +751,7 @@ class ModuleLoader:
                 ClassDeclaration,
                 EnumDeclaration,
                 FunctionDeclaration,
+                NamespaceDeclaration,
                 TypeDeclaration,
                 VariableDeclaration,
             ),
@@ -564,12 +768,14 @@ class ModuleLoader:
         return names
 
     def _module_name_from_path(self, module_path: Path) -> str:
+        resolved = module_path.resolve()
         try:
-            relative = module_path.resolve().relative_to(self.project_root)
+            relative = resolved.relative_to(self.project_root)
         except ValueError:
-            relative = module_path.resolve().name
-        name = relative.with_suffix('').name
-        return name
+            # Outside the project root (e.g. an absolute import in a temp
+            # dir): fall back to the file name itself.
+            relative = resolved
+        return relative.with_suffix("").name
 
     def _check_flatten_collision(self, name: str, source_module: Path) -> None:
         if name in self._flattened_bindings:

@@ -264,38 +264,37 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             and declaration.statement is not None
             for declaration in declarations
         )
+        # Bind in dependency order: namespaces first (dotted names and
+        # ImportAlias sources walk through namespace objects), then
+        # functions, enums, and classes in declaration order — except
+        # classes whose parent root is not bound yet, which wait until the
+        # ImportAlias bindings below have run (so `class X extends Square`
+        # finds a namespace-chain alias parent) — then ImportAlias
+        # bindings, the deferred classes, and ImportNamespaceAlias objects
+        # (wildcard aliases read flat names, including classes, out of
+        # globals).
+        for declaration in declarations:
+            if isinstance(declaration, NamespaceDeclaration):
+                self._define_namespace(declaration, self.globals)
+        deferred_classes: list[ClassDeclaration] = []
         for declaration in declarations:
             if isinstance(declaration, FunctionDeclaration):
                 self._define_function(declaration, self.globals)
-            elif isinstance(declaration, ClassDeclaration):
-                self._define_class(declaration, self.globals)
             elif isinstance(declaration, EnumDeclaration):
                 self._define_enum(declaration, self.globals)
-            elif isinstance(declaration, NamespaceDeclaration):
-                self._define_namespace(declaration, self.globals)
-
+            elif isinstance(declaration, ClassDeclaration):
+                if self._defer_class_definition(declaration):
+                    deferred_classes.append(declaration)
+                else:
+                    self._define_class(declaration, self.globals)
         for declaration in declarations:
             if isinstance(declaration, ImportAlias):
                 imported_value = self._resolve_import(declaration.source_name)
-                alias = declaration.alias_name
-                # If the name already exists in globals (e.g. a builtin collection
-                # short-name) allow the import to silently re-bind it.  One
-                # exception: importing an exception namespace
-                # (System.Throwable.Exception.IOException) over its own builtin
-                # constructor keeps the constructor, so `throw IOException(...)`
-                # still works after the import — the namespace stays reachable
-                # through the full System... path, or via an alias.
-                if alias in self.globals.values:
-                    existing_value = self.globals.values[alias]
-                    if isinstance(existing_value, (BuiltinFunction, XClass)) and (
-                        isinstance(imported_value, (Environment, dict))
-                    ):
-                        pass
-                    else:
-                        self.globals.values[alias] = imported_value
-                else:
-                    self.globals.define(alias, imported_value)
-            elif isinstance(declaration, ImportNamespaceAlias):
+                self._bind_import_alias(declaration, imported_value)
+        for declaration in deferred_classes:
+            self._define_class(declaration, self.globals)
+        for declaration in declarations:
+            if isinstance(declaration, ImportNamespaceAlias):
                 exported_values = {}
                 for name in declaration.exported_names:
                     value = self.globals.get(name)
@@ -305,7 +304,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                         value = OverloadedFunction(name, value)
                     exported_values[name] = value
                 self.globals.define(declaration.alias_name, exported_values)
-            elif isinstance(declaration, VariableDeclaration):
+
+        for declaration in declarations:
+            if isinstance(declaration, VariableDeclaration):
                 self._execute(declaration, self.globals)
             elif isinstance(declaration, TypeDeclaration):
                 continue
@@ -316,6 +317,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     ClassDeclaration,
                     EnumDeclaration,
                     NamespaceDeclaration,
+                    ImportAlias,
+                    ImportNamespaceAlias,
                 ),
             ):
                 continue
@@ -370,6 +373,38 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         for part in parts[1:]:
             value = self._get_member(value, part)
         return value
+
+    def _bind_import_alias(self, declaration: ImportAlias, imported_value: Any) -> None:
+        alias = declaration.alias_name
+        # If the name already exists in globals (e.g. a builtin collection
+        # short-name) allow the import to silently re-bind it.  One
+        # exception: importing an exception namespace
+        # (System.Throwable.Exception.IOException) over its own builtin
+        # constructor keeps the constructor, so `throw IOException(...)`
+        # still works after the import — the namespace stays reachable
+        # through the full System... path, or via an alias.
+        if alias in self.globals.values:
+            existing_value = self.globals.values[alias]
+            if isinstance(existing_value, (BuiltinFunction, XClass)) and (
+                isinstance(imported_value, (Environment, dict))
+            ):
+                pass
+            else:
+                self.globals.values[alias] = imported_value
+        else:
+            self.globals.define(alias, imported_value)
+
+    def _defer_class_definition(self, declaration: ClassDeclaration) -> bool:
+        """True when the parent's root name is not bound yet.
+
+        Namespace-chain import aliases (`import util.N.Square` binds
+        `Square` through an ImportAlias) are processed after the class
+        pass, so a class extending one is deferred until they exist.
+        """
+        if not declaration.parent_name:
+            return False
+        root = declaration.parent_name.split("<")[0].strip().split(".")[0]
+        return root not in self.globals.values
 
     def _install_builtins(self, arguments: list[str]) -> None:
         self.globals.define("args", arguments)

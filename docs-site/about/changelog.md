@@ -42,6 +42,27 @@ trains, not published packages. The VS Code extension versions on its own
   binds only `greet`; sibling declarations stay private to `lib`. Using a
   hidden sibling is a type error with an ``add `import lib.X` `` suggestion.
   Whole-module, grouped, alias, and wildcard imports are unchanged.
+- **Namespace-member imports**: `export namespace` is now a declaration
+  (previously a parse error), `export { ... };` may name declarations inside
+  a top-level namespace, and `import util.MyNamespace.fun` walks exported
+  namespaces inside the shortest existing prefix file to bind the member
+  flat — keeping its namespace closure, so sibling references still resolve.
+  Aliases (`import util.MyNamespace.greet as sayHi`), enums, nested chains,
+  and `import util.MyNamespace.*` (wildcard over the namespace's exports,
+  optionally aliased) work the same way; missing or unexported chain parts
+  report the same style of error as top-level member imports. See
+  `examples/namespace_demo`. Also fixes a latent crash when a flatten
+  collision was reported for a module outside the project root, and stops
+  repeated imports of the same namespace member from emitting duplicate
+  `const` bindings in TypeScript codegen.
+- **`extends` / `implements` through namespace imports**: a class imported
+  via a namespace chain (flat or dotted: `extends Shapes.Square`,
+  `implements Shapes.Shape`) resolves its parent/interface — the
+  interpreter defers classes whose parent is an import alias until the
+  aliases bind, and the checker resolves dotted interface names the same
+  way it already resolves dotted `extends`. The playground's
+  `collectDeclarations` now also registers `as alias` import names for
+  completions.
 - **Enums and interfaces used as values are rejected**: `print(Gender)`
   reports `Enum 'Gender' is a type, not a value`; `IFoo(...)` reports only
   `Cannot construct interface`; `typeOf(Gender)` stays accepted.
@@ -71,6 +92,11 @@ trains, not published packages. The VS Code extension versions on its own
 - **Auto-import completions**: typing the name of an export from a local
   `.x` file offers it with the matching `import` edit applied on accept.
   Already-declared names and already-imported modules are skipped.
+- **Member suggestions resolve across imports**: `Gender.` offers the
+  enum's members even when the enum lives in an imported file (same for
+  interfaces behind `object<K, V>` aliases, with dotted paths like `t.200.`
+  walked segment by segment), and object-literal receivers offer the
+  literal's own keys before the builtin `keys`/`values` methods.
 
 ### Tooling / CI
 

@@ -950,10 +950,18 @@
       addVar(match[1], "variable", "variable");
     }
 
-    var singleImportRe = /^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;?\s*$/gm;
-    while ((match = singleImportRe.exec(content)) !== null) {
-      var parts = match[1].split(".");
-      addVar(parts[parts.length - 1], "import", "namespace");
+    // Plain dotted imports register the last path segment; `as alias`
+    // registers the alias instead; namespace wildcards (`util.Ns.*`) bind
+    // no single name, so they add nothing.
+    var importLineRe =
+      /^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)(\.\*)?\s*(?:as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$/gm;
+    while ((match = importLineRe.exec(content)) !== null) {
+      if (match[3]) {
+        addVar(match[3], "import", "namespace");
+      } else if (!match[2]) {
+        var parts = match[1].split(".");
+        addVar(parts[parts.length - 1], "import", "namespace");
+      }
     }
 
     return { variables: variables, types: types };

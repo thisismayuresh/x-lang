@@ -81,6 +81,15 @@ name really is exported by a sibling module.
   Builtin collections get the same treatment: after `let m = new HashMap()`
   the popup offers the real instance methods (`set`, `get`, `has`, `entries`, …)
   from the static catalog shared with the playground.
+  The receiver may also be a **named type**, resolved through this file's
+  *imports*: `Gender.` offers the enum's members (`MALE`, `FEMALE`) when
+  `util.x` declares them and the file has `import util.Gender`; the same
+  works for interfaces behind `object<K, V>` aliases, walking dotted paths
+  one segment at a time (`t.200.` on `let t: Thing` with
+  `type Thing = object<integer, IThing>` offers `IThing`'s fields). An
+  object-literal receiver additionally offers **the literal's own keys**
+  (`obj.` after `let obj = { "name": … }` lists `name` before the builtin
+  `keys`/`values` methods).
 - Import path completion: after `import ` and after `import System.`, paths are
   filtered to what actually exists on disk.
 - **Auto-import of local exports** — typing a name that another `.x` file in

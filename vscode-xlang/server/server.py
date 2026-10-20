@@ -1121,7 +1121,11 @@ def _add_class_members(source: str, items: list[CompletionItem]) -> None:
             )
 
 
-_RECEIVER_RE = re.compile(r"([A-Za-z_]\w*)\s*\.(?:[A-Za-z_]\w*)?$")
+# Receiver of a member access: a simple identifier or a dotted path whose
+# segments are identifiers or integer literals (`Gender.`, `t.200.`).
+_RECEIVER_RE = re.compile(
+    r"([A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\d+))*)\s*\.(?:[A-Za-z_]\w*)?$"
+)
 
 
 def _var_static_type(source: str, name: str) -> str | None:
@@ -1559,14 +1563,302 @@ def _members_of_class(source: str, class_name: str) -> list[CompletionItem]:
     return members
 
 
+def _blanked(source: str) -> str:
+    """*source* with comments and literals blanked, as one string."""
+    return "\n".join(code_lines(source))
+
+
+def _type_sources(uri: str, source: str) -> list[str]:
+    """Comment-blanked text of this document plus its direct imports.
+
+    Go-to-definition resolves imported names by scanning the same set of
+    files, so member completion sees the declarations where they live even
+    when they were never pasted into this buffer.
+    """
+    texts = [_blanked(source)]
+    for path in _imported_files(uri, source):
+        try:
+            texts.append(_blanked(path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            continue
+    return texts
+
+
+_TYPE_DECL_RE = re.compile(
+    r"^[ \t]*(?:export\s+)?(?P<kind>class|interface|enum|type)\s+"
+    r"(?P<name>[A-Za-z_]\w*)",
+    re.M,
+)
+_TYPE_ALIAS_RE_TEMPLATE = (
+    r"^[ \t]*(?:export\s+)?type\s+{name}\s*=\s*(?P<rhs>[^\n]+)"
+)
+
+
+def _type_decl_kind(name: str, texts: list[str]) -> str | None:
+    """``class``/``interface``/``enum``/``type`` if *name* is declared in
+    this document or one of its imports, else ``None``."""
+    for text in texts:
+        for match in _TYPE_DECL_RE.finditer(text):
+            if match.group("name") == name:
+                return match.group("kind")
+    return None
+
+
+def _type_alias_rhs(name: str, texts: list[str]) -> str | None:
+    """Right-hand side of ``type <name> = ...`` in the first text that
+    declares the alias."""
+    pattern = re.compile(_TYPE_ALIAS_RE_TEMPLATE.format(name=re.escape(name)), re.M)
+    for text in texts:
+        match = pattern.search(text)
+        if match:
+            return match.group("rhs").strip()
+    return None
+
+
+def _resolve_alias(name: str, texts: list[str], depth: int = 0) -> str:
+    """Follow ``type`` aliases to the underlying type expression."""
+    if depth >= 4:
+        return name
+    rhs = _type_alias_rhs(name, texts)
+    if rhs:
+        return _resolve_alias(rhs, texts, depth + 1)
+    return name
+
+
+def _object_value_type(type_name: str) -> str | None:
+    """Value type of an ``object<K, V>`` / ``Object<K, V>`` expression."""
+    match = re.match(r"^[Oo]bject\s*<(.+)>$", type_name.strip())
+    if not match:
+        return None
+    parts = _split_top_level(match.group(1))
+    return parts[1].strip() if len(parts) >= 2 else None
+
+
+def _enum_body(name: str, texts: list[str]) -> str | None:
+    pattern = re.compile(
+        rf"\benum\s+{re.escape(name)}\b[^{{]*\{{(?P<body>.*?)\}}", re.S
+    )
+    for text in texts:
+        match = pattern.search(text)
+        if match:
+            return match.group("body")
+    return None
+
+
+def _enum_member_items(enum_name: str, texts: list[str]) -> list[CompletionItem] | None:
+    """``Gender.`` offers the enum's members, tagged with the enum name."""
+    body = _enum_body(enum_name, texts)
+    if body is None:
+        return None
+    items: list[CompletionItem] = []
+    for part in body.split(","):
+        entry = re.match(r"\s*([A-Za-z_]\w*)", part)
+        if not entry:
+            continue
+        label = entry.group(1)
+        items.append(
+            CompletionItem(
+                label=label,
+                kind=CompletionItemKind.EnumMember,
+                detail=f"{enum_name}.{label}",
+                documentation="enum member",
+                sort_text="0_" + label,
+            )
+        )
+    return items or None
+
+
+_INTERFACE_BODY_TEMPLATE = (
+    r"\binterface\s+{name}\b[^{{]*\{{(?P<body>.*?)\}}"
+)
+_FIELD_TYPE_FIRST_RE = re.compile(
+    r"^[ \t]*(?:export\s+)?(?P<type>[A-Za-z_][\w.<>\[\], |?]*?)\s+"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?:=[^\n]*)?[,;]?[ \t]*$"
+)
+
+
+def _interface_body(name: str, texts: list[str]) -> str | None:
+    pattern = re.compile(
+        _INTERFACE_BODY_TEMPLATE.format(name=re.escape(name)), re.S
+    )
+    for text in texts:
+        match = pattern.search(text)
+        if match:
+            return match.group("body")
+    return None
+
+
+def _interface_field_items(
+    interface_name: str, texts: list[str]
+) -> list[CompletionItem] | None:
+    """Fields of an interface, declared here or in an imported file."""
+    body = _interface_body(interface_name, texts)
+    if body is None:
+        return None
+    items: list[CompletionItem] = []
+    for line in body.split("\n"):
+        field = _FIELD_TYPE_FIRST_RE.match(line)
+        if not field:
+            continue
+        items.append(
+            CompletionItem(
+                label=field.group("name"),
+                kind=CompletionItemKind.Field,
+                detail=(
+                    f"{interface_name}.{field.group('type').strip()} "
+                    f"{field.group('name')}"
+                ),
+                documentation="interface field",
+                sort_text="0_" + field.group("name"),
+            )
+        )
+    return items or None
+
+
+def _interface_field_type(
+    interface_name: str, segment: str, texts: list[str]
+) -> str | None:
+    """Declared type of ``interface_name.segment``, or ``None``."""
+    body = _interface_body(interface_name, texts)
+    if body is None:
+        return None
+    for line in body.split("\n"):
+        field = _FIELD_TYPE_FIRST_RE.match(line)
+        if field and field.group("name") == segment:
+            return field.group("type").strip().rstrip("?").strip()
+    return None
+
+
+def _named_type_members(
+    type_name: str, texts: list[str]
+) -> list[CompletionItem] | None:
+    """Members offered after ``receiver.`` for a named or builtin type."""
+    resolved = _resolve_alias(type_name, texts)
+    kind = _type_decl_kind(resolved, texts)
+    if kind == "enum":
+        return _enum_member_items(resolved, texts)
+    if kind == "interface":
+        return _interface_field_items(resolved, texts)
+    if kind == "class":
+        for text in texts:
+            members = _members_of_class(text, resolved)
+            if members:
+                return members
+        return None
+    if _object_value_type(resolved) is not None:
+        # An `object<K, V>` receiver: the keys are data-dependent, so offer
+        # the object built-ins (keys/values/entries/...) like `let o = {}`.
+        return _builtin_members("object")
+    return _builtin_members(resolved)
+
+
+def _segment_member_type(
+    current: str, segment: str, texts: list[str]
+) -> str | None:
+    """Type of ``current.segment`` while walking a dotted receiver path."""
+    resolved = _resolve_alias(current, texts)
+    value = _object_value_type(resolved)
+    if value is not None:
+        # Index into object<K, V>: the key type (integer or string) does not
+        # constrain the member name, so any segment selects V.
+        return value
+    kind = _type_decl_kind(resolved, texts)
+    if kind == "interface":
+        return _interface_field_type(resolved, segment, texts)
+    # Enums, classes and builtins have no statically known next step here:
+    # enum member values and class field chains would need value inference.
+    return None
+
+
+def _top_level_object_keys(text: str) -> list[str]:
+    """Keys of the object literal that starts with ``text[0]`` (``{``)."""
+    keys: list[str] = []
+    depth = 0
+    quote = ""
+    index = 0
+    total = len(text)
+    expecting_key = False
+    token: list[str] = []
+    while index < total:
+        character = text[index]
+        if quote:
+            if character == "\\" and index + 1 < total:
+                index += 2
+                continue
+            if character == quote:
+                quote = ""
+            else:
+                token.append(character)
+            index += 1
+            continue
+        if character in "\"'`":
+            quote = character
+            index += 1
+            continue
+        if character == "{":
+            depth += 1
+            if depth == 1:
+                expecting_key = True
+            index += 1
+            continue
+        if character == "}":
+            depth -= 1
+            if depth <= 0:
+                break
+            index += 1
+            continue
+        if depth == 1:
+            if character == ":" and expecting_key:
+                key = "".join(token).strip()
+                if key:
+                    keys.append(key.strip("\"'"))
+                token = []
+                expecting_key = False
+            elif character == ",":
+                expecting_key = True
+                token = []
+            elif not character.isspace():
+                token.append(character)
+        index += 1
+    return keys
+
+
+def _object_literal_key_items(source: str, name: str) -> list[CompletionItem]:
+    """Keys of the object literal assigned to ``name``, if it has one."""
+    lines = source.split("\n")
+    for index, raw in enumerate(lines):
+        match = VARIABLE_DECL_RE.search(raw)
+        if not match or match.group("name") != name:
+            continue
+        rest = raw[match.end() :].lstrip()
+        if not rest.startswith("{"):
+            return []
+        text = rest + "\n" + "\n".join(lines[index + 1 :])
+        return [
+            CompletionItem(
+                label=key,
+                kind=CompletionItemKind.Field,
+                detail=f"{name}  object literal key",
+                documentation="object literal key",
+                sort_text="0_" + key,
+            )
+            for key in _top_level_object_keys(text)
+        ]
+    return []
+
+
 def _member_completions(
     ls: XLanguageServer, uri: str, source: str, line: int, character: int
 ) -> list[CompletionItem] | None:
     """Type-aware ``receiver.`` suggestions.
 
-    After ``let p = new Point();`` the popup for ``p.`` offers only ``Point``'s
-    fields and methods, each tagged ``Point.x``. Returns ``None`` when the
-    text before the cursor is not a member access, so the flat list takes over.
+    The receiver may be a local variable (``p.`` after ``let p = new
+    Point()``), a named type (``Gender.`` offers the enum's members, even
+    when the enum lives in an imported file), or a dotted path walked one
+    segment at a time (``t.200.`` reaches the interface fields behind an
+    ``object<integer, T>`` alias). Object-literal receivers also offer the
+    literal's own keys. Returns ``None`` when the text before the cursor is
+    not a member access, so the flat list takes over.
     """
     lines = source.split("\n")
     if line >= len(lines):
@@ -1580,18 +1872,28 @@ def _member_completions(
     match = _RECEIVER_RE.search(prefix[: dot + 1])
     if match is None:
         return None
-    receiver = match.group(1)
-    type_name = _var_static_type(source, receiver)
-    if not type_name:
-        return None
-    members = _members_of_class(source, type_name)
-    if not members:
-        # Not a class declared in this file — fall back to built-in / stdlib
-        # members, so `let string label = "x"; label.` offers string methods.
-        members = _builtin_members(type_name)
-    if not members:
-        return None
-    return members
+    segments = match.group(1).split(".")
+    texts = _type_sources(uri, source)
+    type_name = _var_static_type(source, segments[0])
+    if type_name is None and _type_decl_kind(segments[0], texts):
+        # The receiver is the type itself: `Gender.` or `SomeClass.`.
+        type_name = segments[0]
+    literal_keys = (
+        _object_literal_key_items(source, segments[0]) if len(segments) == 1 else []
+    )
+    if type_name is None:
+        return literal_keys or None
+    for segment in segments[1:]:
+        type_name = _segment_member_type(type_name, segment, texts)
+        if type_name is None:
+            return literal_keys or None
+    members = _named_type_members(type_name, texts)
+    if literal_keys:
+        seen = {item.label for item in literal_keys}
+        return literal_keys + [
+            item for item in (members or []) if item.label not in seen
+        ]
+    return members or None
 
 
 HOVER_INFO = {
@@ -1889,10 +2191,13 @@ IMPORT_RE = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)")
 def _imported_files(uri: str, source: str) -> list[Path]:
     """Filesystem paths of the ``.x`` modules this document imports.
 
-    Resolution matches ``ModuleLoader._path_for_module``: a dotted module
-    path is tried next to the importer first, then under the project root.
-    Only the entry file's direct imports are considered — enough for
-    go-to-definition to cross one file boundary.
+    Resolution mirrors ``ModuleLoader``: a dotted path first drops its last
+    component (`import util.Gender` → the sibling `util.x` that declares
+    `Gender`, as the loader's member-import rule does) and only then is
+    treated as a plain file path (`import orchestrator.x` → `orchestrator.x`,
+    tried next to the importer first, then under the project root). Only the
+    entry file's direct imports are considered — enough for go-to-definition
+    and member completion to cross one file boundary.
     """
     entry = Path(to_fs_path(uri))
     project_root = entry.parent
@@ -1903,11 +2208,19 @@ def _imported_files(uri: str, source: str) -> list[Path]:
         if not match:
             continue
         parts = match.group(1).split(".")
-        relative = entry.parent.joinpath(*parts).with_suffix(".x")
-        candidate = relative if relative.is_file() else project_root.joinpath(*parts).with_suffix(".x")
-        if candidate.is_file() and candidate not in seen:
-            seen.add(candidate)
-            result.append(candidate)
+        candidates: list[Path] = []
+        if len(parts) > 1:
+            prefix = parts[:-1]
+            candidates.append(entry.parent.joinpath(*prefix).with_suffix(".x"))
+            candidates.append(project_root.joinpath(*prefix).with_suffix(".x"))
+        candidates.append(entry.parent.joinpath(*parts).with_suffix(".x"))
+        candidates.append(project_root.joinpath(*parts).with_suffix(".x"))
+        for candidate in candidates:
+            if candidate.is_file():
+                if candidate not in seen:
+                    seen.add(candidate)
+                    result.append(candidate)
+                break
     return result
 
 

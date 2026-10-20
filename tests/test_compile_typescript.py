@@ -891,6 +891,76 @@ class TypeScriptEmitTests(unittest.TestCase):
             output = emit(program, "typescript", source_name="main.x")
         self.assertIn("const u = { twice };", output)
 
+    def test_namespace_member_import_emits_closure_preserving_alias(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "util.x").write_text(
+                "export namespace MyNamespace {\n"
+                "    export string function greet(string who) {\n"
+                '        return "hi, " + who;\n'
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (project_root / "main.x").write_text(
+                "import util.MyNamespace.greet\n"
+                'function main() { print(greet("Ada")); }',
+                encoding="utf-8",
+            )
+            loader = ModuleLoader(project_root, XConfig())
+            program = loader.load_program(project_root / "main.x")
+            self.assertFalse(loader.errors, loader.errors)
+            output = emit(program, "typescript", source_name="main.x")
+        self.assertIn("const greet = MyNamespace.greet;", output)
+
+    def test_repeated_namespace_member_imports_emit_one_binding(self):
+        # `import util.MyNamespace.greet` plus the same member via an alias
+        # must not emit duplicate `const greet` declarations.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "util.x").write_text(
+                "export namespace MyNamespace {\n"
+                "    export string function greet(string who) {\n"
+                '        return "hi, " + who;\n'
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (project_root / "main.x").write_text(
+                "import util.MyNamespace.greet\n"
+                "import util.MyNamespace.greet as sayHi\n"
+                'function main() { print(greet("Ada") + sayHi("Bo")); }',
+                encoding="utf-8",
+            )
+            loader = ModuleLoader(project_root, XConfig())
+            program = loader.load_program(project_root / "main.x")
+            self.assertFalse(loader.errors, loader.errors)
+            output = emit(program, "typescript", source_name="main.x")
+        self.assertEqual(output.count("const greet"), 1)
+        self.assertIn("const sayHi = greet;", output)
+
+    def test_namespace_wildcard_import_binds_members_through_namespace(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            (project_root / "util.x").write_text(
+                "export namespace MyNamespace {\n"
+                "    export string function greet(string who) {\n"
+                '        return "hi, " + who;\n'
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (project_root / "main.x").write_text(
+                "import util.MyNamespace.*\n"
+                'function main() { print(greet("Ada")); }',
+                encoding="utf-8",
+            )
+            loader = ModuleLoader(project_root, XConfig())
+            program = loader.load_program(project_root / "main.x")
+            self.assertFalse(loader.errors, loader.errors)
+            output = emit(program, "typescript", source_name="main.x")
+        self.assertIn("const greet = MyNamespace.greet;", output)
+
     # ── whole-program validity ───────────────────────────────────────────
 
     def test_comprehensive_program_is_valid_typescript(self):

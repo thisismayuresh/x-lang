@@ -842,7 +842,11 @@ class TypeChecker:
     def _validate_class(self, declaration: ClassDeclaration) -> None:
         for interface_name in declaration.implemented_types:
             base_name = interface_name.split("<")[0].strip()
-            if base_name not in self._interfaces:
+            # Namespace chains (MyNamespace.Shape, util.Mod.Shape) index the
+            # interface under its bare name — the same flat table flat member
+            # imports populate — so resolve the last path component.
+            lookup_name = base_name.split(".")[-1]
+            if lookup_name not in self._interfaces:
                 self._error(
                     f"Class '{declaration.name}' implements unknown interface "
                     f"'{interface_name}'",

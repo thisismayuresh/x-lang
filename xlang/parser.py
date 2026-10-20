@@ -185,6 +185,9 @@ class Parser:
             if decorators:
                 raise ParseError("Decorators cannot be applied to imports", self._peek())
             return self._import_declaration()
+        exported = self._match("export")
+        if exported and self._check("{"):
+            return self._export_specifier_declaration()
         if self._match("namespace"):
             self._require_feature("namespaces", self._previous())
             if decorators:
@@ -204,11 +207,11 @@ class Parser:
             finally:
                 self._namespace_depth -= 1
             self._consume("}", "Expected '}' after namespace declarations")
-            return NamespaceDeclaration(namespace_name, declarations)
+            namespace = NamespaceDeclaration(namespace_name, declarations)
+            if exported:
+                namespace.modifiers.add("export")
+            return namespace
 
-        exported = self._match("export")
-        if exported and self._check("{"):
-            return self._export_specifier_declaration()
         modifiers = self._modifiers()
         if "static" in modifiers:
             raise ParseError(
@@ -372,7 +375,12 @@ class Parser:
         return None
 
     def _apply_export_specifiers(self, declarations: list[Any]) -> None:
-        """Mark ``export { ... }`` names as exported and report unknown ones."""
+        """Mark ``export { ... }`` names as exported and report unknown ones.
+
+        A name may be declared inside a top-level namespace: the specifier
+        applies to that declaration (nested namespaces included), so a file
+        can export namespace members for ``import module.Ns.member``.
+        """
         exportable = (
             ClassDeclaration,
             EnumDeclaration,
@@ -381,9 +389,16 @@ class Parser:
             VariableDeclaration,
         )
         declarations_by_name: dict[str, Any] = {}
-        for declaration in declarations:
-            if isinstance(declaration, exportable):
-                declarations_by_name.setdefault(declaration.name, declaration)
+
+        def index(items: list[Any]) -> None:
+            for declaration in items:
+                if isinstance(declaration, NamespaceDeclaration):
+                    declarations_by_name.setdefault(declaration.name, declaration)
+                    index(declaration.declarations)
+                elif isinstance(declaration, exportable):
+                    declarations_by_name.setdefault(declaration.name, declaration)
+
+        index(declarations)
         for name, alias, token in self._pending_exports:
             declaration = declarations_by_name.get(name)
             if declaration is None:
