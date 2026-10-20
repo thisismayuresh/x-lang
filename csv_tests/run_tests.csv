@@ -2096,10 +2096,10 @@ true
 []",,,
 R0441,run,,collections,hashmap namespace style calls,"import System.utils.Collections
 function main() {
-  let map = Collections.HashMap.create()
-  Collections.HashMap.set(map, ""key1"", ""value1"")
-  print(Collections.HashMap.get(map, ""key1""))
-  print(Collections.HashMap.size(map))
+  let map = new Collections.HashMap()
+  map.set(""key1"", ""value1"")
+  print(map.get(""key1""))
+  print(map.size())
 }","value1
 1",,,
 R0442,run,,collections,stack push pop peek,"import System.utils.Collections.Stack;
