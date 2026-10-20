@@ -874,11 +874,23 @@ class Parser:
                     break
                 if self._match("STRING"):
                     field_name = self._previous().value
+                    needs_colon = False
+                elif self._match("NUMBER"):
+                    # A numeric field name is never shorthand — there is no
+                    # variable called ``200`` to bind, so require ``200: x``.
+                    field_name = self._previous().value
+                    needs_colon = True
                 else:
                     field_name = self._consume(
                         "IDENTIFIER", "Expected object binding field"
                     ).value
-                if self._match(":"):
+                    needs_colon = False
+                if needs_colon:
+                    self._consume(
+                        ":", "Expected ':' after numeric binding field"
+                    )
+                    field_pattern = self._binding_pattern_item()
+                elif self._match(":"):
                     field_pattern = self._binding_pattern_item()
                 else:
                     field_pattern = BindingPattern(field_name)
@@ -1290,11 +1302,22 @@ class Parser:
                     if not self._check("}"):
                         raise ParseError("Object rest pattern must be last", self._peek())
                     break
-                name = self._consume("IDENTIFIER", "Expected object pattern field").value
-                if self._match(":"):
+                if self._match("NUMBER"):
+                    # ``{ 200: pattern }`` keys the object like ``200:`` does;
+                    # without a colon there would be no variable to bind.
+                    name = self._previous().value
+                    self._consume(
+                        ":", "Expected ':' after numeric object pattern field"
+                    )
                     pattern = self._pattern()
                 else:
-                    pattern = BindingPattern(name)
+                    name = self._consume(
+                        "IDENTIFIER", "Expected object pattern field"
+                    ).value
+                    if self._match(":"):
+                        pattern = self._pattern()
+                    else:
+                        pattern = BindingPattern(name)
                 fields.append((name, pattern))
                 if not self._match(","):
                     break
@@ -1522,12 +1545,25 @@ class Parser:
                         )
                     )
                 else:
-                    name = self._consume(
-                        "IDENTIFIER", "Expected member name after '?.'"
-                    ).value
-                    chain_segments.append(
-                        OptionalChainSegment("member", name, optional=True)
-                    )
+                    if self._check("NUMBER"):
+                        # ``obj.200`` is ``obj[200]``: integer-keyed maps are
+                        # accessed with the same dot syntax as string keys.
+                        number = self._advance()
+                        value = (
+                            float(number.value)
+                            if "." in number.value
+                            else int(number.value)
+                        )
+                        chain_segments.append(
+                            OptionalChainSegment("index", Literal(value), optional=True)
+                        )
+                    else:
+                        name = self._consume(
+                            "IDENTIFIER", "Expected member name after '?.'"
+                        ).value
+                        chain_segments.append(
+                            OptionalChainSegment("member", name, optional=True)
+                        )
             elif self._match("?["):
                 optional_chain_started = True
                 if not chain_segments:
@@ -1538,12 +1574,31 @@ class Parser:
                     OptionalChainSegment("index", index, optional=True)
                 )
             elif self._match("."):
-                name = self._consume("IDENTIFIER", "Expected member name after '.'").value
-                if optional_chain_started:
-                    chain_segments.append(OptionalChainSegment("member", name))
+                if self._check("NUMBER"):
+                    # ``obj.200`` is sugar for ``obj[200]`` so integer-keyed
+                    # maps read the same as string-keyed ones.
+                    number = self._advance()
+                    value = (
+                        float(number.value)
+                        if "." in number.value
+                        else int(number.value)
+                    )
+                    if optional_chain_started:
+                        chain_segments.append(
+                            OptionalChainSegment("index", Literal(value))
+                        )
+                    else:
+                        expression = Index(expression, Literal(value))
+                        self._attach_span(expression, chain_start)
                 else:
-                    expression = Member(expression, name)
-                    self._attach_span(expression, chain_start)
+                    name = self._consume(
+                        "IDENTIFIER", "Expected member name after '.'"
+                    ).value
+                    if optional_chain_started:
+                        chain_segments.append(OptionalChainSegment("member", name))
+                    else:
+                        expression = Member(expression, name)
+                        self._attach_span(expression, chain_start)
             elif self._match("["):
                 index = self._expression()
                 self._consume("]", "Expected ']' after index")
@@ -1679,7 +1734,14 @@ class Parser:
                     if not self._match(","):
                         break
                     continue
-                if self._match("STRING"):
+                if self._match("NUMBER"):
+                    key_token = self._previous()
+                    key = key_token.value
+                    self._consume(":", "Expected ':' after object field name")
+                    entry = self._object_entry(key, key_token, self._expression())
+                    entry.key_is_number = True
+                    entries.append(entry)
+                elif self._match("STRING"):
                     key_token = self._previous()
                     key = key_token.value
                     self._consume(":", "Expected ':' after object field name")
