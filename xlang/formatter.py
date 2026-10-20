@@ -6,6 +6,11 @@ string literals, template literals, and comments verbatim.  The result is
 idempotent: formatting already-formatted code returns it unchanged, so
 ``x --watch format file.x`` never fights the user's editor.
 
+Object literals that do not fit on one line (80 columns, Prettier-style)
+are broken with one ``key: value`` field per line and a trailing comma.
+Match-arm patterns are never broken, so ``{name: person} => ...`` stays
+readable on one line.
+
 The formatter runs the real lexer and parser first, so a file with syntax
 errors is reported instead of rewritten into something even more broken.
 """
@@ -16,6 +21,10 @@ from .lexer import Lexer, Token
 from .parser import Parser
 
 INDENT_WIDTH = 2
+
+# Object literals wider than this (Prettier-style print width) are broken
+# with one field per line and a trailing comma.
+MAX_LINE_WIDTH = 80
 
 # Operators printed with surrounding spaces.
 _BINARY_KINDS = {
@@ -78,11 +87,19 @@ _STATEMENT_START_KINDS = {
 class _BraceFrame:
     """One ``{ ... `` region on the formatter's brace stack."""
 
-    __slots__ = ("kind",)
+    __slots__ = ("kind", "expanded", "open_paren_depth", "open_bracket_depth")
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, expanded: bool = False) -> None:
         #: "block", "switch", "match", or "object"
         self.kind = kind
+        #: Object frames only: one ``key: value`` field per line, with a
+        #: trailing comma before the closing brace.
+        self.expanded = expanded
+        #: Paren/bracket depths at open time, so a comma only breaks the
+        #: line at this object's own top level (not inside ``f(a, b)`` or
+        #: ``[1, 2]`` values, and not when the object itself sits in parens).
+        self.open_paren_depth = 0
+        self.open_bracket_depth = 0
 
 
 class _Formatter:
@@ -112,6 +129,9 @@ class _Formatter:
         self.pending_statement_break = False
         self.last_end_line = 0
         self.just_opened_block = True
+        #: Sub-passes that only measure the flat width of an object never
+        #: expand one — expansion is decided by the caller.
+        self.force_inline = False
 
     # ── public entry ────────────────────────────────────────────────
 
@@ -364,6 +384,14 @@ class _Formatter:
         if kind == "," and self._top_brace_is("match"):
             if self.paren_depth == 0 and self.bracket_depth == 0:
                 self._newline()
+        if kind == "," and self._top_brace_is("object"):
+            frame = self.brace_stack[-1]
+            if (
+                frame.expanded
+                and self.paren_depth == frame.open_paren_depth
+                and self.bracket_depth == frame.open_bracket_depth
+            ):
+                self._newline()
 
     def _top_brace_is(self, kind: str) -> bool:
         return bool(self.brace_stack) and self.brace_stack[-1].kind == kind
@@ -411,6 +439,54 @@ class _Formatter:
             self.paren_depth == 0
             and self._top_brace_is("switch")
         )
+
+    def _matching_brace_index(self, open_index: int) -> int | None:
+        """Index of the ``}`` that closes the brace at *open_index*."""
+        depth = 0
+        for position in range(open_index, len(self.tokens)):
+            kind = self.tokens[position].kind
+            if kind == "{":
+                depth += 1
+            elif kind == "}":
+                depth -= 1
+                if depth == 0:
+                    return position
+        return None
+
+    def _should_expand_object(self, open_index: int) -> bool:
+        """True when the object starting at *open_index* exceeds one line.
+
+        Renders the object flat with a throwaway ``force_inline`` pass and
+        compares its width plus the current column against
+        ``MAX_LINE_WIDTH``.  Match-arm patterns (``{name: person} => ...``)
+        are never broken.
+        """
+        close_index = self._matching_brace_index(open_index)
+        if close_index is None:
+            return False
+        following = (
+            self.tokens[close_index + 1]
+            if close_index + 1 < len(self.tokens)
+            else None
+        )
+        if following is not None and following.kind == "=>":
+            # Match-arm pattern: breaking it hurts readability.
+            return False
+        inner = self.tokens[open_index + 1:close_index]
+        if not inner:
+            return False
+        sub = _Formatter(self.source, inner)
+        sub.force_inline = True
+        sub.brace_stack = [_BraceFrame("object")]
+        body = sub.format().rstrip("\n")
+        flat = "{ " + body + " }" if body else "{ }"
+        if "\n" in flat:
+            # A nested block (function body, ...) never fits on one line.
+            return True
+        # ``self.current`` ends with the ``{`` just written; the column
+        # where that brace starts is one to the left.
+        column_before = max(0, len("".join(self.current)) - 1)
+        return column_before + len(flat) > MAX_LINE_WIDTH
 
     def _classify_brace(self) -> str:
         previous = self._previous_code_token()
@@ -463,7 +539,17 @@ class _Formatter:
                 self.index += 1
                 self.last_end_line = following.line
                 return
-            self.brace_stack.append(_BraceFrame("object"))
+            frame = _BraceFrame("object")
+            frame.open_paren_depth = self.paren_depth
+            frame.open_bracket_depth = self.bracket_depth
+            if not self.force_inline and self._should_expand_object(self.index):
+                frame.expanded = True
+                self.brace_stack.append(frame)
+                self.indent += 1
+                self._newline()
+                self.just_opened_block = True
+                return
+            self.brace_stack.append(frame)
             return
 
         # block / switch / match: the body starts on the next line.
@@ -475,6 +561,35 @@ class _Formatter:
     def _emit_close_brace(self, token: Token) -> None:
         frame = self.brace_stack.pop() if self.brace_stack else _BraceFrame("block")
         if frame.kind == "object":
+            if frame.expanded:
+                # Prettier-style: trailing comma, then `}` at the outer indent.
+                previous = self._previous_code_token()
+                if previous is not None and previous.kind != ",":
+                    if self.current:
+                        self._write(",")
+                    elif (
+                        previous.kind == "}"
+                        and self.lines
+                        and self.lines[-1]
+                        and "//" not in self.lines[-1]
+                    ):
+                        # A block- or object-valued field closed on its own
+                        # line; the trailing comma goes on its closing brace.
+                        self.lines[-1] += ","
+                self._ensure_newline()
+                self.indent = max(0, self.indent - 1)
+                self._write("}")
+                self.last_end_line = token.line
+                self.just_opened_block = False
+                self._update_state_after_brace()
+                following = self._peek(1)
+                joinable = following is not None and (
+                    following.kind in ("else", "catch", "finally", ";", ",", ")", "]")
+                    or (following.kind == "while" and following.line == token.line)
+                )
+                if not joinable:
+                    self._newline()
+                return
             if self.current and not self.current[-1].endswith("{"):
                 self.current.append(" ")
             self._write("}")
