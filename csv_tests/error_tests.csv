@@ -897,7 +897,7 @@ E0115,error,parse,mutations,match drop token 8 (NUMBER),"function main() {
     1 => ""one"",
     _ => ""other""
   });
-}",,Expected object field name,,template match
+}",,Expected ':' after object field name,,template match
 E0116,error,parse,mutations,match drop token 9 ({),"function main() {
   print(match 2 
     1 => ""one"",
