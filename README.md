@@ -682,7 +682,9 @@ Every namespace in the chain and the final member must be exported.
 `import util` still exposes `util.MyNamespace.greet()` through the module
 object. `import util.MyNamespace.*` wildcard-imports every exported member
 of the namespace (the alias form `import util.MyNamespace.* as N` collects
-them under `N` instead).
+them under `N` instead). Classes and interfaces imported this way work in
+`extends` / `implements`, both by flat name and through the namespace path
+(`extends Shapes.Square`, `implements Shapes.Shape`).
 
 Grouped imports are also supported:
 

@@ -55,6 +55,14 @@ trains, not published packages. The VS Code extension versions on its own
   collision was reported for a module outside the project root, and stops
   repeated imports of the same namespace member from emitting duplicate
   `const` bindings in TypeScript codegen.
+- **`extends` / `implements` through namespace imports**: a class imported
+  via a namespace chain (flat or dotted: `extends Shapes.Square`,
+  `implements Shapes.Shape`) resolves its parent/interface — the
+  interpreter defers classes whose parent is an import alias until the
+  aliases bind, and the checker resolves dotted interface names the same
+  way it already resolves dotted `extends`. The playground's
+  `collectDeclarations` now also registers `as alias` import names for
+  completions.
 - **Enums and interfaces used as values are rejected**: `print(Gender)`
   reports `Enum 'Gender' is a type, not a value`; `IFoo(...)` reports only
   `Cannot construct interface`; `typeOf(Gender)` stays accepted.

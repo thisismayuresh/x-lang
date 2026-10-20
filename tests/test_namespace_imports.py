@@ -376,6 +376,104 @@ namespace Secret {
         self.assertIn("'Secret' is not exported by module 'util'", errors)
 
 
+class NamespaceClassInheritanceTests(unittest.TestCase):
+    """`extends` / `implements` through namespace-chain imports."""
+
+    SHAPE_MODULE = """
+export namespace Shapes {
+    export interface Shape {
+        integer area();
+    }
+    export class Square implements Shape {
+        integer side = 0;
+        Square(integer side) {
+            this.side = side;
+        }
+        integer area() {
+            return this.side * this.side;
+        }
+    }
+}
+"""
+
+    def test_extends_class_imported_through_namespace_chain(self):
+        output = run_modules(
+            "import util.Shapes.Square\n"
+            "class MySquare extends Square {\n"
+            "    MySquare(integer side) {\n"
+            "        super(side);\n"
+            "    }\n"
+            "}\n"
+            "print(MySquare(5).area())\n",
+            {"util.x": self.SHAPE_MODULE},
+        )
+        self.assertEqual(output, ["25"])
+
+    def test_implements_interface_imported_through_namespace_chain(self):
+        output = run_modules(
+            "import util.Shapes.Shape\n"
+            "class MySquare implements Shape {\n"
+            "    integer side = 0;\n"
+            "    MySquare(integer side) {\n"
+            "        this.side = side;\n"
+            "    }\n"
+            "    integer area() {\n"
+            "        return this.side * this.side;\n"
+            "    }\n"
+            "}\n"
+            "print(MySquare(4).area())\n",
+            {"util.x": self.SHAPE_MODULE},
+        )
+        self.assertEqual(output, ["16"])
+
+    def test_implements_interface_via_namespace_wildcard(self):
+        output = run_modules(
+            "import util.Shapes.*\n"
+            "class MySquare implements Shape {\n"
+            "    integer side = 0;\n"
+            "    MySquare(integer side) {\n"
+            "        this.side = side;\n"
+            "    }\n"
+            "    integer area() {\n"
+            "        return this.side * this.side;\n"
+            "    }\n"
+            "}\n"
+            "print(MySquare(4).area())\n",
+            {"util.x": self.SHAPE_MODULE},
+        )
+        self.assertEqual(output, ["16"])
+
+    def test_extends_through_dotted_namespace_path(self):
+        output = run_modules(
+            "import util.Shapes\n"
+            "class MySquare extends Shapes.Square {\n"
+            "    MySquare(integer side) {\n"
+            "        super(side);\n"
+            "    }\n"
+            "}\n"
+            "print(MySquare(6).area())\n",
+            {"util.x": self.SHAPE_MODULE},
+        )
+        self.assertEqual(output, ["36"])
+
+    def test_implements_dotted_interface_name_is_accepted(self):
+        return_code, output, errors = check_modules_cli(
+            "import util.Shapes\n"
+            "class MySquare implements Shapes.Shape {\n"
+            "    integer side = 0;\n"
+            "    MySquare(integer side) {\n"
+            "        this.side = side;\n"
+            "    }\n"
+            "    integer area() {\n"
+            "        return this.side * this.side;\n"
+            "    }\n"
+            "}\n",
+            {"util.x": self.SHAPE_MODULE},
+        )
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn("types are valid", output)
+
+
 class NamespaceMemberImportCheckTests(unittest.TestCase):
     def test_check_accepts_namespace_member_imports(self):
         return_code, output, errors = check_modules_cli(
