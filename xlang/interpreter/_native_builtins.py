@@ -20,6 +20,7 @@ DELETE_BUILTIN_NAME = "Object.delete"
 class NativeBuiltins:
     def _object_members(self) -> Environment:
         object_namespace = Environment()
+        object_namespace.display_label = "namespace Object"
         object_namespace.define("keys", BuiltinFunction("Object.keys", self._object_keys))
         object_namespace.define(
             "values", BuiltinFunction("Object.values", self._object_values)
