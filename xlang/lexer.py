@@ -346,9 +346,16 @@ class Lexer:
         while self._peek().isdigit():
             self._advance()
         if self._peek() == "." and self._peek(1) != ".":
-            self._advance()
-            while self._peek().isdigit():
+            # ``200.array`` — the dot starts member access (``obj.200.array``),
+            # so only swallow it into the number when a float actually forms
+            # (digit after the dot, or a non-identifier char such as ``;``).
+            following = self._peek(1)
+            if following.isdigit() or not (
+                following.isalpha() or following == "_"
+            ):
                 self._advance()
+                while self._peek().isdigit():
+                    self._advance()
         return self.source[start:self.position]
 
     def _read_string(self, quote: str) -> str:
