@@ -58,7 +58,11 @@ async function importLoadPyodide(indexUrl) {
 
 async function loadInterpreterWheel(pyodide) {
   var manifestUrl = baseDir() + "wheels/manifest.json";
-  var manifestResponse = await fetch(manifestUrl);
+  // The wheel filename is stable across rebuilds, so a cached manifest
+  // would keep pointing at a stale `?v=` fingerprint after a redeploy.
+  // Always fetch the manifest fresh; the wheel URL stays busted by the
+  // fingerprint itself.
+  var manifestResponse = await fetch(manifestUrl, { cache: "no-store" });
   if (!manifestResponse.ok) {
     throw new Error(
       "Could not fetch " + manifestUrl + " (" + manifestResponse.status + "). " +
