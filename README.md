@@ -659,32 +659,38 @@ imports them into a second, and uses them from a third.
 
 Namespace chains work in member imports too: when the prefix before the last
 dot is not a file, the loader looks for the shortest existing prefix file and
-walks the remaining parts as exported namespaces inside it (see
+walks the remaining parts as namespaces inside it (see
 `examples/namespace_demo`):
 
 ```x
 // util.x
 export namespace MyNamespace {
-    export string function greet(string who) {
+    string function greet(string who) {
         return "hi, " + who;
     }
 }
-
-export { greet };   // also valid: export members declared without `export`
 
 // main.x
 import util.MyNamespace.greet   // binds greet directly
 print(greet("Ada"));            // "hi, Ada"
 ```
 
-Every namespace in the chain and the final member must be exported.
-`import util.MyNamespace` binds the namespace itself, and whole-module
-`import util` still exposes `util.MyNamespace.greet()` through the module
-object. `import util.MyNamespace.*` wildcard-imports every exported member
-of the namespace (the alias form `import util.MyNamespace.* as N` collects
-them under `N` instead). Classes and interfaces imported this way work in
-`extends` / `implements`, both by flat name and through the namespace path
-(`extends Shapes.Square`, `implements Shapes.Shape`).
+The exported namespace is the export boundary, like a class and its methods:
+only the module-level namespace needs `export`, and everything inside it —
+members and nested namespaces — is reachable through the chain. A missing
+member reports `'greet' is not a member of namespace 'util.MyNamespace'`, and
+an unexported module-level hop reports the usual
+`'MyNamespace' is not exported by module 'util'`. `import util.MyNamespace`
+binds the namespace itself, `import util.MyNamespace.greet("Ada")` calls the
+member at import time (the result is discarded, as with top-level import
+calls), and whole-module `import util` still exposes
+`util.MyNamespace.greet()` through the module object.
+`import util.MyNamespace.*` wildcard-imports every member of the namespace —
+bare names and a `MyNamespace.greet` reference both work (the alias form
+`import util.MyNamespace.* as N` collects them under `N` instead). Classes
+and interfaces imported this way work in `extends` / `implements`, both by
+flat name and through the namespace path (`extends Shapes.Square`,
+`implements Shapes.Shape`).
 
 Grouped imports are also supported:
 
