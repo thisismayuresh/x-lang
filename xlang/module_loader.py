@@ -455,9 +455,18 @@ class ModuleLoader:
         combined_declarations.append(ImportAlias(source, name))
 
     def _namespace_in_chain(
-        self, current: list[Any], part: str, source_module: str
+        self,
+        current: list[Any],
+        part: str,
+        source_module: str,
+        require_export: bool = True,
     ) -> NamespaceDeclaration:
-        """Find exported namespace *part* among *current* declarations."""
+        """Find namespace *part* among *current* declarations.
+
+        Only the module-level hop requires the ``export`` modifier: an
+        exported namespace publishes everything inside it (nested
+        namespaces included), like a class publishes its methods.
+        """
         namespace = next(
             (
                 item
@@ -470,7 +479,7 @@ class ModuleLoader:
             raise RuntimeErrorX(
                 f"'{part}' does not name a namespace in module '{source_module}'"
             )
-        if "export" not in getattr(namespace, "modifiers", set()):
+        if require_export and "export" not in getattr(namespace, "modifiers", set()):
             raise RuntimeErrorX(
                 f"'{part}' is not exported by module '{source_module}'"
             )
@@ -503,14 +512,26 @@ class ModuleLoader:
         # `_load_file` returns [] for already-loaded files; the declarations
         # themselves live in the persistent cache (same as `_is_exported`).
         current = self.direct_declarations.get(source_path.resolve(), declarations)
-        for part in remaining[:-1]:
-            current = self._namespace_in_chain(current, part, source_module).declarations
+        for index, part in enumerate(remaining[:-1]):
+            current = self._namespace_in_chain(
+                current, part, source_module, require_export=index == 0
+            ).declarations
         import_name = remaining[-1]
         member = next(
             (item for item in current if self._declaration_name(item) == import_name),
             None,
         )
-        if member is None or "export" not in getattr(member, "modifiers", set()):
+        if len(remaining) > 1:
+            # Inside an exported namespace every member is reachable — the
+            # namespace boundary is the export boundary (like a class and
+            # its methods).
+            if member is None:
+                raise RuntimeErrorX(
+                    f"'{import_name}' is not a member of namespace "
+                    f"'{'.'.join(parts[: len(parts) - 1])}'"
+                )
+        elif member is None or "export" not in getattr(member, "modifiers", set()):
+            # A top-level file member keeps the file's export rules.
             raise RuntimeErrorX(
                 f"'{import_name}' is not exported by module '{source_module}'"
             )
@@ -559,18 +580,24 @@ class ModuleLoader:
         source_module = ".".join(parts[: len(parts) - len(remaining)])
         declarations = self._load_file(source_path)
         current = self.direct_declarations.get(source_path.resolve(), declarations)
-        for part in remaining[:-1]:
-            current = self._namespace_in_chain(current, part, source_module).declarations
-        namespace = self._namespace_in_chain(current, remaining[-1], source_module)
-        exported_members = [
+        for index, part in enumerate(remaining[:-1]):
+            current = self._namespace_in_chain(
+                current, part, source_module, require_export=index == 0
+            ).declarations
+        namespace = self._namespace_in_chain(
+            current,
+            remaining[-1],
+            source_module,
+            require_export=len(remaining) == 1,
+        )
+        members = [
             (name, member)
             for member in namespace.declarations
             if (name := self._declaration_name(member)) is not None
-            and "export" in getattr(member, "modifiers", set())
         ]
-        if not exported_members:
+        if not members:
             raise RuntimeErrorX(
-                f"Namespace '{module_path}' does not export any declarations"
+                f"Namespace '{module_path}' declares no members"
             )
         imported_resolved_path = source_path.resolve()
         self._warn_duplicate_main(
@@ -580,7 +607,7 @@ class ModuleLoader:
         # it even when nothing else has imported the module.
         combined_declarations.append(namespace)
         target = remaining[-1]
-        for name, _member in exported_members:
+        for name, _member in members:
             self._check_flatten_collision(name, imported_resolved_path)
             self._record_flatten(name, imported_resolved_path)
             visible.add(name)
@@ -588,7 +615,7 @@ class ModuleLoader:
         if alias is not None:
             visible.add(alias)
             combined_declarations.append(
-                ImportNamespaceAlias([name for name, _ in exported_members], alias)
+                ImportNamespaceAlias([name for name, _ in members], alias)
             )
         return True
 

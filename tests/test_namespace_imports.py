@@ -8,8 +8,9 @@ existing prefix module file:
 * aliases, enums, and nested namespace chains work the same way
 * ``import util.MyNamespace`` binds the namespace itself; whole-module
   ``import util`` plus ``util.MyNamespace.fun()`` keeps working
-* missing or unexported chain parts report the same style of error as
-  top-level member imports
+* the exported namespace is the export boundary: its members (and nested
+  namespaces) are reachable without their own ``export``; a missing member
+  or an unexported module-level hop reports a clear error
 """
 
 import contextlib
@@ -53,8 +54,6 @@ export enum Color {
 }
 
 export const integer MAX = 100;
-
-export { fun, obj, greet, add };
 """
 
 
@@ -231,9 +230,11 @@ class NamespaceMemberImportErrorTests(unittest.TestCase):
             {"util.x": UTIL_MODULE},
         )
         self.assertEqual(return_code, 1)
-        self.assertIn("'nope' is not exported by module 'util'", errors)
+        self.assertIn(
+            "'nope' is not a member of namespace 'util.MyNamespace'", errors
+        )
 
-    def test_unexported_member_is_rejected(self):
+    def test_unexported_member_inside_exported_namespace_is_importable(self):
         util_module = """
 export namespace MyNamespace {
     function hidden() {
@@ -241,12 +242,42 @@ export namespace MyNamespace {
     }
 }
 """
-        return_code, _, errors = run_modules_cli(
+        output = run_modules(
             "import util.MyNamespace.hidden\n" "hidden()\n",
             {"util.x": util_module},
         )
-        self.assertEqual(return_code, 1)
-        self.assertIn("'hidden' is not exported by module 'util'", errors)
+        self.assertEqual(output, ["hidden"])
+
+    def test_import_call_of_a_namespace_member(self):
+        util_module = """
+export namespace MyNamespace {
+    string function greet(string who) {
+        print("calling")
+        return "hi, " + who;
+    }
+}
+"""
+        output = run_modules(
+            'import util.MyNamespace.greet("Maya")\n' 'print(greet("Bo"))\n',
+            {"util.x": util_module},
+        )
+        self.assertEqual(output, ["calling", "calling", "hi, Bo"])
+
+    def test_nested_unexported_namespace_inside_exported_one(self):
+        util_module = """
+export namespace Outer {
+    namespace Inner {
+        function tag() {
+            return "outer-inner"
+        }
+    }
+}
+"""
+        output = run_modules(
+            "import util.Outer.Inner.tag\n" "print(tag())\n",
+            {"util.x": util_module},
+        )
+        self.assertEqual(output, ["outer-inner"])
 
     def test_unexported_namespace_in_the_chain_is_rejected(self):
         util_module = """
@@ -283,7 +314,7 @@ class NamespaceWildcardImportTests(unittest.TestCase):
         )
         self.assertEqual(output, ["hi, Ada", "5", "{name: Maya}"])
 
-    def test_wildcard_skips_unexported_members(self):
+    def test_wildcard_binds_unexported_members_too(self):
         util_module = """
 export namespace MyNamespace {
     export string function greet(string who) {
@@ -294,12 +325,18 @@ export namespace MyNamespace {
     }
 }
 """
-        return_code, _, errors = run_modules_cli(
+        output = run_modules(
             "import util.MyNamespace.*\n" "hidden()\n",
             {"util.x": util_module},
         )
-        self.assertEqual(return_code, 1)
-        self.assertIn("Name 'hidden' is not defined", errors)
+        self.assertEqual(output, ["hidden"])
+
+    def test_wildcard_then_namespace_qualified_call(self):
+        output = run_modules(
+            "import util.MyNamespace.*\n" 'print(MyNamespace.greet("Ada"))\n',
+            {"util.x": UTIL_MODULE},
+        )
+        self.assertEqual(output, ["hi, Ada"])
 
     def test_wildcard_with_an_alias(self):
         output = run_modules(
@@ -334,7 +371,7 @@ export namespace Outer {
         )
         self.assertEqual(output, ["hi, Ada", "hi, Bo"])
 
-    def test_wildcard_of_a_namespace_without_exports_is_rejected(self):
+    def test_wildcard_of_a_namespace_without_member_exports(self):
         util_module = """
 export namespace MyNamespace {
     string function greet(string who) {
@@ -342,15 +379,23 @@ export namespace MyNamespace {
     }
 }
 """
-        return_code, _, errors = run_modules_cli(
+        output = run_modules(
             "import util.MyNamespace.*\n" 'print(greet("X"))\n',
             {"util.x": util_module},
         )
-        self.assertEqual(return_code, 1)
-        self.assertIn(
-            "Namespace 'util.MyNamespace' does not export any declarations",
-            errors,
+        self.assertEqual(output, ["hi, X"])
+
+    def test_wildcard_of_an_empty_namespace_is_rejected(self):
+        util_module = """
+export namespace MyNamespace {
+}
+"""
+        return_code, _, errors = run_modules_cli(
+            "import util.MyNamespace.*\n" "print(MyNamespace)\n",
+            {"util.x": util_module},
         )
+        self.assertEqual(return_code, 1)
+        self.assertIn("Namespace 'util.MyNamespace' declares no members", errors)
 
     def test_wildcard_chain_part_that_is_not_a_namespace_is_rejected(self):
         return_code, _, errors = run_modules_cli(

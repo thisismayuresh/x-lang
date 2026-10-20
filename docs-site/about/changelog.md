@@ -44,13 +44,19 @@ trains, not published packages. The VS Code extension versions on its own
   Whole-module, grouped, alias, and wildcard imports are unchanged.
 - **Namespace-member imports**: `export namespace` is now a declaration
   (previously a parse error), `export { ... };` may name declarations inside
-  a top-level namespace, and `import util.MyNamespace.fun` walks exported
-  namespaces inside the shortest existing prefix file to bind the member
-  flat — keeping its namespace closure, so sibling references still resolve.
-  Aliases (`import util.MyNamespace.greet as sayHi`), enums, nested chains,
-  and `import util.MyNamespace.*` (wildcard over the namespace's exports,
-  optionally aliased) work the same way; missing or unexported chain parts
-  report the same style of error as top-level member imports. See
+  a top-level namespace, and `import util.MyNamespace.fun` walks namespaces
+  inside the shortest existing prefix file to bind the member flat —
+  keeping its namespace closure, so sibling references still resolve. The
+  exported namespace is the export boundary (like a class and its methods):
+  only the module-level namespace needs `export`, and its members and
+  nested namespaces are reachable through the chain without their own
+  `export`. Aliases (`import util.MyNamespace.greet as sayHi`), enums,
+  import calls (`import util.MyNamespace.greet("Ada")`), and
+  `import util.MyNamespace.*` (wildcard over every member, bare names and
+  `MyNamespace.greet` both working, optionally aliased) work the same way;
+  a missing member reports `'greet' is not a member of namespace
+  'util.MyNamespace'`, and an unexported module-level hop or non-namespace
+  chain part reports the usual style of error. See
   `examples/namespace_demo`. Also fixes a latent crash when a flatten
   collision was reported for a module outside the project root, and stops
   repeated imports of the same namespace member from emitting duplicate

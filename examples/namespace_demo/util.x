@@ -13,7 +13,7 @@ export namespace MyNamespace {
     return a + b;
   }
 
-  export enum Color {
+  enum Color {
     RED = "red", GREEN = "green",
   }
 }
@@ -21,5 +21,3 @@ export namespace MyNamespace {
 export const integer MAX = 100;
 
 export type Info = object < string, any >;
-
-export { fun, obj, greet, add };
