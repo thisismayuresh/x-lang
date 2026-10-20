@@ -61,6 +61,9 @@ Or: `.venv/bin/python docs-site/playground/build.py [--watch|--check]`.
 The build fingerprints `xlang/**` + `pyproject.toml`, writes the fingerprint
 into `wheels/manifest.json`, and the worker loads the wheel with
 `?v=<fingerprint>` so a browser reload always fetches the new interpreter.
+The manifest itself is fetched with `cache: "no-store"` — the wheel
+filename is stable across rebuilds, so a cached manifest would keep
+pointing at a stale `?v=` after a redeploy.
 
 ### Multi-file projects, format, layout
 
