@@ -497,6 +497,50 @@ Run the complete sample with:
 x run examples/type_of.x
 ```
 
+### Map interfaces
+
+An interface whose only member is a `keyType key { fields }` entry is a
+**map interface** — a named dictionary type whose keys fit the key type and
+whose every value is an object shaped by the entry's fields. Use the
+interface name anywhere a type goes; the literal is then checked key by
+key with the same diagnostics as `object<K, V>`:
+
+```x
+enum Gender { FEMALE = "female", MALE = "male" }
+
+interface Participants {
+  integer key {
+    string name,
+    Gender gender,
+    number age,
+    any? foo,
+    integer[] array,
+    boolean isMarried,
+  }
+}
+
+let Participants byId = {
+  100: { name: "Maya", gender: Gender.FEMALE, age: 30,
+         foo: null, array: [1, 2], isMarried: false },
+  101: { name: "Bo", gender: Gender.MALE, age: 21,
+         foo: null, array: [3], isMarried: true },
+}
+
+print(byId[100].name);      // Maya
+print(byId.101.age);        // 21 (`.N` indexes like `object<K, V>`)
+```
+
+`key` is contextual here: an interface field or method simply named `key`
+(`integer key,`) still parses, and so does a class property block. A map
+interface may declare nothing else — no sibling fields or methods, at most
+one `key` entry — and its entry fields may not have initializers. String
+keys work the same way (`string key { integer count, }`). Classes cannot
+`implement` a map interface and `new Participants()` is rejected; at
+runtime the annotation performs the same structural check as
+`object<integer, Shape>` (every key fits, every value has the fields with
+matching types). TypeScript compilation emits an index signature:
+`interface Participants { [key: number]: { name: string; ... }; }`.
+
 ### Deleting keys, indices and fields
 
 `delete(target)` removes exactly one entry and returns `true`. It is a
@@ -2822,10 +2866,10 @@ remaining implementation goals and documented constraints:
   `null` is rejected for non-null types; inline `record{...}` annotations are
   checked structurally today
 - [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
-- Interfaces have no TypeScript-style index signatures — a TS-style
-  `[key: number]: IParticipant` member reports `Expected a name`; declare the
-  map as an alias over the builtin instead:
-  `type Participants = object<integer, IParticipant>`
+- Interfaces have no TypeScript-style `[key: number]: T` *source* syntax —
+  declare the map as a [map interface](#map-interfaces)
+  (`interface Participants { integer key { ... } }`) or as an alias over the
+  builtin: `type Participants = object<integer, IParticipant>`
 - [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
 - [ ] A broader standard library beyond the built-ins documented here
 

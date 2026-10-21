@@ -24,6 +24,7 @@ from .ast_nodes import (
     Identifier,
     IfStatement,
     Index,
+    InterfaceMapEntry,
     Literal,
     LiteralPattern,
     MatchArm,
@@ -487,6 +488,22 @@ class Parser:
                 self._record_error(error)
                 self._synchronize(start_position, stop_at_block_end=True)
         self._consume("}", "Expected '}' after type body")
+        if is_interface:
+            map_entries = [
+                member for member in members if isinstance(member, InterfaceMapEntry)
+            ]
+            if len(map_entries) > 1:
+                raise ParseError(
+                    "An interface may declare at most one 'key' entry",
+                    self._peek(),
+                    self.source_name,
+                )
+            if map_entries and len(members) > 1:
+                raise ParseError(
+                    "An interface with a 'key' entry cannot declare other members",
+                    self._peek(),
+                    self.source_name,
+                )
         return ClassDeclaration(
             name,
             members,
@@ -584,6 +601,8 @@ class Parser:
                 is_async=is_async,
                 decorators=decorators,
             )
+        if is_interface and name == "key" and self._check("{"):
+            return self._parse_interface_map_entry(type_name)
         if decorators:
             raise ParseError("Decorators can only be applied to methods and nested classes", self._peek())
         if self._match("{"):
@@ -618,6 +637,44 @@ class Parser:
             self._peek(),
             self.source_name,
         )
+
+    def _parse_interface_map_entry(self, key_type: str) -> InterfaceMapEntry:
+        """Parse ``keyType key { field declarations }`` inside an interface.
+
+        ``key`` is a contextual keyword here (it stays a normal identifier
+        everywhere else — a field simply named ``key`` still parses when no
+        ``{`` follows).
+        """
+        self._consume("{", "Expected '{' after 'key'")
+        members: list[Any] = []
+        while not self._check("}") and not self._check("EOF"):
+            start_position = self.position
+            member = self._class_member("", is_interface=True)
+            if not isinstance(member, VariableDeclaration):
+                self._record_error(
+                    ParseError(
+                        "A 'key' entry may only declare fields",
+                        self._peek(),
+                        self.source_name,
+                    )
+                )
+                self._synchronize(start_position, stop_at_block_end=True)
+                continue
+            if member.initializer is not None:
+                raise ParseError(
+                    "A 'key' entry field cannot have an initializer",
+                    self._peek(),
+                    self.source_name,
+                )
+            members.append(member)
+        self._consume("}", "Expected '}' after key entry")
+        if not members:
+            raise ParseError(
+                "A 'key' entry must declare at least one field",
+                self._peek(),
+                self.source_name,
+            )
+        return InterfaceMapEntry(key_type, members)
 
     def _enum_declaration(self, modifiers: set[str]) -> EnumDeclaration:
         name = self._consume("IDENTIFIER", "Expected enum name").value

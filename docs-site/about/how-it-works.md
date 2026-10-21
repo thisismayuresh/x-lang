@@ -150,8 +150,11 @@ Monaco + Pyodide (no CDN at runtime):
    `playground/monaco/` with the AMD loader — no CDN. An X Monarch
    tokenizer + language configuration provide highlighting and auto-close.
    Completions (Ctrl+Space / after `.`) use `playground/completions.js`
-   plus simple type inference (`inferVarType`) and declared-name scan
-   (`collectDeclarations`) in `playground.js`. Up to five files live as
+   plus simple type inference (`inferVarType`) and declared-name/member
+   scan (`collectDeclarations`) in `playground.js` — enum members,
+   class/interface fields, and object-literal keys complete after `.`,
+   drawing on every open file so imported types work too. Up to five
+   files live as
    Monaco models under a virtual `playground/` folder; the splitter
    between panes is draggable. Error lines use Monaco markers
    (squiggles).

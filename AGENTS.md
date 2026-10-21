@@ -98,12 +98,15 @@ python3 -m http.server 8080
 
 ## Committing and pushing
 
-**Never commit or push changes unless the user explicitly asks you to.** The
-user wants to review the file changes first. Leave your edits uncommitted in
-the working tree and stop — do not stage, commit, amend, or push on your own
-initiative. When the user does ask for a commit, follow the conventions they
-state (for example one logical change per commit and conventional commit
-messages).
+**Do not commit until the user says to commit — no exceptions.** The user
+wants to review file changes in the working tree first. Leave your edits
+uncommitted and stop — do not stage, commit, amend, reset, or push on your
+own initiative, even if committing was requested earlier in the session and
+even as part of wrapping up a completed task. A request to "undo commits"
+means: reset them back into the working tree (mixed reset, keep the file
+contents), leaving nothing staged. When the user does ask for a commit,
+follow the conventions they state (for example one logical change per
+commit and conventional commit messages).
 
 ## What “done” means
 

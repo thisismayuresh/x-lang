@@ -16,6 +16,16 @@ export namespace MyNamespace {
   enum Color {
     RED = "red", GREEN = "green",
   }
+
+  enum Gender {
+    FEMALE = "female", MALE = "male",
+  }
+
+  let object<string, string|Gender> object = {
+        "name": "Maya",
+        "age": "21",
+        "gender": Gender.FEMALE
+    }
 }
 
 export const integer MAX = 100;
