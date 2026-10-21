@@ -153,7 +153,10 @@ Monaco + Pyodide (no CDN at runtime):
    plus simple type inference (`inferVarType`) and declared-name/member
    scan (`collectDeclarations`) in `playground.js` — enum members,
    class/interface fields, and object-literal keys complete after `.`,
-   drawing on every open file so imported types work too. Up to five
+   drawing on every open file so imported types work too. Inside an
+   `import` statement the path itself completes (`importCompletions`):
+   other open file names, then the target file's exports plus `*`, then
+   the members of one of its exported namespaces. Up to five
    files live as
    Monaco models under a virtual `playground/` folder; the splitter
    between panes is draggable. Error lines use Monaco markers
