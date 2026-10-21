@@ -38,7 +38,6 @@ Participants function getRegistrations() {
       "age": 24,
       "foo": bar(),
       "array": [7, 8],
-      "isMarried": false,
     },
     310: {
       "name": "Zoya",

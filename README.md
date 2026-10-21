@@ -530,6 +530,30 @@ print(byId[100].name);      // Maya
 print(byId.101.age);        // 21 (`.N` indexes like `object<K, V>`)
 ```
 
+For an ordered, non-keyed collection of the same objects, spell the value
+shape as its own interface and use it as an array element type instead —
+every element literal is then checked field by field:
+
+```x
+interface IParticipantValue {
+  string name, Gender gender, number age,
+  any? foo, integer[] array, boolean isMarried,
+}
+
+type ParticipantList = IParticipantValue[]
+
+let ParticipantList people = [
+  { name: "Maya", gender: Gender.FEMALE, age: 30,
+    foo: null, array: [1, 2], isMarried: false },
+  { name: "Bo", gender: Gender.MALE, age: 21,
+    foo: null, array: [3], isMarried: true },
+]
+print(people[0].name);      // Maya
+```
+
+`examples/participants/util.x` carries both spellings side by side
+(`Participant` map interface, `ParticipantList` array alias).
+
 `key` is contextual here: an interface field or method simply named `key`
 (`integer key,`) still parses, and so does a class property block. A map
 interface may declare nothing else — no sibling fields or methods, at most
