@@ -778,8 +778,15 @@
     var declared = new RegExp(
       "(?:let|const|var)\\s+" + name + "\\s*:\\s*([A-Za-z_][A-Za-z0-9_]*)"
     ).exec(content);
-    if (declared && declared[1] && members[declared[1]]) {
+    if (declared && declared[1]) {
       return declared[1];
+    }
+    var spaced = new RegExp(
+      "(?:let|const|var)\\s+(object\\s*<[^>]+>|[A-Za-z_][A-Za-z0-9_]*)" +
+        "\\s+" + name + "\\b"
+    ).exec(content);
+    if (spaced && spaced[1]) {
+      return /^object\b/.test(spaced[1]) ? "object" : spaced[1];
     }
     var typed = new RegExp(
       "\\b(integer|int|float|string|boolean|any|void)\\s+" + name + "\\b"
@@ -811,11 +818,106 @@
       if (newCall) {
         return newCall[1];
       }
+      var enumRef = /^([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]/.exec(rhs);
+      if (enumRef) {
+        return enumRef[1];
+      }
       if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(rhs)) {
         return "function";
       }
     }
     return null;
+  }
+
+  // Top-level keys of the object literal bound to `name`, so `name.`
+  // offers what the literal actually holds.
+  function objectLiteralKeys(content, name) {
+    var init = new RegExp(
+      "(?:let|const|var)\\s+(?:[A-Za-z_][A-Za-z0-9_]*" +
+        "(?:\\s*<[^>]*>)?(?:\\[\\])?\\s+)?" + name + "\\s*=\\s*\\{"
+    ).exec(content);
+    if (!init) {
+      return [];
+    }
+    var start = init.index + init[0].length;
+    var depth = 1;
+    var i = start;
+    while (i < content.length && depth > 0) {
+      if (content[i] === "{") {
+        depth += 1;
+      } else if (content[i] === "}") {
+        depth -= 1;
+      }
+      i += 1;
+    }
+    var body = content.slice(start, i - 1);
+    var keys = [];
+    var seen = {};
+    var d = 0;
+    var j = 0;
+    while (j < body.length) {
+      var ch = body[j];
+      if (ch === "{" || ch === "[") {
+        d += 1;
+        j += 1;
+        continue;
+      }
+      if (ch === "}" || ch === "]") {
+        d -= 1;
+        j += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        var quote = ch;
+        var stringStart = j;
+        j += 1;
+        while (j < body.length && body[j] !== quote) {
+          if (body[j] === "\\") {
+            j += 1;
+          }
+          j += 1;
+        }
+        j += 1;
+        if (d === 0 && body[j] === ":") {
+          var quotedKey = body.slice(stringStart + 1, j - 1);
+          if (!seen[quotedKey]) {
+            seen[quotedKey] = true;
+            keys.push(quotedKey);
+          }
+          j += 1;
+        }
+        continue;
+      }
+      if (d === 0) {
+        var keyMatch = /^\s*(?:([A-Za-z_][A-Za-z0-9_]*)|(\d+))\s*:/.exec(
+          body.slice(j)
+        );
+        if (keyMatch) {
+          var key = keyMatch[1] || keyMatch[2];
+          if (!seen[key]) {
+            seen[key] = true;
+            keys.push(key);
+          }
+          j += keyMatch[0].length;
+          continue;
+        }
+      }
+      j += 1;
+    }
+    return keys;
+  }
+
+  // All open playground files, so a type imported from another tab
+  // still completes after `.`.
+  function allProjectContent() {
+    var parts = [];
+    Object.keys(models).forEach(function (name) {
+      var model = models[name];
+      if (model && !model.isDisposed()) {
+        parts.push(model.getValue());
+      }
+    });
+    return parts.join("\n");
   }
 
   function memberItemsFor(chain, content) {
@@ -870,9 +972,28 @@
     }
 
     if (!second) {
-      var inferred = inferVarType(content, head);
+      var all = allProjectContent();
+      var decls = collectDeclarations(all);
+      var own = decls.typeMembers[head];
+      if (own && own.members.length) {
+        own.members.forEach(function (memberName) {
+          addAll([{
+            text: memberName,
+            type: "property",
+            detail: own.kind === "enum" ? "enum member" : own.kind
+          }]);
+        });
+        return items;
+      }
+      var inferred = inferVarType(all, head);
       if (inferred === "string") {
         addAll(members.string);
+      } else if (inferred === "object") {
+        objectLiteralKeys(all, head).forEach(function (key) {
+          addAll([{ text: key, type: "property", detail: "key" }]);
+        });
+        addAll(members["*"]);
+        return items;
       } else if (inferred === "Array") {
         addAll(members.List);
         addAll(members["*"]);
@@ -883,6 +1004,14 @@
         return items;
       } else if (inferred && members[inferred]) {
         addAll(members[inferred]);
+      } else if (inferred && decls.typeMembers[inferred]) {
+        decls.typeMembers[inferred].members.forEach(function (memberName) {
+          addAll([{
+            text: memberName,
+            type: "property",
+            detail: decls.typeMembers[inferred].kind
+          }]);
+        });
       }
     }
 
@@ -904,10 +1033,11 @@
   function collectDeclarations(content) {
     var variables = [];
     var types = [];
+    var typeMembers = {};
     var seenVar = {};
     var seenType = {};
     if (!content) {
-      return { variables: variables, types: types };
+      return { variables: variables, types: types, typeMembers: typeMembers };
     }
     content = content
       .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -964,7 +1094,57 @@
       }
     }
 
-    return { variables: variables, types: types };
+    // Enum values and class/interface members back the completions shown
+    // after `Name.` for user-declared types.
+    var enumRe = /\benum\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\}/g;
+    while ((match = enumRe.exec(content)) !== null) {
+      var enumMembers = [];
+      match[2].split(/[,;\n]/).forEach(function (piece) {
+        var valueMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|$)/.exec(piece);
+        if (valueMatch) {
+          enumMembers.push(valueMatch[1]);
+        }
+      });
+      typeMembers[match[1]] = { kind: "enum", members: enumMembers };
+    }
+
+    var classRe =
+      /\b(?:class|interface)\s+([A-Za-z_][A-Za-z0-9_]*)[^{]*\{([^}]*)\}/g;
+    while ((match = classRe.exec(content)) !== null) {
+      if (typeMembers[match[1]]) {
+        continue;
+      }
+      var classMembers = [];
+      match[2].split(/[,;\n]/).forEach(function (piece) {
+        var text = piece
+          .replace(
+            /\b(?:public|private|protected|static|virtual|override|final)\b/g,
+            " "
+          )
+          .trim();
+        if (!text) {
+          return;
+        }
+        var methodMatch = /^(?:.*\s)?([A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)$/.exec(
+          text
+        );
+        if (methodMatch) {
+          classMembers.push(methodMatch[1]);
+          return;
+        }
+        var fieldMatch = /^.*\s([A-Za-z_][A-Za-z0-9_]*)$/.exec(text);
+        if (fieldMatch) {
+          classMembers.push(fieldMatch[1]);
+        }
+      });
+      typeMembers[match[1]] = {
+        kind: match[0].indexOf("interface") === 0 ||
+          /\binterface\b/.test(match[0]) ? "interface" : "class",
+        members: classMembers
+      };
+    }
+
+    return { variables: variables, types: types, typeMembers: typeMembers };
   }
 
   function dedupeItems(items) {
