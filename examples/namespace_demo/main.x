@@ -15,6 +15,7 @@ function funs() {
   print(Color.RED)
   print(sayHi("Bo"))
   print(util.MyNamespace.add(10, 32))
+  print(util.MyNamespace.object)
   print(util.MAX)
 }
 
