@@ -121,6 +121,10 @@ trains, not published packages. The VS Code extension versions on its own
   tab complete too. Type-before-name annotations (`let IParticipantValue p
   = ...`) and enum-valued bindings (`let g = Gender.FEMALE`) infer the
   receiver's type; `let g = Gender.FEMALE` also works.
+- **Playground import-path completions**: `import ` (Ctrl+Space) offers the
+  other open playground files; `import util.` offers that file's exported
+  declarations plus a `*` wildcard; `import util.Ns.` offers the names
+  inside its exported namespace. Non-exported declarations stay hidden.
 
 ### Tooling / CI
 

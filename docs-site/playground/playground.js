@@ -920,6 +920,159 @@
     return parts.join("\n");
   }
 
+  // `import util.` / `import util.Ns.` completions: exported top-level
+  // declarations of another open playground file, its `*` wildcard, or
+  // the members of one of its exported namespaces.
+  function exportedDeclItems(content, nsName, fileName) {
+    var items = [];
+    var seen = {};
+    var lines = content
+      .replace(/\/\*[\s\S]*?\*\//g, function (block) {
+        return block.replace(/[^\n]/g, " ");
+      })
+      .replace(/\/\/[^\n]*/g, "")
+      .split("\n");
+    var depth = 0;
+    var inNs = false;
+    var nsEntryDepth = -1;
+
+    function add(name, kind) {
+      if (!name || seen[name] || isCatalogKeyword(name)) {
+        return;
+      }
+      seen[name] = true;
+      items.push({
+        text: name,
+        type: kind,
+        detail: nsName
+          ? "exported from " + fileName + "." + nsName
+          : "exported from " + fileName
+      });
+    }
+
+    function classify(text) {
+      var m;
+      text = text.replace(
+        /^(?:public|private|protected|static|virtual|final|abstract)\s+/g,
+        ""
+      );
+      if ((m = /^(enum|interface|class|namespace)\s+([A-Za-z_]\w*)/.exec(text))) {
+        return {
+          name: m[2],
+          kind: m[1] === "class" ? "class" :
+            m[1] === "namespace" ? "namespace" : "type"
+        };
+      }
+      if ((m = /^type\s+([A-Za-z_]\w*)\s*=/.exec(text))) {
+        return { name: m[1], kind: "type" };
+      }
+      if ((m = /^(?:[A-Za-z_]\w*(?:\[\])?\??\s+)?function\s+([A-Za-z_]\w*)/.exec(text))) {
+        return { name: m[1], kind: "method" };
+      }
+      if ((m = /^(?:integer|int|float|string|boolean|any|void|var)\s+([A-Za-z_]\w*)\s*\(/.exec(text))) {
+        return { name: m[1], kind: "method" };
+      }
+      if ((m = /^(?:let|const|var)\s+([A-Za-z_]\w*)/.exec(text))) {
+        return { name: m[1], kind: "variable" };
+      }
+      return null;
+    }
+
+    lines.forEach(function (line) {
+      var text = line.trim();
+      var opens = (text.match(/\{/g) || []).length;
+      var closes = (text.match(/\}/g) || []).length;
+
+      if (!inNs) {
+        if (depth === 0) {
+          if (nsName) {
+            var nsMatch = /^export\s+namespace\s+([A-Za-z_]\w*)\s*\{/.exec(text);
+            if (nsMatch && nsMatch[1] === nsName) {
+              inNs = true;
+              nsEntryDepth = depth;
+            }
+          } else {
+            var declMatch = /^export\s+(.*)$/.exec(text);
+            if (declMatch) {
+              var decl = classify(declMatch[1]);
+              if (decl) {
+                add(decl.name, decl.kind);
+              }
+            }
+          }
+        }
+      } else if (depth === nsEntryDepth + 1) {
+        var inner = classify(text.replace(/^export\s+/, ""));
+        if (inner) {
+          add(inner.name, inner.kind);
+        }
+      }
+
+      depth += opens - closes;
+      if (inNs && depth <= nsEntryDepth) {
+        inNs = false;
+        nsEntryDepth = -1;
+      }
+    });
+
+    return items;
+  }
+
+  function importCompletions(pathSoFar, model) {
+    var parts = pathSoFar.split(".");
+    var partial = parts[parts.length - 1];
+    var items = [];
+    var activeName = null;
+
+    Object.keys(models).forEach(function (name) {
+      if (models[name] === model) {
+        activeName = name;
+      }
+    });
+
+    if (parts.length === 1) {
+      Object.keys(models).forEach(function (name) {
+        var candidate = models[name];
+        if (!candidate || candidate.isDisposed() || name === activeName) {
+          return;
+        }
+        items.push({
+          text: name.replace(/\.x$/, ""),
+          type: "namespace",
+          detail: "playground file " + name
+        });
+      });
+    } else {
+      var head = parts[0];
+      var targetName = null;
+      Object.keys(models).forEach(function (name) {
+        if (
+          name !== activeName &&
+          name.replace(/\.x$/, "") === head &&
+          models[name] &&
+          !models[name].isDisposed()
+        ) {
+          targetName = name;
+        }
+      });
+      if (targetName) {
+        var content = models[targetName].getValue();
+        if (parts.length === 2) {
+          items = exportedDeclItems(content, null, targetName);
+          items.push({
+            text: "*",
+            type: "namespace",
+            detail: "wildcard import from " + targetName
+          });
+        } else if (parts.length === 3) {
+          items = exportedDeclItems(content, parts[1], targetName);
+        }
+      }
+    }
+
+    return prefixFilter(dedupeItems(items), partial);
+  }
+
   function memberItemsFor(chain, content) {
     var members = catalog().members;
     var items = [];
@@ -1208,6 +1361,15 @@
     var content = model.getValue();
     var chain = dottedChain(linePrefix);
     var list;
+
+    // `import util.` / `import util.Ns.` — path-aware suggestions from the
+    // other open playground files (Ctrl+Space also works after bare `import `).
+    var importPath = /\bimport\s+([A-Za-z0-9_.]*)$/.exec(linePrefix);
+    if (importPath) {
+      return importCompletions(importPath[1], model).map(function (item) {
+        return toCompletion(item, range);
+      });
+    }
 
     if (chain.length || /\.\s*[A-Za-z0-9_]*$/.test(linePrefix)) {
       list = memberItemsFor(chain, content);
