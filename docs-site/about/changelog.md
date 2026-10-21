@@ -125,6 +125,18 @@ trains, not published packages. The VS Code extension versions on its own
   other open playground files; `import util.` offers that file's exported
   declarations plus a `*` wildcard; `import util.Ns.` offers the names
   inside its exported namespace. Non-exported declarations stay hidden.
+- **Playground `Ns.` completions**: a namespace's declared members
+  (functions, classes, interfaces, enums, types, variables, nested
+  namespaces) now complete after `Ns.` — for same-file namespaces,
+  dotted `import util.Ns` bindings, and `as` aliases alike, with nested
+  `A.B.` chains walked. Class-member scanning also accepts method
+  signatures that end in `{` (the usual multi-line style).
+- **Playground suggestions scan every open file** in plain and
+  type-position contexts too (`let x: `, parameter annotations,
+  `extends`/`implements`): types, functions, imports, and variables
+  declared in another tab complete in whichever file you type. The plain
+  pool now includes user types, so `let Participant` offers
+  `Participant`.
 
 ### Tooling / CI
 

@@ -153,7 +153,13 @@ Monaco + Pyodide (no CDN at runtime):
    plus simple type inference (`inferVarType`) and declared-name/member
    scan (`collectDeclarations`) in `playground.js` — enum members,
    class/interface fields, and object-literal keys complete after `.`,
-   drawing on every open file so imported types work too. Inside an
+   drawing on every open file so imported types work too. Namespaces are
+   scanned with their bodies: `Ns.` offers the namespace's declared
+   members (also via dotted imports, `as` aliases, and nested `A.B.`
+   chains). The plain and type-position pools (after `:`, `extends`,
+   `implements`, in parameter annotations) also scan every open file —
+   cross-file types, functions, imports, and variables complete in
+   whichever file you type. Inside an
    `import` statement the path itself completes (`importCompletions`):
    other open file names, then the target file's exports plus `*`, then
    the members of one of its exported namespaces. Up to five
