@@ -767,7 +767,9 @@
     return /(^|[^\w.])(let|const|var)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*[A-Za-z_]*$/.test(before) ||
       /(^|[^\w.])(integer|int|float|string|boolean|any|void|var)\s+[A-Za-z_][A-Za-z0-9_]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=(,;]*\s*$/.test(before) ||
       /function\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*:\s*[A-Za-z_]*$/.test(before) ||
-      /(^|[^\w.])(class|interface|extends|implements)\s+[A-Za-z_]*$/.test(before);
+      /(^|[^\w.])(class|interface|extends|implements)\s+[A-Za-z_]*$/.test(before) ||
+      // parameter / field annotations: `f(a: Gen` , `f(x, other: Par`
+      /\([^()]*[A-Za-z_][A-Za-z0-9_]*\s*:\s*[A-Za-z_]*$/.test(before);
   }
 
   function inferVarType(content, name) {
@@ -1124,10 +1126,20 @@
       return items;
     }
 
+    var all = allProjectContent();
+    var decls = collectDeclarations(all);
+    // `import util.MyNamespace as My` — `My.` behaves like `MyNamespace.`.
+    var lookup = head;
+    var aliasMatch = new RegExp(
+      "\\bimport\\s+([A-Za-z_][A-Za-z0-9_.]*)\\s+as\\s+" + head + "\\b"
+    ).exec(all);
+    if (aliasMatch) {
+      var aliasParts = aliasMatch[1].split(".");
+      lookup = aliasParts[aliasParts.length - 1];
+    }
+
     if (!second) {
-      var all = allProjectContent();
-      var decls = collectDeclarations(all);
-      var own = decls.typeMembers[head];
+      var own = decls.typeMembers[lookup];
       if (own && own.members.length) {
         own.members.forEach(function (memberName) {
           addAll([{
@@ -1139,6 +1151,15 @@
         return items;
       }
       var inferred = inferVarType(all, head);
+      if (
+        aliasMatch &&
+        decls.typeMembers[lookup] &&
+        (!inferred ||
+          inferred === head ||
+          (!members[inferred] && !decls.typeMembers[inferred]))
+      ) {
+        inferred = lookup;
+      }
       if (inferred === "string") {
         addAll(members.string);
       } else if (inferred === "object") {
@@ -1165,6 +1186,32 @@
             detail: decls.typeMembers[inferred].kind
           }]);
         });
+      }
+    } else if (
+      decls.typeMembers[lookup] &&
+      decls.typeMembers[lookup].kind === "namespace"
+    ) {
+      // `A.B.` — walk dotted namespace keys collected by collectDeclarations.
+      var nsKey = lookup;
+      for (var ci = 1; ci < chain.length; ci += 1) {
+        var nextKey = nsKey + "." + chain[ci];
+        if (
+          !decls.typeMembers[nextKey] ||
+          decls.typeMembers[nextKey].kind !== "namespace"
+        ) {
+          break;
+        }
+        nsKey = nextKey;
+      }
+      if (nsKey !== lookup) {
+        decls.typeMembers[nsKey].members.forEach(function (memberName) {
+          addAll([{
+            text: memberName,
+            type: "property",
+            detail: "namespace"
+          }]);
+        });
+        return items;
       }
     }
 
@@ -1278,7 +1325,7 @@
         if (!text) {
           return;
         }
-        var methodMatch = /^(?:.*\s)?([A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)$/.exec(
+        var methodMatch = /^(?:.*\s)?([A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)\s*\{?$/.exec(
           text
         );
         if (methodMatch) {
@@ -1295,6 +1342,78 @@
           /\binterface\b/.test(match[0]) ? "interface" : "class",
         members: classMembers
       };
+    }
+
+    // Namespace bodies back `Ns.` (and `A.B.` via dotted typeMembers keys).
+    // Line-based with brace depth so nested braces (class bodies, object
+    // literals) do not leak members into the enclosing namespace.
+    function classifyNsDecl(text) {
+      var m;
+      text = text
+        .replace(/^export\s+/, "")
+        .replace(
+          /^(?:public|private|protected|static|virtual|final|abstract)\s+/g,
+          ""
+        );
+      if ((m = /^(enum|interface|class|namespace)\s+([A-Za-z_]\w*)/.exec(text))) {
+        return { name: m[2], kind: m[1] };
+      }
+      if ((m = /^type\s+([A-Za-z_]\w*)\s*=/.exec(text))) {
+        return { name: m[1], kind: "type" };
+      }
+      if ((m = /^(?:[A-Za-z_]\w*(?:\[\])?\??\s+)?function\s+([A-Za-z_]\w*)/.exec(text))) {
+        return { name: m[1], kind: "method" };
+      }
+      if ((m = /^(?:integer|int|float|string|boolean|any|void)\s+([A-Za-z_]\w*)\s*\(/.exec(text))) {
+        return { name: m[1], kind: "method" };
+      }
+      if ((m = /^(?:let|const|var)\s+([A-Za-z_]\w*)/.exec(text))) {
+        return { name: m[1], kind: "variable" };
+      }
+      return null;
+    }
+
+    var nsDepth = 0;
+    var nsStack = [];
+
+    function registerNamespace(closed) {
+      typeMembers[closed.name] = { kind: "namespace", members: closed.members };
+      if (nsStack.length) {
+        var parent = nsStack[nsStack.length - 1];
+        if (parent.members.indexOf(closed.name) === -1) {
+          parent.members.push(closed.name);
+        }
+        typeMembers[parent.name + "." + closed.name] = {
+          kind: "namespace",
+          members: closed.members
+        };
+      }
+    }
+
+    content.split("\n").forEach(function (line) {
+      var text = line.trim();
+      var opens = (text.match(/\{/g) || []).length;
+      var closes = (text.match(/\}/g) || []).length;
+
+      if (nsStack.length && nsDepth === nsStack[nsStack.length - 1].bodyDepth) {
+        var inner = classifyNsDecl(text);
+        if (inner && nsStack[nsStack.length - 1].members.indexOf(inner.name) === -1) {
+          nsStack[nsStack.length - 1].members.push(inner.name);
+        }
+      }
+
+      var nsMatch = /^(?:export\s+)?namespace\s+([A-Za-z_]\w*)\s*\{/.exec(text);
+      if (nsMatch) {
+        nsStack.push({ name: nsMatch[1], bodyDepth: nsDepth + 1, members: [] });
+      }
+
+      nsDepth += opens - closes;
+      while (nsStack.length && nsDepth < nsStack[nsStack.length - 1].bodyDepth) {
+        registerNamespace(nsStack.pop());
+      }
+    });
+    while (nsStack.length) {
+      registerNamespace(nsStack.pop());
     }
 
     return { variables: variables, types: types, typeMembers: typeMembers };
@@ -1381,15 +1500,18 @@
       }
     } else {
       var wordPrefix = word.word || "";
+      // All open files: a type/import declared in another tab belongs in
+      // this file's suggestions too.
+      var projectDecls = collectDeclarations(allProjectContent());
       if (inTypePosition(linePrefix)) {
         var typePool = (catalog().types || [])
           .concat(catalog().keywords || [])
-          .concat(collectDeclarations(content).types);
+          .concat(projectDecls.types);
         var rest = prefixFilter(
           (catalog().builtins || [])
             .concat(catalog().classes || [])
             .concat(catalog().snippets || [])
-            .concat(collectDeclarations(content).variables),
+            .concat(projectDecls.variables),
           wordPrefix
         );
         list = prefixFilter(dedupeItems(typePool), wordPrefix).concat(rest);
@@ -1400,7 +1522,8 @@
           .concat(catalog().builtins || [])
           .concat(catalog().classes || [])
           .concat(catalog().snippets || [])
-          .concat(collectDeclarations(content).variables);
+          .concat(projectDecls.types)
+          .concat(projectDecls.variables);
         list = prefixFilter(dedupeItems(pool), wordPrefix);
       }
     }
