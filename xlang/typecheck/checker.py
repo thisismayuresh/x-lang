@@ -32,6 +32,7 @@ from ..ast_nodes import (
     ImportDeclaration,
     ImportNamespaceAlias,
     Index,
+    InterfaceMapEntry,
     Literal,
     Member,
     MatchExpression,
@@ -852,6 +853,12 @@ class TypeChecker:
                     f"'{interface_name}'",
                     declaration,
                 )
+            elif self._map_interface_view(self._interfaces[lookup_name]) is not None:
+                self._error(
+                    f"Class '{declaration.name}' cannot implement map interface "
+                    f"'{interface_name}'; use it as a variable or parameter type",
+                    declaration,
+                )
         if declaration.parent_name:
             parent_name = declaration.parent_name.split("<")[0].strip()
             parent = self._classes.get(parent_name)
@@ -1252,21 +1259,24 @@ class TypeChecker:
     ) -> bool:
         """Emit per-key diagnostics for a literal against ``object<K, V>``.
 
+        A map interface (``integer key { ... }``) is viewed as the
+        equivalent ``object<K, V>`` and diagnosed the same way.
+
         Returns True when at least one problem was reported, so the caller
         can suppress its generic assignability error.  ``label`` reads after
         "in " (``'settings'``, ``argument 1 of 'describe'``); ``subject`` is
         what the "is typed" note is about.
         """
-        if (
-            annotated.name != "object"
-            or len(annotated.arguments) != 2
-            or not isinstance(initializer, ObjectLiteral)
-        ):
+        if not isinstance(initializer, ObjectLiteral):
             return False
-        key_type, value_type = annotated.arguments
-        spelling = (spelling or annotated.display()).strip()
-        # The parser stores generics without spaces; put them back for humans.
-        spelling = re.sub(r"\s*,\s*", ", ", spelling)
+        view = self._typed_object_view(annotated)
+        if view is None:
+            return False
+        key_type, value_type, view_spelling = view
+        spelling = (spelling or view_spelling).strip()
+        if annotated.name == "object":
+            # The parser stores generics without spaces; put them back for humans.
+            spelling = re.sub(r"\s*,\s*", ", ", spelling)
         allowed = self._allowed_key_names(key_type)
         value_types = dict(actual.record_fields)
         reported = False
@@ -2281,12 +2291,12 @@ class TypeChecker:
         literal = self._string_literal_type(expression)
         if literal is not None and self._references_literal(target):
             return is_compatible(literal, target, relations=self)
-        if (
-            isinstance(expression, ObjectLiteral)
-            and target.name == "object"
-            and len(target.arguments) == 2
-        ):
-            return self._object_literal_matches(expression, inferred, target)
+        if isinstance(expression, ObjectLiteral):
+            view = self._typed_object_view(target)
+            if view is not None:
+                key_type, value_type, _ = view
+                object_view = XType("object", arguments=(key_type, value_type))
+                return self._object_literal_matches(expression, inferred, object_view)
         return is_compatible(inferred, target, relations=self)
 
     def _object_literal_matches(
@@ -2622,9 +2632,56 @@ class TypeChecker:
             current = base
         return False
 
+    def _map_interface_view(self, interface: ClassDeclaration) -> XType | None:
+        """``object<K, V>`` view of a map interface (``integer key { ... }``).
+
+        Returns None for ordinary member interfaces.  The value shape is a
+        record type built from the entry's field declarations.
+        """
+        entry = next(
+            (
+                member
+                for member in interface.members
+                if isinstance(member, InterfaceMapEntry)
+            ),
+            None,
+        )
+        if entry is None:
+            return None
+        key_type = self._resolve_annotation(entry.key_type)
+        value_fields = tuple(
+            (member.name, self._resolve_annotation(member.type_name))
+            for member in entry.members
+            if isinstance(member, VariableDeclaration)
+        )
+        return XType(
+            "object", arguments=(key_type, XType("record", record_fields=value_fields))
+        )
+
+    def _typed_object_view(
+        self, annotated: XType
+    ) -> tuple[XType, XType, str] | None:
+        """Key type, value type, and spelling for ``object<K, V>`` or a map interface."""
+        if annotated.name == "object" and len(annotated.arguments) == 2:
+            key_type, value_type = annotated.arguments
+            spelling = re.sub(r"\s*,\s*", ", ", annotated.display().strip())
+            return key_type, value_type, spelling
+        interface = self._interfaces.get(annotated.name or "")
+        if interface is not None:
+            view = self._map_interface_view(interface)
+            if view is not None:
+                key_type, value_type = view.arguments
+                return key_type, value_type, annotated.display().strip()
+        return None
+
     def _satisfies_interface(self, source: XType, interface: ClassDeclaration) -> bool:
         if source.is_any:
             return True
+        map_view = self._map_interface_view(interface)
+        if map_view is not None:
+            if source.name == interface.name:
+                return True
+            return is_compatible(source, map_view, relations=self)
         required = self._interface_members(interface)
         if source.record_fields or source.name == "object":
             if source.name == "object":
@@ -2808,6 +2865,9 @@ class TypeChecker:
         type_name = getattr(node, "type_name", None)
         if isinstance(type_name, str):
             self._check_type_string(type_name, anchor)
+        key_type = getattr(node, "key_type", None)
+        if isinstance(key_type, str):
+            self._check_type_string(key_type, anchor)
         return_type = getattr(node, "return_type", None)
         if isinstance(return_type, str):
             self._check_type_string(return_type, anchor)

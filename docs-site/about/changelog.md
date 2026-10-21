@@ -69,6 +69,16 @@ trains, not published packages. The VS Code extension versions on its own
   way it already resolves dotted `extends`. The playground's
   `collectDeclarations` now also registers `as alias` import names for
   completions.
+- **Map interfaces**: an interface whose only member is a
+  `keyType key { fields }` entry names a dictionary type —
+  `interface Participants { integer key { string name, ... } }` binds
+  `let Participants byId = { 100: { name: "Maya", ... } }` with the same
+  per-key diagnostics as `object<K, V>`, the same runtime structural check,
+  `m[100]` / `m.100` access, and a TypeScript index-signature emit
+  (`[key: number]: { name: string; ... };`). `key` stays a normal
+  identifier elsewhere (a field or method named `key` still parses); a map
+  interface cannot mix with other members, be implemented by a class, or
+  be constructed with `new`.
 - **Enums and interfaces used as values are rejected**: `print(Gender)`
   reports `Enum 'Gender' is a type, not a value`; `IFoo(...)` reports only
   `Cannot construct interface`; `typeOf(Gender)` stays accepted.
@@ -103,6 +113,14 @@ trains, not published packages. The VS Code extension versions on its own
   interfaces behind `object<K, V>` aliases, with dotted paths like `t.200.`
   walked segment by segment), and object-literal receivers offer the
   literal's own keys before the builtin `keys`/`values` methods.
+- **Playground completions after `.` for user types**: the browser
+  playground now offers user-declared enum members (`Gender.`),
+  class/interface fields (`IParticipantValue.`), and object-literal keys
+  (`let object<string, any> obj = { "name": ... }` → `obj.` offers `name`),
+  scanning **every open playground file** so types imported from another
+  tab complete too. Type-before-name annotations (`let IParticipantValue p
+  = ...`) and enum-valued bindings (`let g = Gender.FEMALE`) infer the
+  receiver's type; `let g = Gender.FEMALE` also works.
 
 ### Tooling / CI
 

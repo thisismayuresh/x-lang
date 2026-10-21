@@ -63,6 +63,7 @@ from ..ast_nodes import (
     ImportDeclaration,
     ImportNamespaceAlias,
     Index,
+    InterfaceMapEntry,
     Literal,
     LiteralPattern,
     MatchArm,
@@ -544,6 +545,19 @@ class TypeScriptEmitter:
         if isinstance(member, VariableDeclaration):
             self._line(self._class_field(member, owner) + ";")
             return
+        if isinstance(member, InterfaceMapEntry):
+            self._line(self._map_entry_field(member) + ";")
+            return
+
+    def _map_entry_field(self, entry: InterfaceMapEntry) -> str:
+        fields = "; ".join(
+            f"{field.name}: {self._ts_type(field.type_name)}"
+            if field.type_name
+            else field.name
+            for field in entry.members
+        )
+        shape = "{ " + fields + " }" if fields else "{}"
+        return f"[key: {self._ts_type(entry.key_type)}]: {shape}"
 
     def _is_constructor(
         self, member: FunctionDeclaration, owner: ClassDeclaration

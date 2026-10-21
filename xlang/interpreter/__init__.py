@@ -3206,6 +3206,33 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         return members
 
     def _interface_matches(self, interface: XClass, value: Any) -> bool:
+        from ..ast_nodes import InterfaceMapEntry
+
+        map_entries = [
+            member
+            for member in self._interface_members(interface)
+            if isinstance(member, InterfaceMapEntry)
+        ]
+        if map_entries:
+            # Map interface (`integer key { fields }`): a dict whose keys fit
+            # the key type and whose values are dicts shaped by the fields.
+            if not isinstance(value, dict):
+                return False
+            entry = map_entries[0]
+            for key, item in value.items():
+                if self._type_match_score(entry.key_type, key) is None:
+                    return False
+                if not isinstance(item, dict):
+                    return False
+                for field in entry.members:
+                    field_value = item.get(field.name, UNDEFINED)
+                    if (
+                        field_value is UNDEFINED
+                        or self._type_match_score(field.type_name, field_value)
+                        is None
+                    ):
+                        return False
+            return True
         if isinstance(value, dict):
             def get_member(name: str) -> Any:
                 return value.get(name, UNDEFINED)

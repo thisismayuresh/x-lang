@@ -106,6 +106,20 @@ class VariableDeclaration:
 
 
 @dataclass
+class InterfaceMapEntry:
+    """A ``keyType key { fields }`` entry inside an interface.
+
+    Declares a map interface: every key fits *key_type* and every value is
+    an object shaped by *members* (field ``VariableDeclaration``\\ s). The
+    interface is usable as a type annotation, e.g.
+    ``let Participants byId = { 100: { name: "Maya" } }``.
+    """
+
+    key_type: str
+    members: list[Any] = field(default_factory=list)
+
+
+@dataclass
 class ClassDeclaration:
     name: str
     members: list[Any]
