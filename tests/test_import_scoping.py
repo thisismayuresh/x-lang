@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 
 from xlang.cli import main as cli_main
 from xlang.module_loader import ModuleLoader
-from xlang.runtime import Interpreter
+from xlang.runtime import Interpreter, RuntimeErrorX
 
 UTIL_MODULE = """
     export enum Gender {
@@ -305,6 +305,79 @@ class NamespaceStringifyTests(unittest.TestCase):
             """
         )
         self.assertEqual(output, ["[namespace util]"])
+
+
+class ModuleRuntimeScopeTests(unittest.TestCase):
+    """Runtime isolation: each file's top level lives in its own scope.
+
+    The type checker already rejected sibling leaks; until module-scoped
+    execution these tests only pass on the runtime side too — imports used
+    to hoist every imported declaration into one shared global scope, so
+    two files declaring the same name crashed with "already declared".
+    """
+
+    def test_identical_top_level_names_in_importer_and_module_both_run(self):
+        # The `examples/main.x` regression: `interface Serializable` is
+        # declared both by the entry file and by an imported module.
+        code, output = run_modules(
+            """
+            import util.tag
+
+            interface Marker {
+              string label,
+            }
+
+            print(tag())
+            """,
+            modules={
+                "util.x": (
+                    "interface Marker {\n"
+                    "  integer id,\n"
+                    "}\n"
+                    "export string function tag() {\n"
+                    '  return "ok"\n'
+                    "}\n"
+                )
+            },
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("ok", output)
+
+    def test_sibling_declarations_stay_private_at_runtime(self):
+        # With the checker off, the runtime itself must refuse to see a
+        # member import's siblings — they used to be hoisted into a shared
+        # global scope where this call silently succeeded.
+        with self.assertRaises(RuntimeErrorX) as context:
+            run_modules_raw(
+                """
+                import util.Gender
+
+                print(greet())
+                """
+            )
+        self.assertIn("Name 'greet' is not defined", str(context.exception))
+
+    def test_module_private_helpers_still_work(self):
+        # Isolation must not break a module's own scope: its functions see
+        # its own non-exported declarations.
+        output = run_modules_raw(
+            """
+            import util.tag
+
+            print(tag())
+            """,
+            modules={
+                "util.x": (
+                    "string function secret() {\n"
+                    '  return "hidden"\n'
+                    "}\n"
+                    "export string function tag() {\n"
+                    "  return secret()\n"
+                    "}\n"
+                )
+            },
+        )
+        self.assertEqual(output, ["hidden"])
 
 
 if __name__ == "__main__":

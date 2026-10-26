@@ -974,6 +974,72 @@ function main() {
 
 Run the example with `x run examples/nested_functions.x`.
 
+### Nullish coalescing: `??`
+
+`a ?? b` (nullish coalescing) yields `a` when `a` is neither `null` nor
+`undefined`, otherwise `b` — it only triggers on nullish values, unlike `||`
+which also falls through on `0`, `""`, and `false`:
+
+```x
+let count = 0;
+let nickname = null;
+
+print(count ?? 10);       // 0 (count is not nullish, so ?? keeps it)
+print(count || 10);       // 10 (|| treats 0 as falsy)
+print(nickname ?? "n/a"); // n/a
+```
+
+```output
+0
+10
+n/a
+```
+
+Optional chaining composes with it: `user?.profile?.name ?? "anonymous"`.
+As in JavaScript, mixing `??` with `&&` or `||` in the same expression
+without parentheses is a parse error (`a ?? b || c` must be written
+`a ?? (b || c)`).
+
+The conditional operator does not interfere: precedence matches JavaScript,
+so `??` binds tighter than `?:` — `a ?? b ? c : d` means `(a ?? b) ? c : d`
+and `cond ? x : y ?? z` means `cond ? x : (y ?? z)` — while each ternary
+branch is a fresh operand chain (`cond ? a && b : c ?? d` is legal; the
+no-mixing rule applies only within a single chain such as the condition).
+Parentheses override both, as usual: `a ?? (b ? c : d)`.
+
+### Nullable and union types
+
+A type may be written nullable with `?` or as a union with `|`, in both the
+prefix and the `name: type` annotation styles:
+
+```x
+let string? maybeName = null;
+let string | null altName = null;
+let integer | string id = "abc";
+
+function lengthOf(string? text) {
+    if (text == null) { return 0; }
+    return text.length;
+}
+
+string? function firstOrNull(string[] items) {
+    if (items.length == 0) { return null; }
+    return items[0];
+}
+```
+
+- `T?` is shorthand for `T | null | undefined`. `null` and `undefined` are
+  assignable to a nullable or union type that includes them; assigning
+  `null` to a non-nullable `integer` reports
+  `Cannot assign 'null' to 'x' of type 'integer'`.
+- Union members are matched in declaration order at runtime, and argument
+  errors report the whole union — `expected '(string|integer)'` — so a
+  `string | integer` parameter accepts either, while a `string?` parameter
+  message reads `expected 'string?'`.
+- `??`, `?.`, and `if (x == null)` are the idioms for narrowing a nullable
+  value before use; the checker does not yet narrow automatically inside
+  `if` branches.
+
 ## Conditionals
 
 `if` / `else if` / `else` with any condition value — see
@@ -1093,6 +1159,36 @@ r 4
 
 Because `for ... in` over an object walks a snapshot of the keys, deleting
 inside the loop is safe.
+
+`for ... of` iterates the *values* of arrays, strings, ranges, and the
+collection classes directly — no `.toArray()` call needed — and the checker
+infers the element type from what is being iterated, so the annotation in
+`for (Student s of students)` really is `Student`:
+
+```x
+import System.utils.Collections.LinkedList
+
+function main() {
+    let names = new LinkedList();
+    names.add("Ada");
+    names.add("Grace");
+
+    for (string name of names) {
+        print(name);
+    }
+
+    for (string key of {a: 1, b: 2}) {
+        print(key);   // object keys
+    }
+}
+```
+
+```output
+Ada
+Grace
+a
+b
+```
 
 `for ... in` works the same way over a range — it yields the values:
 
@@ -2345,7 +2441,10 @@ try (let Connection db = new Connection("db")) {
 ```
 
 See the runnable [try-with-resources example](./examples/exceptions/try_with_resources.x)
-for the throw-before-catch and multi-resource LIFO cases.
+for the throw-before-catch and multi-resource LIFO cases, and the
+[Aadhaar CSV generator](./examples/aadhar/main.x) for a file resource
+opened in the try parens, written to across an infinite loop, with the
+optional `catch` running after `close()`.
 
 ## Type aliases and records
 
@@ -2449,6 +2548,11 @@ declaration — `export type`, `export const`, `export let`, `export function`,
 `export class`, `export enum` — or be written as a bulk list,
 `export { name, other as alias };`, which also exports variables. A file cannot
 re-export a name it only imported; declare it in the file where it is used.
+A member import (`import tools.Greeting`) binds only the named declaration,
+and every file executes in its own environment: an imported module's other
+declarations stay private even at runtime, two files may declare the same
+top-level name without a `'X' is already declared` collision, and an imported
+function still resolves its own file's helpers.
 
 Grouped imports are also supported:
 
@@ -2652,7 +2756,8 @@ sk_test_example
 
 ### Async/await
 
-Import the asynchronous helpers and mark async functions with `async`:
+Import the asynchronous helpers and mark async functions with `async`, which
+comes *after* the return type — exactly like a TypeScript method signature:
 
 ```x
 import System.concurrent.Async
@@ -2679,12 +2784,49 @@ Ada
 Grace
 ```
 
-An async function call returns an awaitable result. `Async.all` starts the
-provided awaitable operations concurrently and returns their results in input
-order. `await` is valid only inside an `async` function and requires an
-asynchronous operation; awaiting an ordinary value is an error. The built-in
-`sleep(milliseconds)` returns an asynchronous operation that waits for the
-specified non-negative number of milliseconds. Its API is:
+**Promise types.** Every `async` function's call type is a `Promise<T>`,
+where `T` is the declared return type. The annotation may say `Promise<T>`
+explicitly or just `T` — the two are the same:
+
+```x
+async function loadName(string name) { return "Ada"; }   // call type Promise<string>
+
+Promise<string> function wrap(string name) {             // non-async: returns a promise
+    return loadName(name);                               // value, as in TypeScript
+}
+
+Promise<{ obj: { string name ; integer age } }> async function loadUser() {
+    return { obj: { name: "Ada", age: 36 } };  // mixed record syntax works
+}
+
+async function plainName() { return "Grace"; }  // call type is Promise<string>
+```
+
+- With `async`, the body is checked against the unwrapped `T` (so
+  `Promise<integer> async function outer() { return inner(); }` is fine —
+  the returned promise is implicitly awaited). Without `async`, a `Promise<T>`
+  function is a normal function that *returns* a promise value (the result of
+  calling an async function), exactly as in TypeScript; returning a plain
+  value is a type error.
+- `await` on a promise call unwraps `T`; awaiting a plain (non-promise)
+  value yields the value itself, as in JavaScript.
+- Returning a promise from an `async` function body is awaited implicitly,
+  so promise results flatten one level (JavaScript semantics).
+- `typeOf(promiseCall)` is `"Promise"`.
+- There is deliberately **no `Promise` constructor and no `.then`/`.catch`**:
+  `new Promise(...)`, `p.then(...)`, and `p.catch(...)` are rejected (the
+  checker even parses `.catch` — keywords are legal member names — and fails
+  at the call with a "did you forget `await`?" style error). Use `async`
+  functions and `await`.
+- Calling an async function and discarding the result as a plain statement
+  raises a runtime error suggesting `await` (or assigning the promise),
+  because the work would otherwise be silently dropped.
+
+`Async.all` starts the provided awaitable operations concurrently and returns
+their results in input order. `await` is valid only inside an `async`
+function. The built-in `sleep(milliseconds)` returns an asynchronous
+operation that waits for the specified non-negative number of milliseconds
+(inf/NaN durations are rejected). Its API is:
 
 | Method  | Signature                      | Behavior                                                                                              |
 | ------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
@@ -2696,8 +2838,9 @@ An `async main` is awaited by the interpreter. Async function bodies execute on
 Python worker threads because the current language interpreter evaluates
 statements synchronously; each `await` suspends that body while the awaited
 operation runs. This provides overlapping I/O-style work for awaitable
-operations, but is an experimental prototype rather than TypeScript-compatible
-Promise scheduling. CPU-heavy X code is not made faster by `async`.
+operations. The *type-level* model is TypeScript's `Promise<T>`, but
+scheduling is not a microtask queue: CPU-heavy X code is not made faster by
+`async`.
 
 ### OS threads
 
@@ -2730,10 +2873,62 @@ function main() {
 - `worker.isAlive()` reports whether the worker is currently running.
 - A worker failure is reported when `join` is called after it has completed.
 
-X threads share the same interpreter and object values. The prototype does not
-provide locks, atomics, or thread-safe collection guarantees. Coordinate shared
-mutable state yourself; prefer returning results and collecting them through
-`join`.
+### Locks
+
+`System.concurrent.Lock` is a re-entrant mutual-exclusion lock for
+coordinating shared mutable state between OS threads:
+
+```x
+import System.concurrent.Thread
+
+let integer counter = 0;
+let System.concurrent.Lock guard = System.concurrent.Lock();
+
+integer function bump() {
+    for (integer i in range(0, 1000)) {
+        guard.lock();
+        counter = counter + 1;
+        guard.unlock();
+    }
+    return 0;
+}
+
+function main() {
+    print(guard.isLocked());   // false
+    let ThreadHandle a = Thread.start(bump, []);
+    let ThreadHandle b = Thread.start(bump, []);
+    a.join();
+    b.join();
+    print(counter);            // 2000 — increments are serialised
+    print(guard.isLocked());   // false
+}
+```
+
+```output
+false
+2000
+false
+```
+
+| Method | Signature | Behavior |
+| --- | --- | --- |
+| `lock` | `lock()` | Blocks until the lock is acquired. Re-entrant: the same thread may lock repeatedly and must unlock the same number of times. |
+| `tryLock` | `tryLock()` / `tryLock(milliseconds)` | Non-blocking. With no argument, returns `true` if the lock was acquired immediately. With a non-negative finite timeout in milliseconds, waits at most that long and returns `false` if it expires. |
+| `unlock` | `unlock()` | Releases one acquisition. Unlocking from a thread that does not hold the lock raises a friendly error (not a Python traceback). |
+| `isLocked` | `isLocked()` | `true` while any thread holds the lock. |
+
+- Creating a lock needs no import beyond the qualified path —
+  `System.concurrent.Lock()` works anywhere (import `System.concurrent.Lock`
+  to use the short name).
+- `typeOf(guard)` is `"Lock"`; printing one yields the stable token `[Lock]`.
+- Durations are validated: `tryLock(inf)`/`tryLock(NaN)` report
+  `Lock.tryLock duration must be a finite number of milliseconds`.
+
+X threads share the same interpreter and object values. `Lock` protects the
+sections you annotate with it; collections are still not thread-safe
+internally, so guard every read-modify-write of shared state. Prefer
+returning results and collecting them through `join` where a lock is not
+needed.
 
 ## Runtime types and typed objects
 
@@ -2785,6 +2980,31 @@ Run the complete sample with:
 
 ```sh
 x run examples/type_of.x
+```
+
+### Number parsing: parseFloat and parseInt
+
+Two builtins turn strings into numbers, with no import needed:
+
+- `parseFloat(text)` returns a `float` — optional sign, digits with an
+  optional decimal point, an optional `e`-exponent, and surrounding
+  whitespace are accepted (`"3.5"`, `"-42"`, `".5"`, `"1e3"`).
+- `parseInt(text, radix?)` returns an `integer` in `radix` (default 10,
+  valid 2–36): `parseInt("ff", 16)` is `255`, `parseInt("1011", 2)` is `11`.
+
+Both parse the whole string. Empty input, trailing garbage (`"12px"`),
+digits outside the radix, or a non-string argument raise
+`IllegalArgumentException` — unlike JavaScript's parsers, nothing silently
+produces `NaN` or a prefix value. The checker knows the result types
+(`float` and `integer`), so `let string s = parseFloat(...)` is a type
+error, and `typeOf(parseFloat("1"))` is `"number"`.
+
+```x
+function main() {
+    let float ratio = parseFloat("0.75");
+    let integer port = parseInt("8080");
+    print(ratio, port);              // 0.75 8080
+}
 ```
 
 ### Deleting keys, indices and fields
@@ -2899,11 +3119,11 @@ System/
     │   ├── TreeMap, TreeSet, LinkedHashMap, LRUCache
     │   └── ThreadSafeMap, ThreadSafeSet
     ├── Math                       # abs, sqrt, pow, sin, cos, log, max, ...
-    └── JSON                       # toJSON(value, indent?) — JSON.stringify
+    └── JSON                       # toJSON(value, indent?), parse(text)
 ```
 
 Top-level globals that need no namespace and no import: `print`, `range`,
-`typeOf`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
+`typeOf`, `parseFloat`, `parseInt`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
 `command_input` is enabled), `trace` (when `decorators` is enabled), `Object`
 (when `object_literals` is enabled), and the short collection names (`Stack`,
 `HashMap`, `Queue`, ...) when `collections` is enabled.
@@ -3150,7 +3370,7 @@ is unavailable:
 x run examples/fetch_demo.x
 ```
 
-## JSON output: System.utils.JSON.toJSON
+## JSON: System.utils.JSON.toJSON and System.utils.JSON.parse
 
 `toJSON(value)` stringifies a value with JavaScript's `JSON.stringify`
 semantics: compact by default, pretty-printed when given an indent
@@ -3195,6 +3415,30 @@ any function main() {
 Import forms: `import System.utils.JSON.toJSON` binds `toJSON`,
 `import System.utils.JSON` binds `JSON` for `JSON.toJSON(...)`, and the
 function needs no import at all as `System.utils.JSON.toJSON(...)`.
+
+### Parsing JSON text: System.utils.JSON.parse
+
+`JSON.parse(text)` is the inverse: strict RFC 8259 parsing that turns JSON
+text back into plain X values — objects become objects, arrays become
+arrays, and strings/numbers/booleans/`null` come back as themselves.
+
+```x
+import System.utils.JSON
+
+any function main() {
+    let parsed = JSON.parse("{\"ok\": true, \"n\": [1, 2]}");
+    print(JSON.toJSON(parsed));   // {"ok":true,"n":[1,2]}
+    print(typeOf(parsed.ok));      // boolean
+}
+```
+
+Malformed JSON raises `IllegalArgumentException` carrying the parser's
+message (for example `JSON.parse failed: Expecting ',' delimiter ...`), and
+the non-standard `NaN`/`Infinity` extensions some parsers tolerate are
+rejected as well. Import forms mirror `toJSON`:
+`import System.utils.JSON.parse` binds `parse`, `import System.utils.JSON`
+binds `JSON` for `JSON.parse(...)`, and the full
+`System.utils.JSON.parse(...)` path needs no import.
 
 ## Data Structures and Algorithms (DSA) Library
 
@@ -3282,10 +3526,11 @@ print(students.size(), ints.size(), names.size())
 0 0 0
 ```
 
-The type parameter documents intent but is not enforced yet: `x check`
-accepts a `List<string>` value in a `List<integer>` variable, so treat the
-element type as a promise the code keeps, not a guarantee the toolchain
-checks.
+The type parameter is enforced: the checker substitutes the element type, so
+`let List<integer> nums = new List<string>()` reports
+`Cannot assign 'List<string>' to 'nums' of type 'List<integer>'`, method
+arguments are checked (`list.add("x")` on a `List<integer>` fails), and
+generic type arguments are inferred at call sites and from `new`.
 
 ### Available Data Structures
 
@@ -3720,7 +3965,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `toArray` conversion
 - [x] `clear`
 - [x] Create from initial array — `new List([1, 2, 3])`
-- [ ] Iterator protocol (for…of directly on instance without `.toArray()` first)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly, no `.toArray()` needed
 
 #### Stack ✅
 
@@ -3730,7 +3975,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `size`, `isEmpty`, `clear`
 - [x] `toArray`
 - [x] Create from initial array
-- [ ] Iterator protocol (for…of directly on instance)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly
 
 #### Queue ✅
 
@@ -3740,7 +3985,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `size`, `isEmpty`, `clear`
 - [x] `toArray`
 - [x] Create from initial array
-- [ ] Iterator protocol (for…of directly on instance)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly
 
 #### PriorityQueue ✅
 
@@ -3780,11 +4025,11 @@ This checklist covers both what is implemented and what remains. Items added or 
 
 ### Remaining Work (Collections)
 
-- [ ] **Iterator protocol** — `for (Student s of students)` should work directly on an instance without calling `.toArray()` first
+- [x] **Iterator protocol** — `for (Student s of students)` iterates the instance directly and the checker types `s` as `Student`
 - [ ] **True binary heap** for PriorityQueue — current sort-based approach is O(n log n) per enqueue
 - [ ] **Custom comparator** for PriorityQueue — `new PriorityQueue((a, b) => a.priority - b.priority)`
 - [ ] **Max-heap** option for PriorityQueue
-- [ ] **Static type enforcement** for generics — `List<Student>` currently accepts any value
+- [x] **Static type enforcement** for generics — type parameters substitute and mismatched arguments are reported
 - [ ] **Immutable/frozen variants**
 - [ ] **`fromJSON()` reachable from X** for the extended collections (TreeMap/TreeSet/LinkedHashMap/LRUCache) — currently only callable from the Python embedding API
 - [ ] **Graph** — adjacency list and matrix representations
@@ -3902,6 +4147,18 @@ lexical name lookup. Class construction allocates an instance, initializes
 parent fields before child fields, then selects and invokes the matching
 constructor. A derived constructor calls `super(arguments...)` explicitly to
 run a parent constructor. `super.method()` resolves to a parent implementation.
+
+Loader-built programs execute with one top-level `Environment` per source
+file: the module loader records what each file's imports bind
+(`Program.import_bindings`) and the order in which files completed
+(`Program.modules`), and the interpreter runs them dependencies-first with
+every module environment chained to the builtins. A file's own declarations
+and its import bindings land in that file's environment, so two files may
+declare the same top-level name without colliding, an imported function
+still resolves its own module's helpers through its closure, and sibling
+declarations stay private to their file at runtime — the type checker's
+per-file visibility and the runtime scope now agree. Programs built by hand
+(the REPL) keep the single flat scope.
 
 The synchronous evaluator is the common execution engine. Async X functions
 produce Python awaitables; the runtime uses `asyncio` for delays and
@@ -4061,6 +4318,7 @@ Runnable feature examples are organized by topic:
 
 ```text
 examples/
+├── aadhar/main.x
 ├── banking_platform/main.x
 ├── configuration/configured_args.x
 ├── control_flow/main.x
@@ -4078,6 +4336,7 @@ examples/
 For example:
 
 ```sh
+x run examples/aadhar/main.x
 x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
@@ -4195,8 +4454,13 @@ Implemented and currently demonstrated features:
       no import, returns `true`, and reports a target that is not there with the
       same error reading it would raise.
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
-      first-class function references, generic declaration/call syntax, and
-      overload resolution by argument count and runtime value types. Generic
+      first-class function references, generic declaration/call syntax (with
+      type-parameter substitution and inference at call sites, receiver, `new`,
+      and member/field access — `List<string>` in a `List<integer>` slot is a
+      type error), and overload resolution by argument count and runtime value
+      types. Python-backed collection methods are checked too:
+      `List<integer>.add("x")` reports `expected 'integer'`, and map
+      `set`/`get` check key and value against `HashMap<K, V>` arguments. Generic
       `object<K, V>` annotations validate dictionary key/value types at runtime.
 - [x] `Function`/`function` callback annotations validate function values.
       `interface` declarations support comma- or semicolon-separated fields and
@@ -4226,10 +4490,17 @@ Implemented and currently demonstrated features:
       nested block scope.
 - [x] Arithmetic, comparison, equality, logical, assignment, and increment/
       decrement operators.
-- [x] Ternary conditional expressions and null-safe optional chaining for member
-      access (`?.`), calls (`?.()`), and indexing (`?[index]`).
+- [x] Ternary conditional expressions, null-safe optional chaining for member
+      access (`?.`), calls (`?.()`), and indexing (`?[index]`), and `??` nullish
+      coalescing (`a ?? b` evaluates to `a` unless it is `null`/`undefined`, in
+      which case it evaluates to `b`; mixing `??` with `&&`/`||` without
+      parentheses is rejected, matching JavaScript).
 - [x] `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
       of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
+      `for (T item of collection)` iterates arrays, strings, `range`, and the
+      collection classes (List, Stack, Queue, Set, and HashMap's keys) directly —
+      no `.toArray()` needed — and the checker infers the element type
+      (`for (Student s of students)` types `s` as `Student`).
 - [x] Rust-inspired `match` expressions with wildcard, binding, literal, enum,
       array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
@@ -4245,8 +4516,10 @@ Implemented and currently demonstrated features:
       enum.
 - [x] A compact `Object` helper namespace: `keys`, `values`, `entries`, `assign`,
       and `hasOwn`.
-- [x] `async` functions, `await`, concurrent `Async.all`, and OS threads through
-      `Thread.start` and `join`.
+- [x] `async` functions returning TypeScript-style `Promise<T>` call types,
+      `await` (with implicit promise flattening on `return`), concurrent
+      `Async.all`, OS threads through `Thread.start` and `join`, and re-entrant
+      `System.concurrent.Lock` mutexes (`lock`/`tryLock`/`unlock`/`isLocked`).
 - [x] Program arguments through `args`, plus the `print`, `range`, and `Exception`
       built-ins, and the `typeOf` runtime type helper.
 - [x] Project-relative named imports, grouped imports, wildcard imports,
@@ -4323,6 +4596,71 @@ by the single line `x: found 2 type error(s)`. The excerpt is dropped by
 `--color never`, or `NO_COLOR` control whether the block carries ANSI
 colours.
 
+## Security
+
+X is a local scripting language: an X program can do anything the user
+running it can do (read and write files through `System.io.FileSystem`, make
+network requests, spawn threads). Treat running untrusted X code like running
+an untrusted binary — use the browser playground (WebAssembly sandbox) or a
+container for untrusted input. Within that model the interpreter itself is
+hardened, and `tests/test_security.py` pins each property:
+
+- **No escape into the host runtime.** There is no `eval`, `exec`,
+  `compile`, `Function` constructor, `open`, `globals`, `getattr`, or
+  `__import__` — every Python entry point is `Name ... is not defined`.
+  Dunder access (`().__class__`, `"x".__class__`, `o.__dict__`) is rejected
+  by the parser or member resolution; tuple literals do not parse.
+- **Import sandbox.** Imports resolve only to `.x` files inside the project;
+  `import os`, `import subprocess`, absolute paths (`/etc/passwd`), and
+  parent traversal (`../../secret`) are parse errors or "source file does
+  not exist" errors.
+- **No interpreter internals in output.** Printing functions, builtins,
+  handles, or promises yields stable tokens (`[function greet]`, `[Lock]`,
+  `[ThreadHandle]`, `[Promise]`) — never Python `repr`s with memory
+  addresses or internal method names.
+- **Resource limits fail cleanly.** Deep recursion, over-long strings
+  (`MAX_STRING_LENGTH`), and over-deep JSON/source nesting raise X errors
+  ("the program nests too deeply") rather than Python tracebacks;
+  `Math.pow` overflow reports `math range error`; `sleep`/`tryLock`
+  durations must be finite (`inf`/`NaN` are rejected).
+- **Injection surfaces.** Null bytes cannot enter string or template
+  literals — the `\0` escape is a parse error and a raw null byte in source
+  is rejected by the lexer; `\r\n` inside strings stays data; exception
+  messages and stack displays are X-level (no Python frames leak).
+- **Equality.** `==` is JavaScript-loose (`1 == "1"`, `0 == ""` are `true`)
+  — security-sensitive checks (tokens, roles, input validation) must use
+  `===`, which also rejects `null === undefined`.
+
+## Milestones
+
+Development runs as four milestones. Milestone 1 has landed, so every item
+under it is ticked; the later milestones stay unticked until they ship.
+
+- [x] **Milestone 1 — production-grade hardening**
+  - [x] Per-file module scopes: every source file executes with its own
+    top-level environment, so imports expose exactly what they name
+  - [x] `parseFloat`, `parseInt`, and `JSON.parse` builtins
+  - [x] `typeOf` reports `function` for class and interface values
+  - [x] `??` nullish coalescing
+  - [x] Nullable (`string?`) and union (`A | B`) types
+  - [x] `System.concurrent.Lock` reentrant mutex
+  - [x] TypeScript-style `Promise<T>` async/await — no `Promise`
+    constructor, no `.then`/`.catch`
+  - [x] Generic type-parameter enforcement
+  - [x] `for ... of` over collections with element-type inference
+  - [x] Security hardening (lexer, printing, durations, literals) with a
+    dedicated `tests/test_security.py` suite
+  - [x] The showcase passes `x check --feature strict_typing=on`
+  - [x] Editor completions and hovers for every new feature, in the VS Code
+    server and the playground catalog
+  - [x] The `examples/aadhar/` try-with-resources CSV generator
+  - [x] Documentation, changelog, and a rebuilt WebAssembly wheel for the
+    playground
+- [ ] **Milestone 2 — self-hosting: bootstrap X in itself**
+- [ ] **Milestone 3 — `x-server`: an HTTP/QUIC server written in X**
+- [ ] **Milestone 4 — native Rust core** (bytecode VM later): replace the
+  Python host so X runs without Python installed
+
 ## Current limitations
 
 The specification includes features beyond this prototype. These are the
@@ -4330,30 +4668,26 @@ remaining implementation goals and documented constraints:
 
 ### Language / Compiler
 
-- [ ] `??` nullish coalescing — the JS-style operator does not parse
-      (`a ?? b` is a syntax error); use `a == null ? b : a` until it lands
 - [ ] Native or bytecode compilation — `build` validates syntax, imports, and
       types, then reports that no executable was produced
-- [ ] Generic type checking and type-parameter substitution — generic
-      annotations parse and their type names are checked, but element types are
-      not enforced (`List<string>` in a `List<integer>` slot passes `x check`)
-- [ ] Union/nullable type semantics — `integer | null` does not exist and
-      `null` is rejected for non-null types; inline `record{...}` annotations are
-      checked structurally today
-- [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
+- [ ] Automatic type narrowing — `if (x == null)` does not yet refine the
+      type of `x` inside the branch (use `??`, `?.`, or an explicit annotation)
+- [ ] Inline `record{...}` annotations are checked structurally rather than
+      nominally (named `type X = record {...}` aliases are nominal)
 - Interfaces have no TypeScript-style index signatures — a TS-style
       `[key: number]: IParticipant` member reports `Expected a name`; declare
       the map as an alias over the builtin instead:
       `type Participants = object<integer, IParticipant>`
-- [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
+- [ ] Atomics, thread-safe collection wrappers, and task cancellation —
+      `System.concurrent.Lock` and `Promise<T>` async exist; there are no
+      lock-free primitives or `AbortController`-style cancellation yet
 - [ ] A broader standard library beyond the built-ins documented here
 
 ### Collections (see full list in [Collections Implementation Status](#collections-implementation-status))
 
-- [ ] Iterator protocol — `for (T item of collectionInstance)` without `.toArray()` first
 - [ ] True O(log n) binary heap for PriorityQueue
 - [ ] Custom comparator and max-heap for PriorityQueue
-- [ ] Set, TreeMap/TreeSet, LinkedHashMap, LRU Cache
+- [ ] TreeMap/TreeSet, LinkedHashMap, LRU Cache
 - [ ] Thread-safe collection wrappers
 - [ ] Serialization round-trip (`toJSON` / `fromJSON`)
 
@@ -4368,101 +4702,52 @@ remaining implementation goals and documented constraints:
 - Recursive algorithms (flood fill, deep trees) can hit Python's default recursion limit on large inputs
 - The run-length codec example is intended for letter-only input, not a general-purpose escaping format
 
-### Known issue: `import B.greet` leaks the whole module scope
+### Fixed: `import B.greet` no longer exposes the whole module scope
 
-**Status:** known limitation, not yet fixed. Documented here rather than
-silently worked around so the shape of the bug and the options for fixing it
-are recorded.
-
-**Symptom.** A member import such as `import main_tests.greet("Maya")` (the
-feature shown in the import-function section above) is supposed to bind only
-`greet`. Instead the loader pulls in *every* top-level declaration of the
-imported module — interfaces, classes, enums, helpers — into the importing
-file's global scope. If the importing file happens to declare a name with the
-same identifier, loading fails with a confusing collision error that appears
-to be a duplicate declaration in your own file:
+**Status:** fixed. A member import (`import lib.greet`) now binds only the
+declaration it names. Sibling declarations of the imported module are no
+longer visible in the importing file; using one is a type error that suggests
+the exact import line to add:
 
 ```text
-$ x run examples/main.x
-error: 'Serializable' is already declared in this scope
-   --> main.x:297:1
-    |
-297 | interface Serializable {
-    | ^ 'Serializable' is already declared in this scope
+$ x check app.x
+error: Name 'Marker' is not defined in this module
+ --> app.x:3:1
+  |
+3 | interface Marker {
+  | ^ Name 'Marker' is not defined in this module
+  |
+  = help: add `import lib.Marker`
 ```
 
-**Reproduction.** `examples/main.x` (unmodified, present on `development`)
-hits it today:
+Whole-module (`import lib`), grouped (`import lib.{A, B as C}`), alias
+(`import lib.A as X`), and wildcard (`import lib.*`) imports behave as
+before: they expose exactly what they name. Enum and interface names imported
+by any form are types, not values — `print(Gender)` reports
+`Enum 'Gender' is a type, not a value`, while `typeOf(Gender)` and
+`Gender.MALE` are accepted.
 
-- `main.x:4` — `import main_tests.greet("Maya")`
-- `main.x:297` — declares `interface Serializable { string serialize(); }`
-- `main_tests.x:236` — declares `interface Serializable { string serialize();
-  void deserialize(string data); }`
+The runtime now agrees with the checker: every source file executes with its
+own top-level environment (see
+[Interpreter architecture](#interpreter-architecture)), so sibling
+declarations are invisible across files at runtime too — calling an
+unimported helper raises `Name 'greet' is not defined` instead of silently
+working. Because bindings no longer land in one shared global scope, two
+files may declare the same top-level name: `examples/main.x` and each module
+it imports can have their own `interface Serializable` with no
+`'Serializable' is already declared` crash. Helpers used by an imported
+function still resolve through that function's defining module, so isolation
+never breaks a module's own private state.
 
-Because the import flattens `main_tests`' scope into `main.x`, the two
-`Serializable` interfaces collide and `x run examples/main.x` aborts. Note
-`x check examples/main.x` reports `syntax is valid` / `types are valid` — the
-collision is raised by the **module loader** when declarations are merged at
-load time, not by the parser or the type checker. A minimal standalone
-repro (any name works, not just `Serializable`):
-
-```x
-// lib.x
-export string function greet(string name) { return "Hello, " + name; }
-interface Marker { void m(); }
-```
-
-```x
-// app.x
-import lib.greet
-interface Marker { void m(); }   // error: 'Marker' is already declared in this scope
-print(greet("Ada"));
-```
-
-**Root cause.** `xlang/module_loader.py`, the member-import branch of
-`_load_file` (around line 257): after loading the source module it does
-`combined_declarations.extend(imported_declarations)`, splicing the whole
-module's declarations into the importer. The collision check that runs just
-before (`_check_flatten_collision(import_name, ...)`) only guards the single
-name you asked for (`greet`), so every *other* leaked name bypasses it.
-
-**Why it is a spec conflict, not a typo.** The two authoritative documents
-disagree:
-
-- `README.md` (import-function section) says the import "behaves exactly
-  like `import B.greet`" — implying only `greet` binds.
-- The `module_loader.py` module docstring says declarations are "no longer
-  arbitrarily flattened ... flattening occurs only when necessary for
-  backward compatibility and never when it would create a collision between
-  different exported declarations. When a collision would occur from
-  flattening, an error is raised."
-
-So the loader is behaving as *its* design intends (flatten for backward
-compat, then raise on collision), while the README describes the *intended*
-member-import semantics. That contradiction is why this was documented rather
-than patched in place.
-
-**What we can do (options).**
-
-1. *Minimal unblock (no interpreter change).* Rename one of the colliding
-   declarations — e.g. give `examples/main.x`'s `Serializable` a distinct
-   name — so `main.x` runs. Cheapest and safest, but leaves the scope leak
-   for the next file to trip over.
-2. *Correct fix (interpreter change).* Make member imports bind only the
-   named declaration and stop flattening siblings. The catch: module-level
-   helpers referenced by the imported `greet` resolve today *because*
-   everything shares one flattened scope, so the real fix is per-module
-   scope isolation — which is exactly the separate open limitation
-   *"Independent module namespaces"* in the list above. This is
-   architectural: full test suite, WebAssembly playground wheel rebuild
-   (`x playground`), and doc updates are all required.
-3. *Status quo (chosen).* Leave the code as-is and document the issue here,
-   as recorded above.
-
-**Practical guidance until fixed.** Avoid declaring a top-level name in an
-importing file that also exists in any module you member-import; or import
-the module wholesale (`import main_tests`) and reference members through the
-namespace rather than splicing a single member's scope in.
+Historical note: this used to be an open limitation — the loader flattened
+every imported module's declarations into the importer, so `import
+main_tests.greet` also pulled in `main_tests`' interfaces, classes, and
+helpers, colliding with any same-named local declaration. The first fix
+recorded per-module visibility in the loader and enforced it in the checker;
+the runtime side was completed afterwards by executing each file in its own
+environment (`Program.modules`, `Program.import_bindings`) instead of
+hoisting everything into one shared scope. Re-importing a module now simply
+re-binds it in place of raising.
 
 The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
 behavior is narrower than that draft, this README describes what can currently

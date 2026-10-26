@@ -1004,6 +1004,28 @@ class StrictTypingCliTests(unittest.TestCase):
         self.assertIn(f"{source_path}: types are valid", output)
         self.assertEqual(errors, "")
 
+    def test_aadhar_example_is_clean_under_strict_typing(self):
+        # The try-with-resources CSV generator also checks the imported
+        # aadhar_generator.x transitively.
+        repository_root = Path(__file__).resolve().parents[1]
+        source_path = repository_root / "examples" / "aadhar" / "main.x"
+        return_code, output, errors = self.run_cli(
+            [
+                "check",
+                "--no-config",
+                "--feature",
+                "strict_typing=on",
+                "--color",
+                "never",
+                str(source_path),
+            ]
+        )
+
+        self.assertEqual(return_code, 0, errors)
+        self.assertIn(f"{source_path}: syntax is valid", output)
+        self.assertIn(f"{source_path}: types are valid", output)
+        self.assertEqual(errors, "")
+
 
 class PrimitiveAliasCaseTests(unittest.TestCase):
     """The ``primitive_aliases`` feature makes built-in type spellings

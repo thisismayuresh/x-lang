@@ -1073,14 +1073,16 @@ line three`);
                 }
                 """)
 
-        with self.assertRaisesRegex(
-            RuntimeErrorX, "await requires an asynchronous operation"
-        ):
-            self.run_x("""
-                async function main() {
-                    await 42;
-                }
-                """)
+    def test_awaiting_a_plain_value_yields_the_value(self):
+        # JavaScript semantics: `await x` on a non-promise is x itself.
+        result, output = self.run_x("""
+            async function main() {
+                print(await 42);
+                print(await "hi");
+            }
+            """)
+        self.assertIsNone(result)
+        self.assertEqual(output, ["42", "hi"])
 
     def test_sleep_requires_a_non_negative_millisecond_duration(self):
         start_time = monotonic()

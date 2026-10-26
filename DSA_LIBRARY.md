@@ -274,11 +274,10 @@ The library integrates seamlessly with:
 13. Advanced functional operations (groupBy, partition)
 
 ### API Improvements
-1. Iterator protocol support
-2. Serialization/deserialization
-3. More advanced Trie operations (wildcard search, regex)
-4. Batch operations
-5. Transaction support for multi-step operations
+1. Serialization/deserialization
+2. More advanced Trie operations (wildcard search, regex)
+3. Batch operations
+4. Transaction support for multi-step operations
 
 ## Usage Examples
 

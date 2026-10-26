@@ -6,7 +6,7 @@ import difflib
 import os
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +75,14 @@ from .types import (
     TypeScope,
     XType,
     _strip_array,
+    _strip_nullable,
     canonical_primitive_alias,
     is_compatible,
     parse_type,
+    split_top_level,
     split_union,
     substitute,
+    _collection_alias,
 )
 
 #: Names the builtin scope predefines (see ``TypeChecker._builtin_scope``).
@@ -90,6 +93,8 @@ BUILTIN_SCOPE_NAMES = frozenset(
         "print",
         "range",
         "typeOf",
+        "parseFloat",
+        "parseInt",
         # delete(...) comes from Object.delete (see DELETE_BUILTIN_NAME in
         # xlang/interpreter/_native_builtins.py) but is callable unqualified.
         "delete",
@@ -168,6 +173,58 @@ STRING_METHOD_NAMES = frozenset(
 
 _VISIBILITY_ORDER = ("private", "protected", "public")
 
+#: Python-backed collection families and the argument roles their instance
+#: methods check.  These collections have no X declarations, so their
+#: methods never reach ``_check_overloads``; the table below type-checks the
+#: positions that mutate or query typed slots.  Roles resolve against the
+#: receiver's type arguments: ``element``/``key`` = argument 0, ``value`` =
+#: argument 1, ``index`` = ``integer``.
+COLLECTION_ELEMENT_FAMILIES = frozenset(
+    {
+        "LinkedList",
+        "Stack",
+        "Queue",
+        "PriorityQueue",
+        "HashSet",
+        "Set",
+        "TreeSet",
+        "LinkedHashSet",
+        "ThreadSafeSet",
+        "ConcurrentList",
+    }
+)
+COLLECTION_MAP_FAMILIES = frozenset(
+    {
+        "HashMap",
+        "Map",
+        "TreeMap",
+        "LinkedHashMap",
+        "LruCache",
+        "ConcurrentHashMap",
+    }
+)
+COLLECTION_METHOD_ROLES: dict[str, tuple[str, ...]] = {
+    "add": ("element",),
+    "addFirst": ("element",),
+    "addLast": ("element",),
+    "push": ("element",),
+    "enqueue": ("element",),
+    "remove": ("element",),
+    "contains": ("element",),
+    "indexOf": ("element",),
+    "has": ("element",),
+    "get": ("index",),
+}
+COLLECTION_METHOD_ROLES_MAP: dict[str, tuple[str, ...]] = {
+    "set": ("key", "value"),
+    "get": ("key",),
+    "has": ("key",),
+    "remove": ("key",),
+    "getOrDefault": ("key", "value"),
+    "computeIfAbsent": ("key",),
+    "computeIfPresent": ("key",),
+}
+
 
 def _return_type_help(kind: str) -> str:
     """Concrete ``= help:`` text for a missing return-type annotation."""
@@ -245,6 +302,7 @@ class TypeChecker:
         self._callable_kind: str | None = None
         self._callable_name: str | None = None
         self._in_constructor = False
+        self._in_async_body = False
         self._try_depth = 0
         self._current_node: Any | None = None
         # Import-scoping state, filled from Program by _apply_program_info.
@@ -285,21 +343,18 @@ class TypeChecker:
 
     def _check_program(self, program: Program) -> None:
         self._apply_program_info(program)
+        # The checker walks the flat declaration list exactly once: names
+        # resolve against one shared scope, and `module_visibility` gates
+        # which file may reference each name.  `program.modules` is the
+        # runtime's per-file grouping — re-checking it here would only
+        # duplicate every diagnostic.
         self._collect_types(program.declarations)
-        for module_declarations in program.modules.values():
-            self._collect_types(module_declarations)
         self._check_type_name_references(program.declarations)
-        for module_declarations in program.modules.values():
-            self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
         self._check_strict_typing(program.declarations, self._source_name)
-        for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations, self._source_name)
         scope = self._builtin_scope()
         self._root_scope = scope
         self._check_declarations(program.declarations, scope)
-        for module_declarations in program.modules.values():
-            self._check_declarations(module_declarations, scope.child())
 
     def check_or_raise(
         self, program: Program, source_name: str | None = None, config=None
@@ -326,16 +381,12 @@ class TypeChecker:
 
     def _check_program_declarations(self, program: Program) -> None:
         self._apply_program_info(program)
+        # See `_check_program`: one pass over the flat list; `program.modules`
+        # is the runtime's grouping and must not re-emit diagnostics.
         self._collect_types(program.declarations)
-        for module_declarations in program.modules.values():
-            self._collect_types(module_declarations)
         self._check_type_name_references(program.declarations)
-        for module_declarations in program.modules.values():
-            self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
         self._check_strict_typing(program.declarations, self._source_name)
-        for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations, self._source_name)
 
     # ------------------------------------------------------------------
     # Scopes and collection
@@ -592,14 +643,31 @@ class TypeChecker:
             self._infer(declaration.condition, scope)
             self._check_statements(declaration.body.statements, scope.child())
         elif isinstance(declaration, ForStatement):
-            self._infer(declaration.iterable, scope)
+            iterable_type = self._infer(declaration.iterable, scope)
+            element_type = self._iterable_element_type(iterable_type)
             loop_scope = scope.child()
             if declaration.variable:
-                loop_scope.define(
-                    declaration.variable,
-                    self._resolve_annotation(declaration.type_name),
-                    True,
-                )
+                if declaration.type_name:
+                    declared = self._resolve_annotation(declaration.type_name)
+                    if (
+                        not element_type.is_any
+                        and not is_compatible(element_type, declared, relations=self)
+                    ):
+                        self._error(
+                            f"Cannot assign '{element_type.display()}' to "
+                            f"'{declaration.variable}' of type "
+                            f"'{declared.display()}'",
+                            declaration,
+                            notes=[
+                                f"expected `{declared.display()}`, "
+                                f"found `{element_type.display()}`"
+                            ],
+                        )
+                    loop_scope.define(declaration.variable, declared, True)
+                else:
+                    # `for (v of ...)` with no annotation: the element type
+                    # flows into the loop variable.
+                    loop_scope.define(declaration.variable, element_type, True)
             self._check_statements(declaration.body.statements, loop_scope)
         elif isinstance(declaration, ClassicForStatement):
             loop_scope = scope.child()
@@ -656,8 +724,18 @@ class TypeChecker:
                 self._error(self._void_return_message(), declaration)
                 return
             expected = self._expected_return
+            comparable = actual
+            if (
+                self._in_async_body
+                and actual.name == "Promise"
+                and len(actual.arguments) == 1
+            ):
+                # An async body may `return somePromise` (implicitly awaited)
+                # exactly as TypeScript allows; only the unwrapped type is
+                # compared against the body's expected return type.
+                comparable = actual.arguments[0]
             if expected is not None and not self._value_matches(
-                declaration.value, actual, expected
+                declaration.value, comparable, expected
             ):
                 self._error(
                     f"Return type '{actual.display()}' is not compatible with "
@@ -746,10 +824,29 @@ class TypeChecker:
                 True,
             )
         expected = self._resolve_return_type(declaration.return_type)
+        declared_void = self._is_void_annotation(declaration.return_type)
+        body_expected = expected
+        if (
+            declaration.is_async
+            and expected is not None
+            and expected.name == "Promise"
+            and len(expected.arguments) == 1
+        ):
+            # TS-style `Promise<T> async function`: the body returns the
+            # unwrapped T; call sites still see the declared Promise<T>.
+            inner = expected.arguments[0]
+            if inner.name == "void":
+                body_expected = None
+                declared_void = True
+            elif inner.is_any:
+                body_expected = None
+            else:
+                body_expected = inner
         previous_expected = self._expected_return
         previous_saw = self._saw_value_return
         previous_in_constructor = self._in_constructor
         previous_void = self._returns_void
+        previous_async = self._in_async_body
         previous_kind = self._callable_kind
         previous_name = self._callable_name
         is_constructor = (
@@ -757,10 +854,11 @@ class TypeChecker:
             and declaration.name == self._class_stack[-1]
             and declaration.return_type is None
         )
-        self._expected_return = expected
+        self._expected_return = body_expected
         self._saw_value_return = False
         self._in_constructor = is_constructor
-        self._returns_void = self._is_void_annotation(declaration.return_type)
+        self._in_async_body = bool(declaration.is_async)
+        self._returns_void = declared_void
         self._callable_kind = callable_kind(
             declaration.name,
             self._class_stack[-1] if self._class_stack else None,
@@ -770,18 +868,19 @@ class TypeChecker:
             self._collect_local_functions(declaration.body)
             self._check_statements(declaration.body, body_scope)
             if (
-                expected is not None
+                body_expected is not None
                 and not self._saw_value_return
                 and not self._contains_throw(declaration.body)
             ):
                 self._error(
                     f"{self._callable_kind} '{declaration.name}' must return a value of type "
-                    f"'{expected.display()}'",
+                    f"'{body_expected.display()}'",
                     declaration,
                 )
         self._expected_return = previous_expected
         self._saw_value_return = previous_saw
         self._in_constructor = previous_in_constructor
+        self._in_async_body = previous_async
         self._returns_void = previous_void
         self._callable_kind = previous_kind
         self._callable_name = previous_name
@@ -1432,10 +1531,22 @@ class TypeChecker:
         type_name: str | None,
         generic_parameters: list[str],
         type_arguments: list[XType],
+        base_mapping: dict[str, XType] | None = None,
     ) -> XType:
+        generics: list[str] | set[str] = generic_parameters
+        if base_mapping:
+            # Keep the receiver's type parameters (`T` on `Box<integer>`)
+            # resolvable while parsing the annotation — otherwise unknown
+            # names collapse to `any` before the substitution below.
+            generics = list(generic_parameters) + list(base_mapping)
         resolved = self._resolve_annotation(
-            type_name, generics=generic_parameters, keep_generics=True
+            type_name, generics=generics, keep_generics=True
         )
+        if base_mapping:
+            # Receiver-supplied bindings (the class's own `<T>` arguments on
+            # `Box<integer>`) are applied first; the call's method-level type
+            # arguments then override same-named parameters.
+            resolved = substitute(resolved, base_mapping)
         mapping: dict[str, XType] = {}
         for index, parameter in enumerate(generic_parameters):
             if index < len(type_arguments):
@@ -1444,6 +1555,110 @@ class TypeChecker:
                 mapping[parameter] = ANY
         if mapping:
             resolved = substitute(resolved, mapping)
+        return resolved
+
+    def _receiver_mapping(self, object_type: XType) -> dict[str, XType]:
+        """Map a generic class's type-parameter names to the receiver's
+        concrete type arguments (`Box<integer>` → `{"T": integer}`)."""
+        params = self._generic_params.get(object_type.name)
+        if not params or not object_type.arguments:
+            return {}
+        count = min(len(params), len(object_type.arguments))
+        return {params[index]: object_type.arguments[index] for index in range(count)}
+
+    def _unify_generic(
+        self,
+        pattern: XType,
+        actual: XType | None,
+        names: list[str] | set[str],
+        mapping: dict[str, XType],
+    ) -> None:
+        """Bind type-parameter names appearing in *pattern* to the matching
+        parts of the argument type *actual* (first binding wins).
+
+        Handles the shapes a parameter annotation can take: bare `T`, arrays
+        `T[]`, nullable `T?`, generic arguments `Box<T>`, and record fields
+        whose types mention T.  Unions and other constructs simply leave
+        parameters unbound (they default to `any`, staying permissive).
+        """
+        if actual is None:
+            return
+        if pattern.is_array:
+            if not actual.is_array:
+                return
+            self._unify_generic(
+                _strip_array(pattern), _strip_array(actual), names, mapping
+            )
+            return
+        if pattern.name in names:
+            mapping.setdefault(pattern.name, actual)
+            return
+        if (
+            pattern.arguments
+            and actual.arguments
+            and len(pattern.arguments) == len(actual.arguments)
+        ):
+            for sub_pattern, sub_actual in zip(pattern.arguments, actual.arguments):
+                self._unify_generic(sub_pattern, sub_actual, names, mapping)
+            return
+        if pattern.record_fields and actual.record_fields:
+            actual_fields = dict(actual.record_fields)
+            for field_name, field_type in pattern.record_fields:
+                if field_name in actual_fields:
+                    self._unify_generic(
+                        field_type, actual_fields[field_name], names, mapping
+                    )
+
+    def _infer_generic_arguments(
+        self,
+        declaration: Any,
+        generic_parameters: list[str],
+        argument_types: list[XType],
+        base_mapping: dict[str, XType] | None = None,
+    ) -> list[XType]:
+        """Infer a declaration's type arguments positionally from the actual
+        argument types.  Parameters that stay unbound become `any`."""
+        mapping: dict[str, XType] = {}
+        for index, actual in enumerate(argument_types):
+            parameter = self._parameter_for(declaration, index)
+            if parameter is None:
+                continue
+            generics: list[str] | set[str] = generic_parameters
+            if base_mapping:
+                generics = list(generic_parameters) + list(base_mapping)
+            pattern = self._resolve_annotation(
+                parameter.type_name,
+                generics=generics,
+                keep_generics=True,
+            )
+            if base_mapping:
+                pattern = substitute(pattern, base_mapping)
+            self._unify_generic(pattern, actual, generic_parameters, mapping)
+        return [mapping.get(name, ANY) for name in generic_parameters]
+
+    def _call_result_type(
+        self,
+        declaration: Any,
+        generic_parameters: list[str],
+        type_arguments: list[XType],
+        base_mapping: dict[str, XType] | None = None,
+    ) -> XType:
+        """Result type of *calling* `declaration`.
+
+        Non-async functions return their declared annotation.  An `async`
+        function always produces an awaitable at runtime, so its call type is
+        `Promise<T>` where T is the declared annotation — unless the
+        annotation is already a `Promise<T>` (the `Promise<T> async function`
+        spelling, whose body returns the unwrapped T) or `void`/`any`.
+        """
+        resolved = self._signature_type(
+            declaration.return_type, generic_parameters, type_arguments, base_mapping
+        )
+        if getattr(declaration, "is_async", False) and not resolved.is_any:
+            if resolved.name == "Promise":
+                return resolved
+            if resolved.name not in {"void", "null", "undefined"}:
+                return XType("Promise", arguments=(resolved,))
         return resolved
 
     # ------------------------------------------------------------------
@@ -1507,8 +1722,14 @@ class TypeChecker:
         if isinstance(expression, MatchExpression):
             return self._infer_match(expression, scope)
         if isinstance(expression, AwaitExpression):
-            self._infer(expression.value, scope)
-            return ANY
+            inner = self._infer(expression.value, scope)
+            if inner.is_any:
+                return ANY
+            if inner.name == "Promise":
+                return inner.arguments[0] if inner.arguments else ANY
+            # JavaScript semantics: awaiting a non-promise yields the value
+            # itself, so the static type is simply the operand's type.
+            return inner
         if isinstance(expression, Spread):
             self._infer(expression.value, scope)
             return ANY
@@ -1584,6 +1805,31 @@ class TypeChecker:
             is_any=element.is_any,
             dimensions=element.dimensions + 1,
         )
+
+    @staticmethod
+    def _strip_nullish(type_value: XType) -> XType | None:
+        """Remove ``null``/``undefined`` from a type; ``None`` when nothing remains."""
+        stripped = type_value
+        if stripped.is_nullable:
+            stripped = replace(stripped, is_nullable=False)
+        if stripped.union_parts:
+            kept = tuple(
+                part
+                for part in stripped.union_parts
+                if part.name not in {"null", "undefined"}
+            )
+            if not kept:
+                return None
+            stripped = (
+                XType("union", union_parts=kept)
+                if len(kept) > 1
+                else kept[0]
+            )
+            if stripped.is_nullable:
+                stripped = replace(stripped, is_nullable=False)
+        elif stripped.name in {"null", "undefined"}:
+            return None
+        return stripped
 
     def _collapse(self, types: list[XType]) -> XType:
         if not types:
@@ -1750,11 +1996,11 @@ class TypeChecker:
                 return FLOAT
             return ANY
         if operator == "??":
-            if is_compatible(left, right, relations=self):
+            # TypeScript's rule: NonNullable<typeof left> | typeof right.
+            stripped = self._strip_nullish(left)
+            if stripped is None:
                 return right
-            if is_compatible(right, left, relations=self):
-                return left
-            return ANY
+            return self._collapse([stripped, right])
         if operator in {
             "==",
             "!=",
@@ -1925,6 +2171,44 @@ class TypeChecker:
         finally:
             self._deferred_type_value = previous
 
+    def _iterable_element_type(self, iterable_type: XType) -> XType:
+        """Element type produced by `for (T v of iterable)` for *iterable_type*.
+
+        Covers the shapes `for-of` actually iterates: arrays (one dimension
+        per loop), strings (characters), and the generic collections/maps —
+        lists yield their element, maps yield their keys.  Anything else
+        stays `any`, so dynamic iterables keep their permissive behaviour.
+        """
+        if iterable_type.is_any:
+            return ANY
+        if iterable_type.union_parts or iterable_type.record_fields:
+            return ANY
+        if iterable_type.is_nullable:
+            iterable_type = _strip_nullable(iterable_type)
+        if iterable_type.is_array:
+            return _strip_array(iterable_type)
+        if iterable_type.name == "string":
+            return STRING
+        alias = _collection_alias(iterable_type.name)
+        if alias in {
+            "LinkedList",
+            "Stack",
+            "Queue",
+            "PriorityQueue",
+            "HashSet",
+            "Set",
+            "TreeSet",
+            "LinkedHashSet",
+            "ThreadSafeSet",
+        }:
+            return iterable_type.arguments[0] if iterable_type.arguments else ANY
+        if alias in {"HashMap", "Map", "TreeMap", "LinkedHashMap", "LruCache"} or (
+            iterable_type.name == "object" and iterable_type.arguments
+        ):
+            # `for (k of someMap)` walks the keys, matching Python/dict order.
+            return iterable_type.arguments[0] if iterable_type.arguments else ANY
+        return ANY
+
     def _infer_member(self, expression: Member, scope: TypeScope) -> XType:
         object_type = self._infer_qualified_object(expression.object, scope)
         name = expression.name
@@ -1935,7 +2219,16 @@ class TypeChecker:
                     found, owner, expression, kind=None, verb="access"
                 )
                 if isinstance(found, VariableDeclaration):
-                    return self._resolve_annotation(found.type_name)
+                    receiver_map = self._receiver_mapping(object_type)
+                    resolved = self._resolve_annotation(
+                        found.type_name,
+                        generics=list(receiver_map) if receiver_map else None,
+                        keep_generics=True,
+                    )
+                    if receiver_map:
+                        # `Box<integer>.item` where the field is declared `T`
+                        resolved = substitute(resolved, receiver_map)
+                    return resolved
                 if isinstance(found, FunctionDeclaration):
                     return FUNCTION
                 if isinstance(found, ClassDeclaration):
@@ -2080,6 +2373,13 @@ class TypeChecker:
             if name in self._interfaces:
                 self._error(f"Cannot construct interface '{name}'", expression)
                 return parse_type(name)
+            # Language builtins with fixed result types (see the
+            # BUILTIN_SCOPE_NAMES entries and the interpreter's
+            # _parse_float/_parse_int builtins).
+            if name == "parseFloat":
+                return FLOAT
+            if name == "parseInt":
+                return INTEGER
             return ANY
         if isinstance(callee, Member):
             if callee.name == "map" and expression.arguments:
@@ -2102,30 +2402,75 @@ class TypeChecker:
                 source = self._infer_qualified_object(callee.object, scope)
                 if source.is_array:
                     return source
-            return self._method_return(callee, scope, expression.type_arguments)
+            return self._method_return(callee, scope, expression)
         return ANY
 
     def _method_return(
         self,
         callee: Member,
         scope: TypeScope,
-        type_arguments: list[str],
+        call: Any,
     ) -> XType:
+        type_arguments: list[str] = list(getattr(call, "type_arguments", None) or [])
         object_type = self._infer_qualified_object(callee.object, scope)
         name = callee.name
         if object_type.name in self._classes or object_type.name in self._interfaces:
             found, owner = self._find_class_member(object_type.name, name)
             if found is not None and owner is not None:
                 if isinstance(found, FunctionDeclaration):
-                    explicit = [self._resolve_annotation(t) for t in type_arguments]
-                    generic_parameters = list(found.generic_parameters or [])
-                    return self._signature_type(
-                        found.return_type, generic_parameters, explicit
+                    # Check the arguments too: method calls go through the
+                    # same overload machinery as free functions, with the
+                    # receiver's `Box<integer>` arguments bound to the class's
+                    # type parameters.
+                    receiver_map = self._receiver_mapping(object_type)
+                    argument_types = [
+                        self._infer(argument, scope)
+                        for argument in call.arguments
+                    ]
+                    return self._check_overloads(
+                        name,
+                        [found],
+                        call,
+                        argument_types,
+                        type_arguments,
+                        kind="Method",
+                        base_mapping=receiver_map,
                     )
                 if isinstance(found, VariableDeclaration):
-                    return self._resolve_annotation(found.type_name)
+                    receiver_map = self._receiver_mapping(object_type)
+                    resolved = self._resolve_annotation(
+                        found.type_name,
+                        generics=list(receiver_map) if receiver_map else None,
+                        keep_generics=True,
+                    )
+                    if receiver_map:
+                        resolved = substitute(resolved, receiver_map)
+                    return resolved
                 if isinstance(found, ClassDeclaration):
                     return parse_type(found.name)
+        expectations = self._collection_method_expectations(object_type, name)
+        if expectations is not None:
+            argument_types = [
+                self._infer(argument, scope) for argument in call.arguments
+            ]
+            for index, expected in enumerate(expectations):
+                if index >= len(argument_types):
+                    break
+                actual = argument_types[index]
+                expression = call.arguments[index]
+                matched = (
+                    self._value_matches(expression, actual, expected)
+                    if expression is not None
+                    else is_compatible(actual, expected, relations=self)
+                )
+                if not matched:
+                    self._error(
+                        f"Argument {index + 1} of '{name}' has type "
+                        f"'{actual.display()}', expected '{expected.display()}'",
+                        call,
+                        notes=self._incompatibility_notes(actual, expected),
+                    )
+            return ANY
         if name == "toString":
             if (
                 object_type.name in {"string", "integer", "float", "boolean"}
@@ -2133,6 +2478,40 @@ class TypeChecker:
             ):
                 return STRING
         return ANY
+
+    def _collection_method_expectations(
+        self, object_type: XType, name: str
+    ) -> list[XType] | None:
+        """Argument expectations for a Python-backed collection method.
+
+        Returns the expected type per argument position, or ``None`` when
+        the receiver is not a typed collection or the method has no rule
+        (callbacks and helper methods stay unchecked).  Receivers without
+        type arguments stay unchecked so dynamic collections keep their
+        permissive behaviour.
+        """
+        if object_type.is_any or not object_type.arguments:
+            return None
+        alias = _collection_alias(object_type.name)
+        roles: tuple[str, ...] | None = None
+        if alias in COLLECTION_ELEMENT_FAMILIES:
+            roles = COLLECTION_METHOD_ROLES.get(name)
+            type_arguments = object_type.arguments[:1]
+        elif alias in COLLECTION_MAP_FAMILIES:
+            roles = COLLECTION_METHOD_ROLES_MAP.get(name)
+            type_arguments = object_type.arguments[:2]
+        if roles is None or not type_arguments:
+            return None
+        role_types = {
+            "element": type_arguments[0],
+            "key": type_arguments[0],
+            "index": INTEGER,
+        }
+        if len(type_arguments) > 1:
+            role_types["value"] = type_arguments[1]
+        if "value" in roles and "value" not in role_types:
+            return None
+        return [role_types[role] for role in roles]
 
     def _infer_new(self, expression: NewExpression, scope: TypeScope) -> XType:
         argument_types = [
@@ -2150,6 +2529,40 @@ class TypeChecker:
                     f"Cannot construct abstract class '{base_name}'", expression
                 )
             type_arguments = list(constructed.arguments)
+            class_params = list(declaration.generic_parameters or [])
+            if class_params and not type_arguments:
+                # `new Box(1)` on `class Box<T>`: bind T from the
+                # constructor's parameter types so the result types as
+                # `Box<integer>` rather than a bare, argument-less `Box`.
+                constructor = next(
+                    (
+                        member
+                        for member in declaration.members
+                        if isinstance(member, FunctionDeclaration)
+                        and member.name == base_name
+                    ),
+                    None,
+                )
+                if constructor is not None:
+                    mapping: dict[str, XType] = {}
+                    for index, actual in enumerate(argument_types):
+                        parameter = self._parameter_for(constructor, index)
+                        if parameter is None:
+                            continue
+                        pattern = self._resolve_annotation(
+                            parameter.type_name,
+                            generics=class_params,
+                            keep_generics=True,
+                        )
+                        self._unify_generic(pattern, actual, class_params, mapping)
+                    if mapping:
+                        constructed = XType(
+                            base_name,
+                            arguments=tuple(
+                                mapping.get(param, ANY) for param in class_params
+                            ),
+                        )
+                        type_arguments = list(constructed.arguments)
             self._check_constructor_call(
                 base_name, expression, argument_types, type_arguments=type_arguments
             )
@@ -2342,12 +2755,14 @@ class TypeChecker:
         class_generics: list[str] | None = None,
         explicit_type_arguments: list[XType] | None = None,
         kind: str = "Function",
+        base_mapping: dict[str, XType] | None = None,
     ) -> XType:
         if explicit_type_arguments is not None:
             explicit = explicit_type_arguments
         else:
             explicit = [self._resolve_annotation(t) for t in type_arguments]
         first_arity_match: FunctionDeclaration | None = None
+        first_explicit: list[XType] = explicit
         for declaration in declarations:
             if not self._arity_matches(declaration.parameters, len(argument_types)):
                 continue
@@ -2358,16 +2773,31 @@ class TypeChecker:
                 if class_generics is not None
                 else list(declaration.generic_parameters or [])
             )
+            declared_explicit = explicit
+            if (
+                explicit_type_arguments is None
+                and not type_arguments
+                and generic_parameters
+            ):
+                # `identity(5)` with no `identity<integer>(...)`: bind T from
+                # the argument types before checking and before typing the
+                # call's result.
+                declared_explicit = self._infer_generic_arguments(
+                    declaration, generic_parameters, argument_types, base_mapping
+                )
+                if first_arity_match is declaration:
+                    first_explicit = declared_explicit
             failures = self._argument_failures(
                 declaration,
                 argument_types,
                 generic_parameters,
-                explicit,
+                declared_explicit,
                 getattr(node, "arguments", []),
+                base_mapping=base_mapping,
             )
             if not failures:
-                return self._signature_type(
-                    declaration.return_type, generic_parameters, explicit
+                return self._call_result_type(
+                    declaration, generic_parameters, declared_explicit, base_mapping
                 )
         if first_arity_match is None:
             available = ", ".join(
@@ -2394,7 +2824,7 @@ class TypeChecker:
             if parameter is None:
                 continue
             expected = self._signature_type(
-                parameter.type_name, generic_parameters, explicit
+                parameter.type_name, generic_parameters, first_explicit, base_mapping
             )
             expression = (
                 node.arguments[index]
@@ -2433,6 +2863,7 @@ class TypeChecker:
         generic_parameters: list[str],
         explicit: list[XType],
         arguments: list[Any] | None = None,
+        base_mapping: dict[str, XType] | None = None,
     ) -> list[int]:
         failures: list[int] = []
         arguments = arguments or []
@@ -2442,7 +2873,7 @@ class TypeChecker:
                 failures.append(index)
                 continue
             expected = self._signature_type(
-                parameter.type_name, generic_parameters, explicit
+                parameter.type_name, generic_parameters, explicit, base_mapping
             )
             expression = arguments[index] if index < len(arguments) else None
             matched = (
@@ -2918,7 +3349,7 @@ class TypeChecker:
                 if remainder.startswith("{"):
                     candidate = remainder
             if candidate.startswith("{") and candidate.endswith("}"):
-                for field_text in candidate[1:-1].split(";"):
+                for field_text in split_top_level(candidate[1:-1], ";"):
                     field_text = field_text.strip()
                     if not field_text:
                         continue
@@ -2930,21 +3361,7 @@ class TypeChecker:
                 stack.append(base.strip())
                 if rest.endswith(">"):
                     rest = rest[:-1]
-                depth = 0
-                current = ""
-                for character in rest:
-                    if character == "<":
-                        depth += 1
-                        current += character
-                    elif character == ">":
-                        depth -= 1
-                        current += character
-                    elif character == "," and depth == 0:
-                        stack.append(current)
-                        current = ""
-                    else:
-                        current += character
-                stack.append(current)
+                stack.extend(split_top_level(rest, ","))
                 continue
             if candidate in known:
                 # The type registry is flat, so a sibling module's type is

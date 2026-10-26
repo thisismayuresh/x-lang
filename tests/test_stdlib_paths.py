@@ -268,7 +268,10 @@ class ExceptionPathImportTests(unittest.TestCase):
             }
             """
         )
-        self.assertEqual(output, ["class", "object"])
+        # Bare `Throwable` resolves to the class object (reported
+        # "function", the documented JS-style name for class values);
+        # `System.Throwable` is the exception namespace Environment.
+        self.assertEqual(output, ["function", "object"])
 
     def test_exception_paths_disabled_by_feature(self):
         config = XConfig(features={**FEATURE_DEFAULTS, "exceptions": False})

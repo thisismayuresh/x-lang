@@ -104,6 +104,7 @@ They are wired into the environment in `_install_builtins`
 | `System.io.FileSystem` | `_filesystem_members` |
 | `System.io.Console` | `_console_members` |
 | `System.concurrent.Thread` | `_thread_members` |
+| `System.concurrent.Lock` | `_lock_factory` (callable `Lock()` factory) |
 | `System.concurrent.Async` | `_async_members` |
 | `System.utils.Math` | `_math_members` |
 | `System.utils.JSON` | `_json_members` |

@@ -555,6 +555,21 @@ class XThreadHandle:
 
 
 @dataclass
+class XLockHandle:
+    """A `System.concurrent.Lock()` — a reentrant mutual-exclusion lock.
+
+    Wraps ``threading.RLock`` so the owning thread may lock it repeatedly
+    (each ``lock()`` must be matched by an ``unlock()``) while other threads
+    block or observe ``tryLock()`` failures.  ``holders`` counts outstanding
+    acquisitions — RLock has no portable "locked by anyone" query — and is
+    only mutated by threads that currently hold the lock.
+    """
+
+    lock: Any
+    holders: int = 0
+
+
+@dataclass
 class BuiltinFunction:
     name: str
     implementation: Callable[[list[Any]], Any]

@@ -15,7 +15,10 @@ window.X_COMPLETIONS = {
     { text: "boolean", type: "type", detail: "true / false" },
     { text: "any", type: "type", detail: "any value" },
     { text: "void", type: "type", detail: "no return value" },
-    { text: "var", type: "type", detail: "inferred variable" }
+    { text: "var", type: "type", detail: "inferred variable" },
+    { text: "Promise<T>", type: "type", detail: "async call result type" },
+    { text: "Lock", type: "type", detail: "System.concurrent.Lock handle" },
+    { text: "ThreadHandle", type: "type", detail: "running thread handle" }
   ],
 
   keywords: [
@@ -71,7 +74,10 @@ window.X_COMPLETIONS = {
     { text: "print", type: "builtin", detail: "print(…values)", snippet: "print($1)$0" },
     { text: "println", type: "builtin", detail: "print with newline" },
     { text: "typeOf", type: "builtin", detail: "typeOf(value) → string" },
+    { text: "parseFloat", type: "builtin", detail: "parseFloat(text) → float" },
+    { text: "parseInt", type: "builtin", detail: "parseInt(text, radix?) → integer" },
     { text: "length", type: "property", detail: "array / string length" },
+    { text: "sleep", type: "builtin", detail: "sleep(ms) → Promise" },
     { text: "System", type: "namespace", detail: "standard library root" }
   ],
 
@@ -159,6 +165,28 @@ window.X_COMPLETIONS = {
       { text: "toString", type: "method", detail: "stringify value" },
       { text: "message", type: "property", detail: "exception message" },
       { text: "name", type: "property", detail: "type / exception name" }
+    ],
+    Lock: [
+      { text: "lock", type: "method", detail: "lock() — block until held" },
+      { text: "tryLock", type: "method", detail: "tryLock() / tryLock(ms)" },
+      { text: "unlock", type: "method", detail: "unlock() — release once" },
+      { text: "isLocked", type: "method", detail: "isLocked() → boolean" }
+    ],
+    ThreadHandle: [
+      { text: "join", type: "method", detail: "join(timeoutSeconds?)" },
+      { text: "isAlive", type: "method", detail: "isAlive() → boolean" }
+    ],
+    concurrent: [
+      { text: "Lock", type: "class", detail: "re-entrant mutex", snippet: "System.concurrent.Lock()" },
+      { text: "Thread", type: "namespace", detail: "System.concurrent.Thread" },
+      { text: "Async", type: "namespace", detail: "System.concurrent.Async" }
+    ],
+    Async: [
+      { text: "delay", type: "method", detail: "delay(ms, result?)" },
+      { text: "all", type: "method", detail: "all(operations)" }
+    ],
+    Thread: [
+      { text: "start", type: "method", detail: "start(fn, args?)" }
     ],
     List: [
       { text: "add", type: "method", detail: "add(...)" },
@@ -436,6 +464,7 @@ window.X_COMPLETIONS = {
       { text: "Network", type: "namespace", detail: "HTTP client" }
     ],
     JSON: [
+      { text: "parse", type: "method", detail: "parse(text)" },
       { text: "toJSON", type: "method", detail: "toJSON(value, indent?)" }
     ],
     FileSystem: [
@@ -453,5 +482,5 @@ window.X_COMPLETIONS = {
   },
 
   /* Tokens that should prefer type suggestions when typed as a prefix. */
-  typeKeywords: ["integer", "int", "float", "string", "boolean", "any", "void", "var"]
+  typeKeywords: ["integer", "int", "float", "string", "boolean", "any", "void", "var", "Promise", "Lock", "ThreadHandle"]
 };

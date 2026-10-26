@@ -61,6 +61,7 @@ from .ast_nodes import (
 )
 from .lexer import (
     INTERPOLATION_CLOSED,
+    KEYWORDS,
     Lexer,
     Token,
     scan_template_interpolation,
@@ -98,7 +99,7 @@ def token_end_column(token: Token) -> int:
 class Parser:
     PRECEDENCE = {
         "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1,
-        "||": 2, "&&": 3,
+        "||": 2, "??": 2, "&&": 3,
         "==": 4, "!=": 4, "===": 4, "!==": 4,
         "<": 5, ">": 5, "<=": 5, ">=": 5, "in": 5,
         "+": 6, "-": 6,
@@ -126,6 +127,8 @@ class Parser:
         self.source_name = source_name
         self.in_async_function = False
         self.function_depth = 0
+        self._expr_logical_seen = False
+        self._expr_nullish_seen = False
         self.recover_errors = recover_errors
         self.errors: list[ParseError] = []
         self._reported_errors: set[tuple[str, int, int, str | None]] = set()
@@ -260,6 +263,9 @@ class Parser:
             return self._function_declaration(modifiers, None, is_async, decorators)
         if self._looks_like_return_type_function():
             return_type = self._parse_type()
+            if self._match("async"):
+                self._require_feature("async", self._previous())
+                is_async = True
             self._consume("function", "Expected 'function' after return type")
             return self._function_declaration(
                 modifiers, return_type, is_async, decorators
@@ -701,25 +707,9 @@ class Parser:
     def _type_declaration(self, modifiers: set[str]) -> TypeDeclaration:
         name = self._consume("IDENTIFIER", "Expected type alias name").value
         self._consume("=", "Expected '=' after type alias name")
-        if self._match("{"):
-            self._require_feature("records", self._previous())
-            fields: list[str] = []
-            while not self._check("}") and not self._check("EOF"):
-                start_position = self.position
-                try:
-                    field_type = self._parse_type()
-                    field_name = self._consume(
-                        "IDENTIFIER", "Expected field name"
-                    ).value
-                    fields.append(f"{field_type} {field_name}")
-                    self._consume_statement_terminator(
-                        "Expected ';' after type field"
-                    )
-                except ParseError as error:
-                    self._record_error(error)
-                    self._synchronize(start_position, stop_at_block_end=True)
-            self._consume("}", "Expected '}' after type fields")
-            type_name = "record{" + ";".join(fields) + "}"
+        if self._check("{"):
+            # Inline record alias — both `{a: integer}` and `{integer a}` work.
+            type_name = self._record_type()
         else:
             type_name = self._parse_type()
         self._match(";")
@@ -895,6 +885,9 @@ class Parser:
         if self._match("?"):
             self._require_feature("unions", self._previous())
             type_suffix += "?"
+        if self._match("|"):
+            self._require_feature("unions", self._previous())
+            type_suffix += "|" + self._parse_type()
         type_name = None
         name = ".".join(type_name_parts)
         if self._check("IDENTIFIER"):
@@ -999,6 +992,9 @@ class Parser:
             return self._function_declaration(set(), None, is_async)
         if self._looks_like_return_type_function():
             return_type = self._parse_type()
+            if self._match("async"):
+                self._require_feature("async", self._previous())
+                is_async = True
             self._consume("function", "Expected 'function' after return type")
             return self._function_declaration(set(), return_type, is_async)
         if is_async:
@@ -1487,11 +1483,36 @@ class Parser:
 
     def _expression(self, minimum_precedence: int = 1) -> Any:
         expression = self._unary()
+        # JavaScript rejects unparenthesized mixes of `??` with `||`/`&&`
+        # (at any depth of the same operand chain).  The flags live on the
+        # parser so a nested right-operand parse shares them; every
+        # minimum_precedence == 1 entry (statements, initialisers, ternary
+        # branches, call arguments) starts a fresh chain, and parenthesised
+        # groups save/restore around their inner parse.
+        if minimum_precedence == 1:
+            self._expr_logical_seen = False
+            self._expr_nullish_seen = False
         while True:
             operator = self._peek().kind
             precedence = self.PRECEDENCE.get(operator, 0)
             if precedence < minimum_precedence:
                 break
+            if operator == "??" and self._expr_logical_seen:
+                raise ParseError(
+                    "'??' cannot be mixed with '||' or '&&' without parentheses",
+                    self._peek(),
+                    self.source_name,
+                )
+            if operator in {"||", "&&"} and self._expr_nullish_seen:
+                raise ParseError(
+                    "'||' and '&&' cannot be mixed with '??' without parentheses",
+                    self._peek(),
+                    self.source_name,
+                )
+            if operator == "??":
+                self._expr_nullish_seen = True
+            elif operator in {"||", "&&"}:
+                self._expr_logical_seen = True
             if operator in {"==", "!=", "===", "!=="}:
                 self._require_feature("equality", self._peek())
             self._advance()
@@ -1630,9 +1651,9 @@ class Parser:
                             OptionalChainSegment("index", Literal(value), optional=True)
                         )
                     else:
-                        name = self._consume(
-                            "IDENTIFIER", "Expected member name after '?.'"
-                        ).value
+                        name = self._consume_member_name(
+                            "Expected member name after '?.'"
+                        )
                         chain_segments.append(
                             OptionalChainSegment("member", name, optional=True)
                         )
@@ -1663,9 +1684,9 @@ class Parser:
                         expression = Index(expression, Literal(value))
                         self._attach_span(expression, chain_start)
                 else:
-                    name = self._consume(
-                        "IDENTIFIER", "Expected member name after '.'"
-                    ).value
+                    name = self._consume_member_name(
+                        "Expected member name after '.'"
+                    )
                     if optional_chain_started:
                         chain_segments.append(OptionalChainSegment("member", name))
                     else:
@@ -1778,8 +1799,12 @@ class Parser:
             arrow = self._parenthesized_arrow()
             if arrow is not None:
                 return arrow
+            saved_logical = self._expr_logical_seen
+            saved_nullish = self._expr_nullish_seen
             expression = self._expression()
             self._consume(")", "Expected ')' after expression")
+            self._expr_logical_seen = saved_logical
+            self._expr_nullish_seen = saved_nullish
             return expression
         if self._match("["):
             items: list[Any] = []
@@ -1967,6 +1992,16 @@ class Parser:
             type_name = "void"
         elif self._match("function"):
             type_name = "Function"
+        elif (
+            self._check("null")
+            or self._check("Null")
+            or self._check("undefined")
+            or self._check("Undefined")
+        ):
+            keyword = self._advance()
+            type_name = (
+                "null" if keyword.kind in {"null", "Null"} else "undefined"
+            )
         elif self._is_record_type_start():
             type_name = self._record_type()
         elif self._check("STRING"):
@@ -1999,23 +2034,42 @@ class Parser:
             self._check("IDENTIFIER")
             and self._peek().value == "record"
             and self._peek(1).kind == "{"
-        )
+        ) or self._check("{")
 
     def _record_type(self) -> str:
-        """Parse ``record{int id; string name}`` into its canonical string form."""
+        """Parse a record type into its canonical ``record{type name;...}`` form.
+
+        Accepts both the X spelling (``record{integer id; string name}``,
+        also allowed without the ``record`` keyword) and TypeScript-style
+        fields (``{ id: integer, name: string }``) so inline type literals
+        like ``Promise<{obj: {...}}>`` work.
+        """
         self._require_feature("records", self._peek())
-        self._advance()
+        if self._check("IDENTIFIER") and self._peek().value == "record":
+            self._advance()
         self._consume("{", "Expected '{' after 'record'")
         fields: list[str] = []
         while not self._check("}") and not self._check("EOF"):
             start_position = self.position
             try:
                 field_type = self._parse_type()
-                field_name = self._consume(
-                    "IDENTIFIER", "Expected record field name"
-                ).value
+                if self._check(":"):
+                    # `name: type` — what we parsed so far was the field name.
+                    field_name = field_type
+                    self._advance()
+                    field_type = self._parse_type()
+                else:
+                    field_name = self._consume(
+                        "IDENTIFIER", "Expected record field name"
+                    ).value
                 fields.append(f"{field_type} {field_name}")
-                if not self._match(";") and not self._check("}"):
+                if self._match(";") or self._match(","):
+                    pass
+                elif self._check("}") or self._line_terminator_before_current():
+                    # `}` closes the record; a line break also separates
+                    # fields, matching the historical alias style.
+                    pass
+                else:
                     raise ParseError(
                         "Expected ';' after record field",
                         self._peek(),
@@ -2077,12 +2131,21 @@ class Parser:
             offset += 1
 
     def _looks_like_return_type_function(self) -> bool:
+        def name_like(kind: str) -> bool:
+            # `null`/`undefined` are keywords but valid return-type names.
+            return kind == "IDENTIFIER" or kind in {
+                "null",
+                "Null",
+                "undefined",
+                "Undefined",
+            }
+
         offset = 0
-        if not self._check("IDENTIFIER") and not self._check("void"):
+        if not name_like(self._peek().kind) and not self._check("void"):
             return False
         if self._check("void"):
             offset = 1
-        while self._peek(offset).kind == "IDENTIFIER":
+        while name_like(self._peek(offset).kind):
             offset += 1
             while self._peek(offset).kind == ".":
                 offset += 2
@@ -2108,12 +2171,28 @@ class Parser:
                 offset += 1
                 continue
             break
+        if self._peek(offset).kind == "async":
+            # `Promise<T> async function f() {}` — async may follow the
+            # return type, as it does in the Promise-annotation style.
+            offset += 1
         return self._peek(offset).kind == "function"
 
     def _consume(self, kind: str, message: str) -> Token:
         if self._check(kind):
             return self._advance()
         raise ParseError(message, self._peek())
+
+    def _consume_member_name(self, message: str) -> str:
+        """Consume a property name after `.` / `?.`.
+
+        JavaScript allows reserved words as property names
+        (`promise.catch(...)`, `object.new`, ...), so X accepts any keyword
+        token here and uses its lexeme as the member name.
+        """
+        token = self._peek()
+        if token.kind == "IDENTIFIER" or token.kind in KEYWORDS:
+            return self._advance().value
+        raise ParseError(message, token)
 
     def _object_entry(self, key: str, key_token: Token, value: Any) -> ObjectEntry:
         """Build an object-literal entry, carrying the key token's span."""

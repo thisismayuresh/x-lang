@@ -88,6 +88,10 @@ BUILTIN_TYPE_NAMES = frozenset(
         "Thread",
         "Async",
         "ThreadHandle",
+        "Lock",
+        # Async result annotation — type-level only: the language has no
+        # Promise constructor, .then, or .catch, only async/await.
+        "Promise",
         # Built-in exception hierarchy.
         "Throwable",
         "Exception",
@@ -253,19 +257,24 @@ def _unescape_literal(inner: str) -> str:
     return inner.replace('\\"', '"').replace("\\\\", "\\")
 
 
-def split_union(type_name: str) -> list[str]:
-    """Split a union type on top-level ``|`` characters."""
+def split_top_level(text: str, separator: str) -> list[str]:
+    """Split ``text`` on ``separator`` characters outside any brackets.
+
+    Tracks ``<>``, ``()``, ``[]`` and ``{}`` so nested generic arguments,
+    record bodies, and array suffixes keep their own separators intact
+    (``Promise<{a: integer, b: string}>`` yields one type argument).
+    """
     parts: list[str] = []
     depth = 0
     current: list[str] = []
-    for character in type_name:
-        if character in "<({":
+    for character in text:
+        if character in "<({[":
             depth += 1
             current.append(character)
-        elif character in ">)}":
+        elif character in ">)}]":
             depth = max(0, depth - 1)
             current.append(character)
-        elif character == "|" and depth == 0:
+        elif character == separator and depth == 0:
             parts.append("".join(current).strip())
             current = []
         else:
@@ -273,6 +282,11 @@ def split_union(type_name: str) -> list[str]:
     if current:
         parts.append("".join(current).strip())
     return [part for part in parts if part]
+
+
+def split_union(type_name: str) -> list[str]:
+    """Split a union type on top-level ``|`` characters."""
+    return split_top_level(type_name, "|")
 
 
 def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
@@ -510,30 +524,13 @@ def _split_generic(text: str) -> tuple[str, list[str]]:
         return text, []
     name = text[:open_index]
     inner = text[open_index + 1 : -1]
-    arguments: list[str] = []
-    depth = 0
-    current: list[str] = []
-    for character in inner:
-        if character == "<":
-            depth += 1
-            current.append(character)
-        elif character == ">":
-            depth -= 1
-            current.append(character)
-        elif character == "," and depth == 0:
-            arguments.append("".join(current).strip())
-            current = []
-        else:
-            current.append(character)
-    if current:
-        arguments.append("".join(current).strip())
-    return name, arguments
+    return name, split_top_level(inner, ",")
 
 
 def _parse_record(text: str) -> XType:
     body = text[len("record{") : -1]
     fields: list[tuple[str, XType]] = []
-    for piece in body.split(";"):
+    for piece in split_top_level(body, ";"):
         piece = piece.strip()
         if not piece:
             continue
