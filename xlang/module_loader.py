@@ -73,6 +73,7 @@ class ModuleLoader:
         "System.utils.Math",
         "System.utils.JSON",
         "System.utils.JSON.toJSON",
+        "System.utils.JSON.parse",
         # Every System.Throwable... path mirrors the builtin exception
         # hierarchy: Throwable, Exception, IOException, HttpException, ...
         # The set is generated so it can never drift from the hierarchy.

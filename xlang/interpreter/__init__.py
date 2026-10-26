@@ -602,13 +602,18 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if not declaration.parent_name:
             return False
         root = declaration.parent_name.split("<")[0].strip().split(".")[0]
-        return root not in self.globals.values
+        scope = self.globals if environment is None else environment
+        return root not in scope.values
 
     def _install_builtins(self, arguments: list[str]) -> None:
         self.globals.define("args", arguments)
         self.globals.define("print", BuiltinFunction("print", self._builtin_print))
         self.globals.define("range", BuiltinFunction("range", self._builtin_range))
         self.globals.define("typeOf", BuiltinFunction("typeOf", self._builtin_type_of))
+        self.globals.define(
+            "parseFloat", BuiltinFunction("parseFloat", self._parse_float)
+        )
+        self.globals.define("parseInt", BuiltinFunction("parseInt", self._parse_int))
         # delete(...) is the top-level spelling of Object.delete(...) — the
         # Python-side declaration of its origin lives next to DELETE_BUILTIN_NAME.
         self.globals.define(
@@ -1077,6 +1082,135 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if step == 0:
             raise RuntimeErrorX("range step cannot be zero")
         return range(start, stop, step)
+
+    @staticmethod
+    def _decimal_body_is_valid(body: str) -> bool:
+        """Validate a sign-less decimal body: ``digits[.digits][(e±)digits]``.
+
+        ASCII digits only — Unicode digit look-alikes are rejected so the
+        subsequent ``float()`` call always receives a well-formed literal.
+        """
+        length = len(body)
+        index = 0
+        while index < length and "0" <= body[index] <= "9":
+            index += 1
+        if index == 0:
+            if index >= length or body[index] != ".":
+                return False
+            index += 1
+            fraction_start = index
+            while index < length and "0" <= body[index] <= "9":
+                index += 1
+            if index == fraction_start:
+                return False
+        elif index < length and body[index] == ".":
+            index += 1
+            fraction_start = index
+            while index < length and "0" <= body[index] <= "9":
+                index += 1
+            if index == fraction_start:
+                return False
+        if index < length and body[index] in "eE":
+            index += 1
+            if index < length and body[index] in "+-":
+                index += 1
+            exponent_start = index
+            while index < length and "0" <= body[index] <= "9":
+                index += 1
+            if index == exponent_start:
+                return False
+        return index == length
+
+    def _parse_float(self, arguments: list[Any]) -> float:
+        """Builtin ``parseFloat(text) -> float``.
+
+        Strict whole-string parse: optional sign, digits with an optional
+        single decimal point, an optional ``e``-exponent, and surrounding
+        whitespace.  Unlike JavaScript's ``parseFloat``, empty input or
+        trailing garbage raises ``IllegalArgumentException`` instead of
+        silently producing ``NaN``.
+        """
+        if len(arguments) != 1:
+            raise RuntimeErrorX("parseFloat(text) expects one argument")
+        text = arguments[0]
+        if not isinstance(text, str):
+            raise RuntimeErrorX(
+                "parseFloat(text) expects a string, "
+                f"got '{self._value_type_name(text)}'",
+                "IllegalArgumentException",
+            )
+        body = text.strip()
+        negative = False
+        if body[:1] in ("+", "-"):
+            negative = body[0] == "-"
+            body = body[1:]
+        if not body or not self._decimal_body_is_valid(body):
+            raise RuntimeErrorX(
+                f"parseFloat cannot parse '{text}' as a number",
+                "IllegalArgumentException",
+            )
+        value = float(body)
+        return -value if negative else value
+
+    def _parse_int(self, arguments: list[Any]) -> int:
+        """Builtin ``parseInt(text, radix?) -> integer``.
+
+        Strict whole-string parse of an integer in ``radix`` (default 10,
+        valid 2–36).  Surrounding whitespace and one leading sign are
+        ignored; anything else — including digits that do not fit the
+        radix — raises ``IllegalArgumentException``.
+        """
+        if len(arguments) not in (1, 2):
+            raise RuntimeErrorX("parseInt(text, radix?) expects one or two arguments")
+        text = arguments[0]
+        if not isinstance(text, str):
+            raise RuntimeErrorX(
+                f"parseInt(text, radix?) expects a string, "
+                f"got '{self._value_type_name(text)}'",
+                "IllegalArgumentException",
+            )
+        radix = arguments[1] if len(arguments) == 2 else 10
+        if (
+            isinstance(radix, bool)
+            or not isinstance(radix, int)
+            or not 2 <= radix <= 36
+        ):
+            raise RuntimeErrorX(
+                "parseInt radix must be an integer between 2 and 36",
+                "IllegalArgumentException",
+            )
+        body = text.strip()
+        negative = False
+        if body[:1] in ("+", "-"):
+            negative = body[0] == "-"
+            body = body[1:]
+        if not body:
+            raise RuntimeErrorX(
+                f"parseInt cannot parse '{text}' as an integer",
+                "IllegalArgumentException",
+            )
+        value = 0
+        for character in body:
+            if "0" <= character <= "9":
+                digit = ord(character) - ord("0")
+            elif "a" <= character <= "z":
+                digit = ord(character) - ord("a") + 10
+            elif "A" <= character <= "Z":
+                digit = ord(character) - ord("A") + 10
+            else:
+                raise RuntimeErrorX(
+                    f"parseInt cannot parse '{text}': "
+                    f"'{character}' is not a valid digit",
+                    "IllegalArgumentException",
+                )
+            if digit >= radix:
+                raise RuntimeErrorX(
+                    f"parseInt cannot parse '{text}': "
+                    f"'{character}' is not a valid digit in radix {radix}",
+                    "IllegalArgumentException",
+                )
+            value = value * radix + digit
+        return -value if negative else value
 
     def _builtin_exception(
         self, name: str, arguments: list[Any]

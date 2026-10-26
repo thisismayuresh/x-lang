@@ -90,6 +90,8 @@ BUILTIN_SCOPE_NAMES = frozenset(
         "print",
         "range",
         "typeOf",
+        "parseFloat",
+        "parseInt",
         # delete(...) comes from Object.delete (see DELETE_BUILTIN_NAME in
         # xlang/interpreter/_native_builtins.py) but is callable unqualified.
         "delete",
@@ -2073,6 +2075,13 @@ class TypeChecker:
             if name in self._interfaces:
                 self._error(f"Cannot construct interface '{name}'", expression)
                 return parse_type(name)
+            # Language builtins with fixed result types (see the
+            # BUILTIN_SCOPE_NAMES entries and the interpreter's
+            # _parse_float/_parse_int builtins).
+            if name == "parseFloat":
+                return FLOAT
+            if name == "parseInt":
+                return INTEGER
             return ANY
         if isinstance(callee, Member):
             if callee.name == "map" and expression.arguments:

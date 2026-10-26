@@ -497,6 +497,31 @@ Run the complete sample with:
 x run examples/type_of.x
 ```
 
+### Number parsing: parseFloat and parseInt
+
+Two builtins turn strings into numbers, with no import needed:
+
+- `parseFloat(text)` returns a `float` — optional sign, digits with an
+  optional decimal point, an optional `e`-exponent, and surrounding
+  whitespace are accepted (`"3.5"`, `"-42"`, `".5"`, `"1e3"`).
+- `parseInt(text, radix?)` returns an `integer` in `radix` (default 10,
+  valid 2–36): `parseInt("ff", 16)` is `255`, `parseInt("1011", 2)` is `11`.
+
+Both parse the whole string. Empty input, trailing garbage (`"12px"`),
+digits outside the radix, or a non-string argument raise
+`IllegalArgumentException` — unlike JavaScript's parsers, nothing silently
+produces `NaN` or a prefix value. The checker knows the result types
+(`float` and `integer`), so `let string s = parseFloat(...)` is a type
+error, and `typeOf(parseFloat("1"))` is `"number"`.
+
+```x
+function main() {
+    let float ratio = parseFloat("0.75");
+    let integer port = parseInt("8080");
+    print(ratio, port);              // 0.75 8080
+}
+```
+
 ### Map interfaces
 
 An interface whose only member is a `keyType key { fields }` entry is a
@@ -890,11 +915,11 @@ System/
     │   ├── TreeMap, TreeSet, LinkedHashMap, LRUCache
     │   └── ThreadSafeMap, ThreadSafeSet
     ├── Math                       # abs, sqrt, pow, sin, cos, log, max, ...
-    └── JSON                       # toJSON(value, indent?) — JSON.stringify
+    └── JSON                       # toJSON(value, indent?), parse(text)
 ```
 
 Top-level globals that need no namespace and no import: `print`, `range`,
-`typeOf`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
+`typeOf`, `parseFloat`, `parseInt`, `delete`, and `args`, plus `sleep` (when `async` is enabled), `input` (when
 `command_input` is enabled), `trace` (when `decorators` is enabled), `Object`
 (when `object_literals` is enabled), and the short collection names (`Stack`,
 `HashMap`, `Queue`, ...) when `collections` is enabled.
@@ -1237,7 +1262,7 @@ is unavailable:
 x run examples/fetch_demo.x
 ```
 
-## JSON output: System.utils.JSON.toJSON
+## JSON: System.utils.JSON.toJSON and System.utils.JSON.parse
 
 `toJSON(value)` stringifies a value with JavaScript's `JSON.stringify`
 semantics: compact by default, pretty-printed when given an indent
@@ -1272,6 +1297,30 @@ any function main() {
 Import forms: `import System.utils.JSON.toJSON` binds `toJSON`,
 `import System.utils.JSON` binds `JSON` for `JSON.toJSON(...)`, and the
 function needs no import at all as `System.utils.JSON.toJSON(...)`.
+
+### Parsing JSON text: System.utils.JSON.parse
+
+`JSON.parse(text)` is the inverse: strict RFC 8259 parsing that turns JSON
+text back into plain X values — objects become objects, arrays become
+arrays, and strings/numbers/booleans/`null` come back as themselves.
+
+```x
+import System.utils.JSON
+
+any function main() {
+    let parsed = JSON.parse("{\"ok\": true, \"n\": [1, 2]}");
+    print(JSON.toJSON(parsed));   // {"ok":true,"n":[1,2]}
+    print(typeOf(parsed.ok));      // boolean
+}
+```
+
+Malformed JSON raises `IllegalArgumentException` carrying the parser's
+message (for example `JSON.parse failed: Expecting ',' delimiter ...`), and
+the non-standard `NaN`/`Infinity` extensions some parsers tolerate are
+rejected as well. Import forms mirror `toJSON`:
+`import System.utils.JSON.parse` binds `parse`, `import System.utils.JSON`
+binds `JSON` for `JSON.parse(...)`, and the full
+`System.utils.JSON.parse(...)` path needs no import.
 
 ## Data Structures and Algorithms (DSA) Library
 

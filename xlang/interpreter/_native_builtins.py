@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Awaitable, Callable
 
 from ._common import *  # noqa: F401,F403
@@ -480,10 +481,12 @@ class NativeBuiltins:
         """Member table for ``System.utils.JSON``.
 
         Declares ``toJSON`` as the builtin ``System.utils.JSON.toJSON`` —
-        a ``JSON.stringify`` equivalent for X values.
+        a ``JSON.stringify`` equivalent for X values — and ``parse``, the
+        ``JSON.parse`` equivalent that turns JSON text back into X values.
         """
         return {
             "toJSON": BuiltinFunction("JSON.toJSON", self._json_to_string),
+            "parse": BuiltinFunction("JSON.parse", self._json_parse),
         }
 
     def _json_to_string(self, arguments: list[Any]) -> str:
@@ -494,6 +497,34 @@ class NativeBuiltins:
             )
         space = arguments[1] if len(arguments) == 2 else None
         return jsonify.stringify(arguments[0], space)
+
+    def _json_parse(self, arguments: list[Any]) -> Any:
+        """Builtin ``System.utils.JSON.parse(text) -> value``.
+
+        Strict RFC 8259 parsing: object/array/scalar values become plain X
+        objects, arrays, strings, numbers, booleans and ``null``.  Malformed
+        JSON — including the non-standard ``NaN``/``Infinity`` extensions
+        Python otherwise tolerates — raises ``IllegalArgumentException``.
+        """
+        if len(arguments) != 1:
+            raise RuntimeErrorX("JSON.parse(text) expects one argument")
+        text = arguments[0]
+        if not isinstance(text, str):
+            raise RuntimeErrorX(
+                f"JSON.parse(text) expects a string, got '{self._value_type_name(text)}'",
+                "IllegalArgumentException",
+            )
+
+        def _reject_constant(name: str) -> Any:
+            raise ValueError(f"{name} is not valid JSON")
+
+        try:
+            return json.loads(text, parse_constant=_reject_constant)
+        except ValueError as error:
+            raise RuntimeErrorX(
+                f"JSON.parse failed: {error}",
+                "IllegalArgumentException",
+            ) from error
 
     def _http_fetch(self, arguments: list[Any]) -> Any:
         if len(arguments) not in (1, 2):
