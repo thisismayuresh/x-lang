@@ -430,6 +430,12 @@ class NativeBuiltins:
             raise RuntimeErrorX(
                 f"{operation} duration must be a number of milliseconds"
             )
+        if not math.isfinite(milliseconds):
+            # inf/NaN durations hang asyncio.sleep or overflow time_t —
+            # reject them up front instead.
+            raise RuntimeErrorX(
+                f"{operation} duration must be a finite number of milliseconds"
+            )
         if milliseconds < 0:
             raise RuntimeErrorX(f"{operation} duration cannot be negative")
 

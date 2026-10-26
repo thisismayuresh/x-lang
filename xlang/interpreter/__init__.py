@@ -4029,4 +4029,18 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 return "{" + fields + "}"
             finally:
                 seen.discard(identity)
-        return str(value)
+        if isinstance(value, XFunction):
+            # Never fall through to Python's repr: it prints object addresses
+            # and interpreter internals (`<bound method ... 0x7f...>`).
+            return f"[function {value.declaration.name}]"
+        if isinstance(value, (OverloadedFunction, BuiltinFunction)):
+            return f"[function {value.name}]"
+        if isinstance(value, XThreadHandle):
+            return "[ThreadHandle]"
+        if isinstance(value, XLockHandle):
+            return "[Lock]"
+        if isinstance(value, FetchCall) or inspect.iscoroutine(value):
+            return "[Promise]"
+        if isinstance(value, (int, float, str, range)):
+            return str(value)
+        return f"[{type(value).__name__}]"

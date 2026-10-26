@@ -3127,6 +3127,41 @@ from the end, and an out-of-range index reports a runtime error. It does not
 count grapheme clusters, and this differs from JavaScript's UTF-16 code-unit
 indexing for some characters.
 
+## Security
+
+X is a local scripting language: an X program can do anything the user
+running it can do (read and write files through `System.io.FileSystem`, make
+network requests, spawn threads). Treat running untrusted X code like running
+an untrusted binary — use the browser playground (WebAssembly sandbox) or a
+container for untrusted input. Within that model the interpreter itself is
+hardened, and `tests/test_security.py` pins each property:
+
+- **No escape into the host runtime.** There is no `eval`, `exec`,
+  `compile`, `Function` constructor, `open`, `globals`, `getattr`, or
+  `__import__` — every Python entry point is `Name ... is not defined`.
+  Dunder access (`().__class__`, `"x".__class__`, `o.__dict__`) is rejected
+  by the parser or member resolution; tuple literals do not parse.
+- **Import sandbox.** Imports resolve only to `.x` files inside the project;
+  `import os`, `import subprocess`, absolute paths (`/etc/passwd`), and
+  parent traversal (`../../secret`) are parse errors or "source file does
+  not exist" errors.
+- **No interpreter internals in output.** Printing functions, builtins,
+  handles, or promises yields stable tokens (`[function greet]`, `[Lock]`,
+  `[ThreadHandle]`, `[Promise]`) — never Python `repr`s with memory
+  addresses or internal method names.
+- **Resource limits fail cleanly.** Deep recursion, over-long strings
+  (`MAX_STRING_LENGTH`), and over-deep JSON/source nesting raise X errors
+  ("the program nests too deeply") rather than Python tracebacks;
+  `Math.pow` overflow reports `math range error`; `sleep`/`tryLock`
+  durations must be finite (`inf`/`NaN` are rejected).
+- **Injection surfaces.** Null bytes cannot enter string or template
+  literals — the `\0` escape is a parse error and a raw null byte in source
+  is rejected by the lexer; `\r\n` inside strings stays data; exception
+  messages and stack displays are X-level (no Python frames leak).
+- **Equality.** `==` is JavaScript-loose (`1 == "1"`, `0 == ""` are `true`)
+  — security-sensitive checks (tokens, roles, input validation) must use
+  `===`, which also rejects `null === undefined`.
+
 ## Current limitations
 
 The specification includes features beyond this prototype. These are the

@@ -366,6 +366,20 @@ class Lexer:
         characters: list[str] = []
         ended_at_newline = False
         while not self._at_end() and self._peek() != quote:
+            if self._peek() == "\0":
+                # Raw null bytes in source are never valid X; rejecting them
+                # keeps NULs out of string data (paths, headers, regexes).
+                error = LexError(
+                    "String literal cannot contain a null byte",
+                    self.line,
+                    self.column,
+                    self.source_name,
+                )
+                if not self.recover_errors:
+                    raise error
+                self.errors.append(error)
+                self._advance()
+                continue
             if self._peek() == "\n":
                 error = LexError(
                     "String literal cannot contain a newline",
@@ -451,6 +465,18 @@ class Lexer:
             if character == "`":
                 self._advance()
                 return "".join(characters)
+            if character == "\0":
+                error = LexError(
+                    "Template literal cannot contain a null byte",
+                    self.line,
+                    self.column,
+                    self.source_name,
+                )
+                if not self.recover_errors:
+                    raise error
+                self.errors.append(error)
+                self._advance()
+                continue
             if self._starts_with("{{"):
                 characters.append(self._advance())
                 characters.append(self._advance())
