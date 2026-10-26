@@ -30,7 +30,7 @@ import urllib.request
 from typing import Any
 
 from . import __version__
-from .runtime import BuiltinFunction, RuntimeErrorX
+from .runtime import BuiltinFunction, RuntimeErrorX, MAX_JSON_PARSE_DEPTH, json_depth_exceeds
 
 __all__ = ["FetchCall", "normalize_fetch_call", "perform_fetch"]
 
@@ -383,6 +383,11 @@ def perform_fetch(url: Any, options: Any) -> dict[str, Any]:
     def response_json(arguments: list[Any]) -> Any:
         if arguments:
             raise RuntimeErrorX("response.json() takes no arguments")
+        if json_depth_exceeds(body_text):
+            raise _fail(
+                f"Response from '{final_url}' nests too deeply "
+                f"(maximum nesting depth {MAX_JSON_PARSE_DEPTH})"
+            )
         try:
             return _json.loads(body_text)
         except ValueError as error:

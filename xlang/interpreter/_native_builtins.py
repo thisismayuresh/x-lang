@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from ._common import *  # noqa: F401,F403
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _ARRAY_METHODS, _STRING_METHODS
+from ..runtime import MAX_JSON_PARSE_DEPTH, json_depth_exceeds
 
 
 #: Declared origin of the top-level ``delete(...)`` builtin.  ``delete`` is the
@@ -561,6 +562,9 @@ class NativeBuiltins:
         objects, arrays, strings, numbers, booleans and ``null``.  Malformed
         JSON — including the non-standard ``NaN``/``Infinity`` extensions
         Python otherwise tolerates — raises ``IllegalArgumentException``.
+        Documents nested deeper than ``MAX_JSON_PARSE_DEPTH`` are rejected
+        before the host parser sees them, so hostile payloads fail the same
+        way on every Python version and stack.
         """
         if len(arguments) != 1:
             raise RuntimeErrorX("JSON.parse(text) expects one argument")
@@ -568,6 +572,12 @@ class NativeBuiltins:
         if not isinstance(text, str):
             raise RuntimeErrorX(
                 f"JSON.parse(text) expects a string, got '{self._value_type_name(text)}'",
+                "IllegalArgumentException",
+            )
+        if json_depth_exceeds(text):
+            raise RuntimeErrorX(
+                f"JSON.parse failed: input nests too deeply "
+                f"(maximum nesting depth {MAX_JSON_PARSE_DEPTH})",
                 "IllegalArgumentException",
             )
 

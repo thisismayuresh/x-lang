@@ -17,7 +17,7 @@ from xlang.cli import main
 from xlang.config import FEATURE_DEFAULTS, XConfig
 from xlang.interpreter import Interpreter
 from xlang.module_loader import ModuleLoader
-from xlang.runtime import RuntimeErrorX
+from xlang.runtime import RuntimeErrorX, MAX_JSON_PARSE_DEPTH
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -43,6 +43,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(
                 200,
                 jsonlib.dumps({"a": 1, "nested": {"b": True}}),
+                "application/json",
+            )
+        elif self.path == "/deep":
+            self._send(
+                200,
+                "[" * (MAX_JSON_PARSE_DEPTH + 1) + "]" * (MAX_JSON_PARSE_DEPTH + 1),
                 "application/json",
             )
         elif self.path == "/redirect":
@@ -476,6 +482,17 @@ class HttpErrorTests(HttpTestBase):
         )
         self.assertEqual(error.exception_name, "HttpException")
         self.assertIn("not valid JSON", str(error))
+
+    def test_json_helper_on_a_deeply_nested_body_raises_http_exception(self):
+        error = self.run_source_error(
+            "import System.io.Network.http.fetch\n"
+            "async function main() {\n"
+            '    let response = await fetch("BASEURL/deep");\n'
+            "    response.json();\n"
+            "}\n"
+        )
+        self.assertEqual(error.exception_name, "HttpException")
+        self.assertIn("nests too deeply", str(error))
 
     def test_response_helpers_validate_arguments(self):
         error = self.run_source_error(

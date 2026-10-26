@@ -133,7 +133,12 @@ trains, not published packages. The VS Code extension versions on its own
 - **`System.utils.JSON.parse(text)`** — strict RFC 8259 parsing back into
   X objects/arrays/scalars, the inverse of `toJSON`. Malformed JSON raises
   `IllegalArgumentException`, and non-standard `NaN`/`Infinity` literals are
-  rejected. The loader allowlists `System.utils.JSON.parse` for member
+  rejected. Documents nested deeper than `MAX_JSON_PARSE_DEPTH` (500
+  levels) are rejected up front — `JSON.parse failed: input nests too
+  deeply` — instead of relying on the host json scanner, whose guard
+  depends on the C stack and became stack-sensitive on CPython 3.14;
+  `response.json()` and the collections' `fromJSON`/`from_json` share the
+  cap. The loader allowlists `System.utils.JSON.parse` for member
   imports (`import System.utils.JSON.parse` binds `parse`), and the
   playground catalog gains the `JSON.parse` completion.
 - **`examples/main.x` passes `--feature strict_typing=on`**: the showcase's

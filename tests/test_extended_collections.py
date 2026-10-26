@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import xlang.stdlib.extended_collections as extended
-from xlang.runtime import BuiltinFunction, RuntimeErrorX
+from xlang.runtime import BuiltinFunction, RuntimeErrorX, MAX_JSON_PARSE_DEPTH
 from xlang.stdlib.extended_collections import (
     LRUCache,
     LinkedHashMap,
@@ -576,6 +576,11 @@ class SerializationTests(unittest.TestCase):
     def test_invalid_json_raises(self):
         with self.assertRaisesRegex(RuntimeErrorX, "from_json: invalid JSON"):
             from_json("{not json")
+
+    def test_deeply_nested_json_raises(self):
+        over_limit = MAX_JSON_PARSE_DEPTH + 1
+        with self.assertRaisesRegex(RuntimeErrorX, "nests too deeply"):
+            from_json("[" * over_limit + "]" * over_limit)
 
     def test_non_string_argument_raises(self):
         with self.assertRaisesRegex(RuntimeErrorX, "from_json expects a JSON string"):
