@@ -29,6 +29,17 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Language / interpreter
 
+- **Diagnostics echo the source's type spelling** — error messages repeat the
+  annotation exactly as it was written instead of the internal canonical
+  name: `let number[] xs = ["a"];` reports `type 'number[]'` (not
+  `float[]`), `let int n = "text";` reports `type 'int'` (not `integer`),
+  and an aliased annotation reports the alias (`Score`, `Function`). The
+  "found" side still shows the inferred type. Compatibility and equality
+  are unchanged — only the wording. The `number` alias itself, its array
+  forms (`number[]` through `number[][][]`), and variables named after
+  their own type (`let number number = 5;`) are now pinned by
+  `tests/test_number_type.py` and documented in a new "The number type
+  and array annotations" section.
 - **`??` nullish coalescing** — `a ?? b` evaluates to `a` unless it is
   `null`/`undefined` (then `b`), with JavaScript's mixing restriction:
   `??` combined with `&&`/`||` without parentheses is a parse error. The
@@ -267,6 +278,23 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Tooling / CI
 
+- **New `x lint` command** — runs the `undeclared-variables` rule over the
+  loaded program: a name that resolves to no local, parameter, declaration,
+  import, builtin, or enabled feature global is reported with the runtime's
+  `Name 'x' is not defined` wording (including the
+  `... because the 'feature' feature is disabled in x.toml` clause for
+  feature globals), shown with line and column, labelled `lint error`, and
+  exits 1; a clean file prints `no lint issues` and exits 0. The rule reuses
+  the type checker's scope machinery — no second AST walk — and `x check` is
+  unchanged because it passes no rules. Getting runtime parity meant fixing
+  what the checker binds: catch clauses were unpacked in the wrong order
+  (type vs. name), destructuring and match pattern names and nested enums
+  were never defined, `[imports].default` aliases and `input`
+  (`command_input`) were unknown, and the loader's per-file visibility now
+  counts a file's own namespace members as declared there. Configured per
+  project in the `[lint]` table (`undeclared-variables`, default `true`;
+  unknown rule names and non-boolean values are configuration errors).
+  Pinned by `tests/test_lint.py`, and every published example lints clean.
 - **Regression corpus moved into `tests/` as generated Python** — the
   `csv_tests/` directory and its four CSV files are gone.
   `tests/generate_corpus.py` now writes a single generated

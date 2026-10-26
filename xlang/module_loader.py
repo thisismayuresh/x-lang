@@ -223,6 +223,12 @@ class ModuleLoader:
             if name is None:
                 continue
             visible.add(name)
+            # A namespace's members are declared by this file too: they sit
+            # in a child scope the checker builds, so without adding them
+            # here the declaring file's own use of a sibling member would
+            # look undeclared to `x lint`.
+            for member_name in self._own_member_names(declaration):
+                visible.add(member_name)
             # value = declaring file, so the checker can suggest the right
             # importer-relative `import ...` line.
             self._name_provenance.setdefault(name, module_spelling)
@@ -1039,6 +1045,24 @@ class ModuleLoader:
         ):
             return declaration.name
         return None
+
+    def _own_member_names(self, declaration: Any) -> list[str]:
+        """Names a ``namespace`` block declares, nested ones included.
+
+        Only the declaring file's own visibility uses this: the members are
+        not exported under their bare names, so provenance is left alone and
+        other files still get the runtime's plain ``Name 'x' is not defined``
+        wording when they use them without importing the namespace.
+        """
+        if not isinstance(declaration, NamespaceDeclaration):
+            return []
+        names: list[str] = []
+        for member in declaration.declarations:
+            name = self._declaration_name(member)
+            if name is not None:
+                names.append(name)
+            names.extend(self._own_member_names(member))
+        return names
 
     def _names_of(self, declarations: list[Any]) -> set[str]:
         names: set[str] = set()

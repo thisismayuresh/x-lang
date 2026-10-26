@@ -852,7 +852,7 @@ class MultiDimensionalArrayTypeTests(unittest.TestCase):
             }
             """)
         self.assertEqual(return_code, 1, output)
-        self.assertIn("expected `integer[][]`, found `integer[]`", errors)
+        self.assertIn("expected `int[][]`, found `integer[]`", errors)
 
     def test_rejects_array_for_scalar_annotation(self):
         return_code, output, errors = check_source("""
@@ -861,7 +861,7 @@ class MultiDimensionalArrayTypeTests(unittest.TestCase):
             }
             """)
         self.assertEqual(return_code, 1, output)
-        self.assertIn("expected `integer`, found `integer[]`", errors)
+        self.assertIn("expected `int`, found `integer[]`", errors)
 
     def test_rejects_shallow_array_for_three_dimensional_annotation(self):
         return_code, output, errors = check_source("""
@@ -870,7 +870,7 @@ class MultiDimensionalArrayTypeTests(unittest.TestCase):
             }
             """)
         self.assertEqual(return_code, 1, output)
-        self.assertIn("expected `integer[][][]`, found `integer[][]`", errors)
+        self.assertIn("expected `int[][][]`, found `integer[][]`", errors)
 
     def test_rejects_deep_array_for_one_dimensional_annotation(self):
         return_code, output, errors = check_source("""
@@ -879,7 +879,7 @@ class MultiDimensionalArrayTypeTests(unittest.TestCase):
             }
             """)
         self.assertEqual(return_code, 1, output)
-        self.assertIn("expected `integer[]`, found `integer[][]`", errors)
+        self.assertIn("expected `int[]`, found `integer[][]`", errors)
 
     def test_accepts_literals_whose_depth_matches_the_annotation(self):
         return_code, output, errors = check_source("""

@@ -8,6 +8,7 @@ from ._common import *  # noqa: F401,F403
 from ._native_builtins import DELETE_BUILTIN_NAME
 from ._common import MAX_STRING_LENGTH, ComparatorItem, _is_class_method, _EXCEPTION_PARENTS, _ARRAY_METHODS, _STRING_METHODS
 from ..runtime import _typed_object_annotation
+from ..feature_globals import FEATURE_GLOBALS as _FEATURE_GLOBALS
 
 from ._math_builtins import MathBuiltins
 from ._native_builtins import NativeBuiltins
@@ -61,30 +62,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
 
     #: Global names that only exist while a ``[features]`` flag is enabled.
     #: Used to turn "Name 'x' is not defined" into an actionable message.
-    FEATURE_GLOBALS: dict[str, tuple[str, ...]] = {
-        "collections": (
-            "Collections",
-            "HashMap",
-            "LinkedList",
-            "List",
-            "Stack",
-            "Queue",
-            "PriorityQueue",
-            "Trie",
-            "Set",
-            "TreeMap",
-            "TreeSet",
-            "LinkedHashMap",
-            "LRUCache",
-            "ThreadSafeMap",
-            "ThreadSafeSet",
-        ),
-        "threads": ("Thread",),
-        "async": ("Async", "sleep"),
-        "filesystem": ("FileSystem",),
-        "object_literals": ("Object",),
-        "decorators": ("trace",),
-    }
+    #: Defined in ``xlang.feature_globals`` so the type checker can read it
+    #: without importing the interpreter.
+    FEATURE_GLOBALS: dict[str, tuple[str, ...]] = _FEATURE_GLOBALS
 
     def __init__(
         self,

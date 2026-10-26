@@ -59,7 +59,23 @@ FEATURE_DEFAULTS = {
 
 COMMAND_LINE_SOURCE = Path("<command line>")
 
-BUILTIN_COMMANDS = ("run", "check", "build", "install", "repl", "format", "compile")
+#: Rules `x lint` knows how to run, with their default state.  Configured
+#: per project in the `[lint]` table of x.toml; unknown keys fail so a
+#: typo never silently disables a rule.
+LINT_RULE_DEFAULTS = {
+    "undeclared-variables": True,
+}
+
+BUILTIN_COMMANDS = (
+    "run",
+    "check",
+    "build",
+    "install",
+    "repl",
+    "format",
+    "compile",
+    "lint",
+)
 
 
 class ConfigError(Exception):
@@ -94,6 +110,9 @@ class XConfig:
     color: str = "auto"
     compile_target: str = ""
     compile_out: str = ""
+    lint: dict[str, bool] = field(
+        default_factory=lambda: dict(LINT_RULE_DEFAULTS)
+    )
 
     def enabled(self, feature: str) -> bool:
         return self.features.get(feature, False)
@@ -217,7 +236,7 @@ def _apply_config_tables(
 ) -> None:
     _validate_keys(
         data,
-        {"features", "run", "cli", "scripts", "imports", "compile"},
+        {"features", "run", "cli", "scripts", "imports", "compile", "lint"},
         "root",
         config_path,
     )
@@ -237,6 +256,22 @@ def _apply_config_tables(
                 f"Feature '{feature_name}' must be true or false", config_path
             )
         config.features[feature_name] = enabled
+
+    lint_values = data.get("lint", {})
+    if not isinstance(lint_values, dict):
+        raise ConfigError("[lint] must be a TOML table", config_path)
+    for rule_name, enabled in lint_values.items():
+        if rule_name not in LINT_RULE_DEFAULTS:
+            known_rules = ", ".join(sorted(LINT_RULE_DEFAULTS))
+            raise ConfigError(
+                f"Unknown lint rule '{rule_name}'. Available rules: {known_rules}",
+                config_path,
+            )
+        if not isinstance(enabled, bool):
+            raise ConfigError(
+                f"Lint rule '{rule_name}' must be true or false", config_path
+            )
+        config.lint[rule_name] = enabled
 
     cli_values = data.get("cli", {})
     if not isinstance(cli_values, dict):
