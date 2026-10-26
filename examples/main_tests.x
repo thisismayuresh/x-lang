@@ -26,7 +26,7 @@ int function fibonacci(int n) {
 // Using @trace for measuring execution
 @trace
 int function slowOp(int n) {
-    let sum = 0;
+    let int sum = 0;
     for (let i = 0; i < n; i = i + 1) {
         sum = sum + i;
     }
@@ -52,10 +52,10 @@ string function flaky(boolean shouldFail) {
 // ============================================
 
 // Primitive types - inferred
-let age = 25;
-let height = 5.9;
-let name = "John";
-let isActive = true;
+let int age = 25;
+let float height = 5.9;
+let string name = "John";
+let boolean isActive = true;
 
 // Explicit type declarations (strict mode would require these)
 let int age2 = 25;
@@ -121,7 +121,7 @@ async string function fetchData(string url) {
 }
 
 async string function processData() {
-    let result = await fetchData("https://api.example.com");
+    let string result = await fetchData("https://api.example.com");
     return "Processed: " + result;
 }
 
@@ -256,9 +256,9 @@ class DrawableCircle extends Circle implements Drawable, Serializable {
     }
 
     void deserialize(string data) {
-        let parts = data.split("|");
+        let string[] parts = data.split("|");
         this.color = parts[1];
-        this.radius = 0 + parts[2];
+        this.radius = parseFloat(parts[2]);
     }
 }
 
@@ -349,9 +349,9 @@ object function getUser() {
     return { "name": "Jane", "age": 25, "email": "jane@example.com" };
 }
 
-let userObj = getUser();
-let n = userObj.name;
-let a = userObj.age;
+let object userObj = getUser();
+let any n = userObj.name;
+let any a = userObj.age;
 
 // ============================================
 // SPREAD OPERATOR TESTS
@@ -364,7 +364,7 @@ let object obj1 = { "a": 1, "b": 2 };
 let object obj2 = { ...obj1, "c": 3 };
 
 int[] function combineArrays(int[][] arrays) {
-    let result = [];
+    let int[] result = [];
     for (let arr of arrays) {
         result = [...result, ...arr];
     }
@@ -390,7 +390,7 @@ string function riskyOperation(boolean shouldFail) {
 
 any function handleErrors() {
     try {
-        let result = riskyOperation(true);
+        let string result = riskyOperation(true);
         Console.print("Result: " + result);
     } catch (CustomException e) {
         Console.print("Caught CustomException: " + e.message);
@@ -406,20 +406,20 @@ any function handleErrors() {
 // ============================================
 
 any function fileSystemTests() {
-    let testFile = "test_output.txt";
-    let content = "Hello, World!\nThis is a test file.\nLine 3.";
+    let string testFile = "test_output.txt";
+    let string content = "Hello, World!\nThis is a test file.\nLine 3.";
 
     FileSystem.writeText(testFile, content);
     Console.print("File written: " + testFile);
 
-    let readContent = FileSystem.readText(testFile);
+    let string readContent = FileSystem.readText(testFile);
     Console.print("File content:\n" + readContent);
 
     Console.print("File exists: " + FileSystem.exists(testFile));
     Console.print("Is file: " + FileSystem.isFile(testFile));
     Console.print("Is directory: " + FileSystem.isDirectory(testFile));
 
-    let files = FileSystem.listDirectory(".");
+    let string[] files = FileSystem.listDirectory(".");
     Console.print("Files in current directory:");
     for (let f of files) {
         Console.print("  - " + f);
@@ -540,27 +540,27 @@ any function runAllTests() {
 
     // Class tests
     Console.print("\n--- Class Tests ---");
-    let dog = new Dog("Buddy", 3, "Golden Retriever");
-    let cat = new Cat("Whiskers", 2, true);
+    let Dog dog = new Dog("Buddy", 3, "Golden Retriever");
+    let Cat cat = new Cat("Whiskers", 2, true);
     dog.makeSound();
     cat.makeSound();
     Console.print("Dog: " + dog.getName() + ", " + dog.getAge() + ", " + dog.getBreed());
     Console.print("Cat: " + cat.getName() + ", " + cat.getAge());
 
     // Shape tests
-    let circle = new Circle("red", 5.0);
-    let rectangle = new Rectangle("blue", 4.0, 6.0);
+    let Circle circle = new Circle("red", 5.0);
+    let Rectangle rectangle = new Rectangle("blue", 4.0, 6.0);
     Console.print("Circle area: " + circle.getArea() + ", color: " + circle.getColor());
     Console.print("Rectangle area: " + rectangle.getArea() + ", color: " + rectangle.getColor());
 
     // Interface tests
     Console.print("\n--- Interface Tests ---");
-    let drawableCircle = new DrawableCircle("green", 3.0);
+    let DrawableCircle drawableCircle = new DrawableCircle("green", 3.0);
     drawableCircle.draw();
     Console.print("Description: " + drawableCircle.getDescription());
-    let serialized = drawableCircle.serialize();
+    let string serialized = drawableCircle.serialize();
     Console.print("Serialized: " + serialized);
-    let newCircle = new DrawableCircle("", 0);
+    let DrawableCircle newCircle = new DrawableCircle("", 0);
     newCircle.deserialize(serialized);
     Console.print("Deserialized: " + newCircle.getDescription());
 
