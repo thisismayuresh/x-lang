@@ -1,34 +1,31 @@
-"""Shared executor for the CSV regression corpus in this folder.
+"""Shared executor for the regression corpus in ``tests/corpus_data.py``.
 
-Every row of ``run_tests.csv`` / ``check_tests.csv`` / ``error_tests.csv`` /
-``format_tests.csv`` is executed through the real X pipeline:
+Every row of the generated ``ROWS`` list is executed through the real X
+pipeline:
 
 * ``run``     — lex, parse, type-check and interpret.  ``expected_stdout`` and
                 ``expected_exit`` are ALWAYS asserted: an empty
-                ``expected_stdout`` cell means "the program prints nothing"
-                and an empty ``expected_exit`` cell means "main returned no
-                exit code".
+                ``expected_stdout`` means "the program prints nothing" and an
+                empty ``expected_exit`` means "main returned no exit code".
 * ``check``   — lex, parse and type-check only; the program must be clean and
                 produce no output.
 * ``error``   — same pipeline as ``run``; ``expected_error`` must be a
                 non-empty substring of the failure text (not a regular
-                expression).  ``expected_stdout`` is only asserted when its
-                cell is non-empty.  ``phase`` (lex | parse | load | type |
-                runtime) is metadata recorded at generation time.
+                expression).  ``expected_stdout`` is only asserted when it is
+                non-empty.  ``phase`` (lex | parse | load | type | runtime)
+                is metadata recorded at generation time.
 * ``format``  — ``format_source`` output must equal ``expected_stdout``
                 (always asserted), and formatting must be idempotent.
 
-Multi-line values are plain CSV fields (RFC 4180 quoting).  Recorded
-expectations never embed absolute paths or memory addresses, so the CSVs are
-portable across machines.
+Recorded expectations never embed absolute paths or memory addresses, so the
+corpus is portable across machines.
 
-Regenerate the CSVs with ``generate_corpus.py``; run them with
+Regenerate ``corpus_data.py`` with ``generate_corpus.py``; run it with
 ``test_corpus.py``.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,13 +47,6 @@ COLUMNS = (
     "expected_error",
     "expected_exit",
     "notes",
-)
-
-CSV_NAMES = (
-    "run_tests.csv",
-    "check_tests.csv",
-    "error_tests.csv",
-    "format_tests.csv",
 )
 
 
@@ -134,25 +124,24 @@ def execute_case(kind: str, source: str, workdir: Path) -> CaseResult:
     return CaseResult(stdout=_scrub("\n".join(output), workdir), exit_code=exit_code)
 
 
-def load_rows(csv_dir: Path) -> list[dict[str, str]]:
-    """Load every corpus CSV in *csv_dir*, keeping file order and adding ``file``."""
-    rows: list[dict[str, str]] = []
-    for name in CSV_NAMES:
-        path = csv_dir / name
-        if not path.is_file():
-            continue
-        with path.open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                row["file"] = name
-                rows.append(row)
-    return rows
-
-
-def write_rows(csv_dir: Path, name: str, rows: list[dict[str, str]]) -> None:
-    """Write one corpus CSV with the canonical column order."""
-    path = csv_dir / name
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=COLUMNS, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column, "") for column in COLUMNS})
+def write_module(path: Path, rows: list[dict[str, str]]) -> None:
+    """Write the generated ``corpus_data.py`` module holding *rows*."""
+    lines = [
+        '"""Generated regression corpus - do not edit by hand.',
+        "",
+        "Regenerate with ``python tests/generate_corpus.py`` (add ``--sample N``",
+        "to preview rows, ``--no-verify`` to write despite authored-expectation",
+        "mismatches).  ``tests/test_corpus.py`` executes every row through the",
+        "real X pipeline; a diff here after regeneration means the corpus",
+        "builders or the interpreter changed.",
+        '"""',
+        "",
+        "ROWS = [",
+    ]
+    for row in rows:
+        lines.append("    {")
+        for column in COLUMNS:
+            lines.append(f"        {column!r}: {row.get(column, '')!r},")
+        lines.append("    },")
+    lines.append("]")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

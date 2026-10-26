@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Run the CSV regression corpus stored next to this file.
+"""Run the regression corpus stored in tests/corpus_data.py.
 
-    .venv/bin/python csv_tests/test_corpus.py             # whole corpus
-    .venv/bin/python csv_tests/test_corpus.py -v          # verbose unittest
-    X_CORPUS_FILTER=strings .venv/bin/python csv_tests/test_corpus.py
+    .venv/bin/python tests/test_corpus.py             # whole corpus
+    .venv/bin/python tests/test_corpus.py -v          # verbose unittest
+    X_CORPUS_FILTER=strings .venv/bin/python tests/test_corpus.py
 
-Every row of run_tests.csv, check_tests.csv, error_tests.csv and
-format_tests.csv is executed through the real X pipeline and checked with the
-per-kind rules below (also documented in corpus_lib.py):
+Every row of the generated corpus is executed through the real X pipeline and
+checked with the per-kind rules below (also documented in corpus_lib.py):
 
 * ``run``     - lex, parse, type-check and interpret.  ``expected_stdout`` is
                 ALWAYS asserted (an empty cell means "the program prints
@@ -24,13 +23,12 @@ per-kind rules below (also documented in corpus_lib.py):
                 (always asserted), and formatting must be idempotent:
                 format(format(source)) == format(source).
 
-``X_CORPUS_FILTER`` keeps only rows whose id, file, category or name contains
-the given substring.  Regenerate the CSVs with ``generate_corpus.py``.
+``X_CORPUS_FILTER`` keeps only rows whose id, kind, category or name contains
+the given substring.  Regenerate the corpus with ``generate_corpus.py``.
 """
 
 from __future__ import annotations
 
-import csv
 import os
 import sys
 import tempfile
@@ -43,9 +41,8 @@ for _extra in (str(HERE), str(ROOT)):
     if _extra not in sys.path:
         sys.path.insert(0, _extra)
 
-from corpus_lib import execute_case, load_rows  # noqa: E402
-
-csv.field_size_limit(sys.maxsize)
+from corpus_data import ROWS  # noqa: E402
+from corpus_lib import execute_case  # noqa: E402
 
 FILTER = os.environ.get("X_CORPUS_FILTER", "")
 
@@ -57,13 +54,13 @@ class CorpusTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.rows = load_rows(HERE)
+        cls.rows = list(ROWS)
         if FILTER:
             cls.rows = [
                 row
                 for row in cls.rows
                 if FILTER in row["id"]
-                or FILTER in row["file"]
+                or FILTER in row["kind"]
                 or FILTER in row["category"]
                 or FILTER in row["name"]
             ]
@@ -78,7 +75,7 @@ class CorpusTest(unittest.TestCase):
 
     def _message(self, row: dict[str, str], detail: str) -> str:
         return (
-            f"[{row['id']} {row['file']}] {row['category']}/{row['name']}: "
+            f"[{row['id']} {row['kind']}] {row['category']}/{row['name']}: "
             f"{detail}"
         )
 

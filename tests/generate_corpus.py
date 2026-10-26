@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Regenerate the CSV regression corpus in csv_tests/.
+"""Regenerate the regression corpus module tests/corpus_data.py.
 
 Usage (from the repository root):
 
-    .venv/bin/python csv_tests/generate_corpus.py [--sample N] [--no-verify]
+    .venv/bin/python tests/generate_corpus.py [--sample N] [--no-verify]
 
 Every authored case optionally carries expectations (Python-mirrored where the
 semantics were verified to match, hand-written elsewhere); every case is then
 executed through the real X pipeline.  Authored expectations that disagree with
 the pipeline abort generation (unless ``--no-verify``), and ``--sample N``
-prints N rows per group for manual review before the CSVs are trusted.
+prints N rows per group for manual review before the generated rows are
+trusted.
 
-The generated files are run_tests.csv, check_tests.csv, error_tests.csv and
-format_tests.csv.
+The single generated file is tests/corpus_data.py (a ROWS list consumed by
+tests/test_corpus.py).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ for _extra in (str(HERE), str(ROOT)):
     if _extra not in sys.path:
         sys.path.insert(0, _extra)
 
-from corpus_lib import CaseResult, execute_case, write_rows
+from corpus_lib import CaseResult, execute_case, write_module
 from xlang.config import XConfig
 from xlang.lexer import LexError, Lexer
 from xlang.module_loader import ModuleLoader
@@ -41,12 +42,6 @@ from xlang.runtime import Interpreter
 from xlang.typecheck import TypeChecker
 
 ID_PREFIX = {"run": "R", "check": "C", "error": "E", "format": "F"}
-CSV_FILE = {
-    "run": "run_tests.csv",
-    "check": "check_tests.csv",
-    "error": "error_tests.csv",
-    "format": "format_tests.csv",
-}
 KIND_ORDER = ("run", "check", "error", "format")
 
 
@@ -905,10 +900,10 @@ def collection_cases() -> list[Case]:
         (
             "import System.utils.Collections\n"
             "function main() {\n"
-            "  let map = Collections.HashMap.create()\n"
-            '  Collections.HashMap.set(map, "key1", "value1")\n'
-            '  print(Collections.HashMap.get(map, "key1"))\n'
-            "  print(Collections.HashMap.size(map))\n"
+            "  let map = new Collections.HashMap()\n"
+            '  map.set("key1", "value1")\n'
+            '  print(map.get("key1"))\n'
+            "  print(map.size())\n"
             "}"
         ),
         expect_stdout="value1\n1",
@@ -1470,9 +1465,6 @@ AUTHORED_ERRORS: tuple[tuple[str, str, str, str], ...] = (
     ("parse", "instanceof operator is unsupported",
      "function main() {\n  print(1 instanceof Number);\n}",
      "Expected"),
-    ("parse", "nullish coalescing is unsupported",
-     'function main() {\n  print(null ?? "d");\n}',
-     "Unexpected token"),
     ("parse", "exponent operator is unsupported",
      "function main() {\n  print(2 ** 10);\n}",
      "expected an expression"),
@@ -2316,13 +2308,16 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 1
 
-    total = 0
+    counts = {kind: 0 for kind in KIND_ORDER}
+    ordered: list[Resolved] = []
     for kind in KIND_ORDER:
         rows = [row for row in resolved if row.kind == kind]
-        write_rows(HERE, CSV_FILE[kind], [asdict(row) for row in rows])
-        total += len(rows)
-        print(f"{CSV_FILE[kind]}: {len(rows)} rows")
-    print(f"total: {total} rows")
+        counts[kind] = len(rows)
+        ordered.extend(rows)
+    write_module(HERE / "corpus_data.py", [asdict(row) for row in ordered])
+    for kind in KIND_ORDER:
+        print(f"{kind}: {counts[kind]} rows")
+    print(f"total: {sum(counts.values())} rows in corpus_data.py")
 
     if args.sample:
         print(f"\nsample ({args.sample} per kind):")

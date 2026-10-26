@@ -1,9 +1,9 @@
 name: Tests
 
-# Runs the full Python test suite (unit tests + CSV corpus), verifies the
-# docs-site playground wheel is not stale, and syntax-checks the docs-site
-# JavaScript. Runs on every push and pull request to the main branches so a
-# red check means a new regression.
+# Runs the full Python test suite (unit tests + regression corpus), verifies
+# the docs-site playground wheel is not stale, and syntax-checks the
+# docs-site JavaScript. Runs on every push and pull request to the main
+# branches so a red check means a new regression.
 
 on:
   push:
@@ -45,15 +45,10 @@ jobs:
       - name: Install TypeScript (tsc compile tests)
         run: npm install --global typescript
 
-      # --deselect keeps CI green while these known failures are worked on
-      # separately; remove entries as they are fixed.
+      # One command covers the interpreter tests and the generated corpus
+      # (tests/corpus_data.py); no --deselect list: every test must pass.
       - name: Run test suite
-        run: >-
-          python -m pytest tests/ csv_tests/ -q
-          --deselect tests/test_interpreter.py::InterpreterTests::test_type_of_distinguishes_functions_from_methods
-          --deselect tests/test_interpreter.py::InterpreterTests::test_type_of_reports_javascript_style_type_names
-          --deselect tests/test_type_diagnostics.py::TypeOfTests::test_type_of_keeps_existing_object_and_primitive_results
-          --deselect tests/test_typecheck.py::StrictTypingCliTests::test_showcase_example_is_clean_under_strict_typing
+        run: python -m pytest tests/ -q
 
   playground-wheel:
     name: playground wheel freshness
