@@ -8,3 +8,4 @@ dist/
 !.env.example
 node_modules/
 docs-site/about/project-ideas.md
+data.csv

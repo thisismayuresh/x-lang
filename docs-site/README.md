@@ -2441,7 +2441,10 @@ try (let Connection db = new Connection("db")) {
 ```
 
 See the runnable [try-with-resources example](./examples/exceptions/try_with_resources.x)
-for the throw-before-catch and multi-resource LIFO cases.
+for the throw-before-catch and multi-resource LIFO cases, and the
+[Aadhaar CSV generator](./examples/aadhar/main.x) for a file resource
+opened in the try parens, written to across an infinite loop, with the
+optional `catch` running after `close()`.
 
 ## Type aliases and records
 
@@ -4315,6 +4318,7 @@ Runnable feature examples are organized by topic:
 
 ```text
 examples/
+├── aadhar/main.x
 ├── banking_platform/main.x
 ├── configuration/configured_args.x
 ├── control_flow/main.x
@@ -4332,6 +4336,7 @@ examples/
 For example:
 
 ```sh
+x run examples/aadhar/main.x
 x run examples/control_flow/main_file.x
 x run examples/decorators/trace.x
 x run examples/exceptions/try_catch_finally.x
