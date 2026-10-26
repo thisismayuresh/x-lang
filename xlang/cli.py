@@ -38,6 +38,7 @@ USAGE = """X language interpreter
 Usage:
   x [OPTIONS] run <file>.x [-- <program arguments...>]
   x [OPTIONS] check <file>.x
+  x [OPTIONS] lint <file>.x
   x [OPTIONS] build <file>.x
   x [OPTIONS] compile <file>.x [--target <language>] [--out <file>]
   x [OPTIONS] format <file>.x
@@ -248,7 +249,7 @@ def _execute(
                 return 2
             print("x: source files must use the .x extension", file=sys.stderr)
             return 2
-        if command in ("check", "build", "format", "compile"):
+        if command in ("check", "lint", "build", "format", "compile"):
             print(
                 f"x: '{parsed.source}' is a script; run it with "
                 f"'x {parsed.source}'",
@@ -336,6 +337,31 @@ def _execute(
                 config.color,
                 show_context=not parsed.no_context,
             )
+        if command == "lint":
+            # The lint pass reuses the type checker's scope machinery and
+            # reports only rule-tagged diagnostics; ordinary type errors
+            # belong to `x check`.
+            lint_findings = [
+                error
+                for error in TypeChecker().check(
+                    program,
+                    source_name=str(source_path),
+                    config=config,
+                    lint=config.lint,
+                )
+                if error.rule is not None
+            ]
+            if lint_findings:
+                return _report_source_errors(
+                    lint_findings,
+                    loader.sources,
+                    source_path,
+                    config.color,
+                    label="lint error",
+                    show_context=not parsed.no_context,
+                )
+            print(f"{source_path}: no lint issues")
+            return 0
         if command in ("check", "build", "compile"):
             if config.enabled("type_checker"):
                 type_errors = TypeChecker().check(program, source_name=str(source_path), config=config)
@@ -588,7 +614,16 @@ def _create_argument_parser() -> argparse.ArgumentParser:
         watch=False,
     )
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("run", "check", "build", "format", "install", "repl", "compile"):
+    for command in (
+        "run",
+        "check",
+        "lint",
+        "build",
+        "format",
+        "install",
+        "repl",
+        "compile",
+    ):
         command_parser = subparsers.add_parser(
             command,
             parents=[common_parser],

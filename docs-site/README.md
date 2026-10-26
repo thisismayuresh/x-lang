@@ -146,6 +146,7 @@ The installation provides the `x` command.
 x run path/to/main.x [arguments...]
 x path/to/main.x [arguments...]
 x check path/to/main.x
+x lint path/to/main.x
 x build path/to/main.x
 x compile path/to/main.x --target typescript --out dist/main.ts
 x format path/to/main.x
@@ -163,6 +164,17 @@ x help
   through the `string[] args` parameter to `main`.
 - Running `x file.x` is shorthand for `x run file.x`.
 - `check` lexes and parses the entry file and its imports.
+- `lint` runs the `undeclared-variables` rule over the same loaded program:
+  a name that resolves to no local, parameter, declaration, import, builtin,
+  or enabled feature global is reported as a `lint error` (line and column
+  included), and the command exits 1; a clean file prints
+  `no lint issues` and exits 0. Runtime-provided names — `input` while
+  `command_input` is on, the `[imports].default` aliases, builtins like
+  `print` and `range`, exception classes, and the bindings introduced by
+  `catch`, destructuring declarations, match patterns, and nested enums —
+  all resolve, so the rule matches what `x run` would accept. Ordinary type
+  errors belong to `check` and are not re-reported here. The rule can be
+  switched off per project in the `[lint]` table of `x.toml` (see below).
 - `check`, `build`, and `run` report all recoverable lexical and syntax errors
   found in the loaded source files before execution. A malformed construct can
   limit recovery, so errors after it may not be discoverable in that pass.
@@ -291,6 +303,9 @@ test = "x check path/to/main.x"
 [compile]
 target = "typescript"
 out = "dist/main.ts"
+
+[lint]
+undeclared-variables = true
 ```
 
 `[run].args` are passed to the program first, followed by profile arguments
@@ -312,7 +327,8 @@ values are exported to the process. The command runs in the project root
 (directory of `x.toml`) and its exit status becomes the `x` exit code, so
 `x test` propagates a failing status exactly like `pnpm test`. Script names
 must be single words that do not collide with the built-in commands
-(`run`, `check`, `build`, `compile`, `install`). `--watch` cannot be combined
+(`run`, `check`, `lint`, `build`, `compile`, `format`, `install`, `repl`).
+`--watch` cannot be combined
 with scripts because a shell command does not expose the files it depends on.
 
 `[compile]` sets the defaults for the `compile` command. Both keys are
@@ -323,6 +339,12 @@ values; when neither is provided, the target falls back to `"typescript"` and
 the output to the source file's name with a `.ts` extension. An unknown
 target or an invalid key in `[compile]` is a configuration error reported
 before compilation begins.
+
+`[lint]` configures the `x lint` rules. The only rule today is
+`undeclared-variables` (default `true`); setting it to `false` makes
+`x lint` pass over every file, and an unknown rule name or a non-boolean
+value is a configuration error reported before the lint runs, listing the
+available rules.
 
 The CLI also loads a project-root `.env` file when running a program. Copy the
 safe demo values in [.env.example](./.env.example) to `.env`, then run the

@@ -25,9 +25,14 @@ class TypeCheckError(Exception):
         helps: Sequence[str] = (),
         end_line: int | None = None,
         end_column: int | None = None,
+        rule: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
+        #: Lint rule that produced this diagnostic (None for ordinary type
+        #: errors).  `x lint` reports only rule-tagged diagnostics; `x check`
+        #: reports only the untagged ones.
+        self.rule = rule
         self.source_name = source_name or getattr(node, "source_name", None)
         self.line = line if line is not None else getattr(node, "line", None)
         self.column = column if column is not None else getattr(node, "column", None)

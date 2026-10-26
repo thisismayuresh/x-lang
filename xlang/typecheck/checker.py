@@ -12,15 +12,19 @@ from typing import Any
 
 from ..ast_nodes import (
     ArrayLiteral,
+    ArrayPattern,
     Assignment,
     AwaitExpression,
     Binary,
+    BindingPattern,
     Block,
     Call,
     ClassDeclaration,
     ClassicForStatement,
+    DefaultPattern,
     DoWhileStatement,
     EnumDeclaration,
+    EnumPattern,
     ExpressionStatement,
     ForStatement,
     FunctionDeclaration,
@@ -34,6 +38,7 @@ from ..ast_nodes import (
     Index,
     InterfaceMapEntry,
     Literal,
+    LiteralPattern,
     Member,
     MatchExpression,
     ModuleImport,
@@ -41,6 +46,7 @@ from ..ast_nodes import (
     NewExpression,
     ObjectEntry,
     ObjectLiteral,
+    ObjectPattern,
     OptionalChain,
     Program,
     ReturnStatement,
@@ -54,10 +60,14 @@ from ..ast_nodes import (
     TypeDeclaration,
     Unary,
     UndefinedLiteral,
+    UndefinedPattern,
     VariableDeclaration,
     WhileStatement,
+    WildcardPattern,
 )
+from ..config import FEATURE_DEFAULTS
 from ..diagnostics import callable_kind, member_noun
+from ..feature_globals import FEATURE_GLOBALS
 from .errors import TypeCheckError
 from .types import (
     ANY,
@@ -116,6 +126,21 @@ BUILTIN_SCOPE_NAMES = frozenset(
         "LRUCache",
         "ConcurrentHashMap",
         "ConcurrentList",
+        # Exception types the runtime always defines at top level
+        # (see the interpreter's Throwable / exception_types setup).
+        "Throwable",
+        "Exception",
+        "Error",
+        "RuntimeException",
+        "ArithmeticException",
+        "TypeException",
+        "IllegalArgumentException",
+        "IndexOutOfBoundsException",
+        "FileSystemException",
+        "IOException",
+        "HttpException",
+        "DatabaseException",
+        "DatabaseError",
     }
 )
 
@@ -283,6 +308,7 @@ class TypeChecker:
         self.errors: list[TypeCheckError] = []
         self._seen: set[tuple[Any, ...]] = set()
         self._config = config
+        self._lint_rules: dict[str, bool] = {}
         self._classes: dict[str, ClassDeclaration] = {}
         self._interfaces: dict[str, ClassDeclaration] = {}
         self._enums: dict[str, EnumDeclaration] = {}
@@ -331,10 +357,21 @@ class TypeChecker:
         )
 
     def check(
-        self, program: Program, source_name: str | None = None, config=None
+        self,
+        program: Program,
+        source_name: str | None = None,
+        config=None,
+        lint: dict[str, bool] | None = None,
     ) -> list[TypeCheckError]:
-        """Type-check ``program`` and return all diagnostics (does not raise)."""
+        """Type-check ``program`` and return all diagnostics (does not raise).
+
+        ``lint`` enables lint rules for this run: rule-tagged diagnostics
+        (``error.rule`` set) are produced in addition to ordinary type
+        errors, and callers filter by the tag — ``x check`` passes nothing,
+        ``x lint`` passes the project's ``[lint]`` table.
+        """
         self._reset(source_name, config)
+        self._lint_rules = dict(lint or {})
         try:
             self._check_program(program)
         except RecursionError:
@@ -357,10 +394,14 @@ class TypeChecker:
         self._check_declarations(program.declarations, scope)
 
     def check_or_raise(
-        self, program: Program, source_name: str | None = None, config=None
+        self,
+        program: Program,
+        source_name: str | None = None,
+        config=None,
+        lint: dict[str, bool] | None = None,
     ) -> None:
         """Type-check and raise the first error when diagnostics exist."""
-        errors = self.check(program, source_name, config)
+        errors = self.check(program, source_name, config, lint=lint)
         if errors:
             raise errors[0]
 
@@ -396,7 +437,42 @@ class TypeChecker:
         scope = TypeScope()
         for name in BUILTIN_SCOPE_NAMES:
             scope.define(name, ANY, True)
+        # Globals provided by enabled features (`Collections`, `Thread`,
+        # `FileSystem`, ...) resolve the same way the runtime provides them,
+        # so the undeclared-name lint never reports a feature global while
+        # its feature is on — and reports it with the runtime's wording
+        # while the feature is off.
+        for feature, names in FEATURE_GLOBALS.items():
+            if self._feature_enabled(feature):
+                for name in names:
+                    scope.define(name, ANY, True)
         return scope
+
+    def _feature_enabled(self, feature: str) -> bool:
+        if self._config is not None:
+            return self._config.enabled(feature)
+        return FEATURE_DEFAULTS.get(feature, False)
+
+    def _disabled_feature_for(self, name: str) -> str | None:
+        """The disabled feature that would provide ``name``, if any."""
+        for feature, names in FEATURE_GLOBALS.items():
+            if name in names and not self._feature_enabled(feature):
+                return feature
+        return None
+
+    def _default_import_aliases(self) -> set[str]:
+        """Local names ``[imports].default`` makes available at runtime.
+
+        The interpreter injects those aliases when it runs a program, so the
+        loader never binds them into the visibility map; the lint must treat
+        them as available all the same.
+        """
+        if self._config is None:
+            return set()
+        return {
+            module_path.split(".")[-1]
+            for module_path in self._config.default_imports
+        }
 
     def _collect_types(self, declarations: list[Any]) -> None:
         for declaration in declarations:
@@ -694,13 +770,19 @@ class TypeChecker:
             if declaration.statement is not None:
                 self._check_declaration(declaration.statement, scope)
             return
+        elif isinstance(declaration, EnumDeclaration):
+            # Top-level enums are predeclared by the first pass over
+            # ``_check_declarations``; a nested enum (inside a function or
+            # block) reaches only this dispatch and must define itself here.
+            self._enums.setdefault(declaration.name, declaration)
+            scope.define(declaration.name, parse_type(declaration.name), True)
+            return
         elif isinstance(
             declaration,
             (
                 ModuleImport,
                 ImportAlias,
                 ImportNamespaceAlias,
-                EnumDeclaration,
                 TypeDeclaration,
             ),
         ):
@@ -783,7 +865,9 @@ class TypeChecker:
             self._check_statements(declaration.body.statements, body_scope)
         finally:
             self._try_depth -= 1
-        for catch_name, catch_type, catch_body in declaration.catches:
+        # ``catches`` stores (catch_type, catch_name, body) — the parser's
+        # annotation and the interpreter's loop both use that order.
+        for catch_type, catch_name, catch_body in declaration.catches:
             catch_scope = scope.child()
             if catch_name:
                 catch_scope.define(
@@ -1307,9 +1391,56 @@ class TypeChecker:
                 and actual.name not in {"null", "undefined", "void"}
             ):
                 annotated = actual
+        if declaration.pattern is not None:
+            # `let [a, b] = ...` / `let {x, y} = ...`: the names exist at
+            # runtime, so they must exist in scope too.  The checker does not
+            # yet model each extracted field's type; ANY keeps typing exactly
+            # as it was (identifiers previously fell through to ANY) while the
+            # lint rule sees a declared name.
+            self._define_pattern_bindings(
+                declaration.pattern, scope, constant=declaration.constant
+            )
+            return
         name = declaration.name
         if name:
             scope.define(name, annotated, assigned, constant=declaration.constant)
+
+    def _define_pattern_bindings(
+        self, pattern: Any, scope: TypeScope, constant: bool = False
+    ) -> None:
+        """Record every name a binding pattern extracts into ``scope``.
+
+        Shared by destructuring declarations and match arms; matches the
+        interpreter's ``_bind_destructuring`` / ``_match_pattern`` walk.
+        """
+        if isinstance(pattern, BindingPattern):
+            scope.define(pattern.name, ANY, True, constant=constant)
+            return
+        if isinstance(pattern, DefaultPattern):
+            self._define_pattern_bindings(pattern.pattern, scope, constant=constant)
+            return
+        if isinstance(pattern, ArrayPattern):
+            for item in pattern.items:
+                self._define_pattern_bindings(item, scope, constant=constant)
+            if pattern.rest_name is not None:
+                scope.define(pattern.rest_name, ANY, True, constant=constant)
+            return
+        if isinstance(pattern, ObjectPattern):
+            for _, field_pattern in pattern.fields:
+                self._define_pattern_bindings(
+                    field_pattern, scope, constant=constant
+                )
+            if pattern.rest_name is not None:
+                scope.define(pattern.rest_name, ANY, True, constant=constant)
+            return
+        if isinstance(pattern, tuple) and pattern and pattern[0] == "or":
+            # `a | b` alternatives: any name any alternative binds is in
+            # scope for the arm body.
+            for alternative in pattern[1]:
+                self._define_pattern_bindings(alternative, scope, constant=constant)
+            return
+        # WildcardPattern, LiteralPattern, UndefinedPattern, EnumPattern
+        # bind no names.
 
     # ------------------------------------------------------------------
     # Typed-object literal diagnostics (object<K, V>)
@@ -1753,6 +1884,7 @@ class TypeChecker:
     def _infer_identifier(self, expression: Identifier, scope: TypeScope) -> XType:
         found = scope.lookup(expression.name)
         if found is None:
+            self._report_undeclared_name(expression.name, expression)
             return ANY
         type_value, assigned = found
         if not assigned:
@@ -1928,6 +2060,8 @@ class TypeChecker:
             target = expression.operand
             if isinstance(target, Identifier):
                 found = scope.lookup(target.name)
+                if found is None:
+                    self._report_undeclared_name(target.name, expression)
                 if found is not None and found[1] and scope.is_constant(target.name):
                     self._error(
                         f"Cannot reassign constant '{target.name}'",
@@ -2034,6 +2168,8 @@ class TypeChecker:
         target = expression.target
         if isinstance(target, Identifier):
             found = scope.lookup(target.name)
+            if found is None:
+                self._report_undeclared_name(target.name, expression)
             if found is not None:
                 target_type, assigned = found
                 if scope.is_constant(target.name) and assigned:
@@ -2645,17 +2781,21 @@ class TypeChecker:
         self._infer(expression.value, scope)
         arm_types: list[XType] = []
         for arm in expression.arms:
+            # Pattern names bind inside the arm, exactly as the interpreter's
+            # ``_match_pattern`` does before it runs the arm.
+            arm_scope = scope.child()
+            self._define_pattern_bindings(arm.pattern, arm_scope)
             if arm.guard is not None:
-                self._infer(arm.guard, scope)
+                self._infer(arm.guard, arm_scope)
             body = arm.body
             if isinstance(body, Block):
-                self._check_statements(body.statements, scope.child())
+                self._check_statements(body.statements, arm_scope)
                 arm_types.append(ANY)
             elif isinstance(body, list):
-                self._check_statements(body, scope.child())
+                self._check_statements(body, arm_scope)
                 arm_types.append(ANY)
             else:
-                arm_types.append(self._infer(body, scope))
+                arm_types.append(self._infer(body, arm_scope))
         return self._collapse(arm_types)
 
     def _literal_type(self, value: Any) -> XType:
@@ -3467,6 +3607,42 @@ class TypeChecker:
             return None
         return self._name_provenance.get(name)
 
+    def _lint_enabled(self, rule: str) -> bool:
+        """Whether a lint rule runs for this check (``x lint`` sets them)."""
+        return bool(self._lint_rules.get(rule))
+
+    def _report_undeclared_name(self, name: str, node: Any) -> None:
+        """Lint rule ``undeclared-variables``: a name nothing declares.
+
+        Covers identifiers that resolve in no scope — neither a local,
+        parameter, declaration, import, builtin, nor an enabled feature's
+        globals.  The loader's visibility map is consulted first, so a name
+        this file declares (in any order) or imports — including namespace
+        members bound only by a wildcard or aliased import — is available;
+        a name only another module declares gets the cross-module message
+        from ``_report_not_imported``.  The plain message mirrors the
+        runtime's ``undefined_name_error`` wording, including the
+        disabled-feature clause.
+        """
+        if not self._lint_enabled("undeclared-variables"):
+            return
+        source = getattr(node, "source_name", None) or self._source_name
+        if source is not None and self._module_visibility:
+            visible = self._module_visibility.get(source)
+            if visible is not None and name in visible:
+                return
+        if name in self._default_import_aliases():
+            return
+        if self._report_not_imported(name, node):
+            return
+        message = f"Name '{name}' is not defined"
+        feature = self._disabled_feature_for(name)
+        if feature is not None:
+            message += (
+                f" because the '{feature}' feature is disabled in x.toml"
+            )
+        self._error(message, node, rule="undeclared-variables")
+
     def _report_not_imported(self, name: str, node: Any, noun: str = "Name") -> bool:
         # Language builtins can be shadowed by a project declaration
         # (`let string string = "Maya"`); that must not turn every other
@@ -3486,10 +3662,16 @@ class TypeChecker:
             helps = [
                 "add `import " f"{self._import_suggestion(declaring, source)}.{name}`"
             ]
+        # Under `x lint` this is the cross-module form of the same finding:
+        # a variable used here that only another module declares.
+        rule = None
+        if noun == "Name" and self._lint_enabled("undeclared-variables"):
+            rule = "undeclared-variables"
         self._error(
             f"{noun} '{name}' is not defined in this module",
             node,
             helps=helps,
+            rule=rule,
         )
         return True
 
@@ -3500,6 +3682,7 @@ class TypeChecker:
         *,
         notes: Sequence[str] = (),
         helps: Sequence[str] = (),
+        rule: str | None = None,
     ) -> None:
         line = getattr(node, "line", None)
         column = getattr(node, "column", None)
@@ -3524,6 +3707,7 @@ class TypeChecker:
                 line=line,
                 column=column,
                 notes=notes,
+                rule=rule,
                 helps=helps,
                 end_line=end_line,
                 end_column=end_column,
