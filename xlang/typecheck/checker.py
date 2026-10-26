@@ -75,11 +75,14 @@ from .types import (
     TypeScope,
     XType,
     _strip_array,
+    _strip_nullable,
     canonical_primitive_alias,
     is_compatible,
     parse_type,
+    split_top_level,
     split_union,
     substitute,
+    _collection_alias,
 )
 
 #: Names the builtin scope predefines (see ``TypeChecker._builtin_scope``).
@@ -2945,7 +2948,7 @@ class TypeChecker:
                 if remainder.startswith("{"):
                     candidate = remainder
             if candidate.startswith("{") and candidate.endswith("}"):
-                for field_text in candidate[1:-1].split(";"):
+                for field_text in split_top_level(candidate[1:-1], ";"):
                     field_text = field_text.strip()
                     if not field_text:
                         continue
@@ -2957,21 +2960,7 @@ class TypeChecker:
                 stack.append(base.strip())
                 if rest.endswith(">"):
                     rest = rest[:-1]
-                depth = 0
-                current = ""
-                for character in rest:
-                    if character == "<":
-                        depth += 1
-                        current += character
-                    elif character == ">":
-                        depth -= 1
-                        current += character
-                    elif character == "," and depth == 0:
-                        stack.append(current)
-                        current = ""
-                    else:
-                        current += character
-                stack.append(current)
+                stack.extend(split_top_level(rest, ","))
                 continue
             if candidate in known:
                 # The type registry is flat, so a sibling module's type is

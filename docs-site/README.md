@@ -974,6 +974,72 @@ function main() {
 
 Run the example with `x run examples/nested_functions.x`.
 
+### Nullish coalescing: `??`
+
+`a ?? b` (nullish coalescing) yields `a` when `a` is neither `null` nor
+`undefined`, otherwise `b` — it only triggers on nullish values, unlike `||`
+which also falls through on `0`, `""`, and `false`:
+
+```x
+let count = 0;
+let nickname = null;
+
+print(count ?? 10);       // 0 (count is not nullish, so ?? keeps it)
+print(count || 10);       // 10 (|| treats 0 as falsy)
+print(nickname ?? "n/a"); // n/a
+```
+
+```output
+0
+10
+n/a
+```
+
+Optional chaining composes with it: `user?.profile?.name ?? "anonymous"`.
+As in JavaScript, mixing `??` with `&&` or `||` in the same expression
+without parentheses is a parse error (`a ?? b || c` must be written
+`a ?? (b || c)`).
+
+The conditional operator does not interfere: precedence matches JavaScript,
+so `??` binds tighter than `?:` — `a ?? b ? c : d` means `(a ?? b) ? c : d`
+and `cond ? x : y ?? z` means `cond ? x : (y ?? z)` — while each ternary
+branch is a fresh operand chain (`cond ? a && b : c ?? d` is legal; the
+no-mixing rule applies only within a single chain such as the condition).
+Parentheses override both, as usual: `a ?? (b ? c : d)`.
+
+### Nullable and union types
+
+A type may be written nullable with `?` or as a union with `|`, in both the
+prefix and the `name: type` annotation styles:
+
+```x
+let string? maybeName = null;
+let string | null altName = null;
+let integer | string id = "abc";
+
+function lengthOf(string? text) {
+    if (text == null) { return 0; }
+    return text.length;
+}
+
+string? function firstOrNull(string[] items) {
+    if (items.length == 0) { return null; }
+    return items[0];
+}
+```
+
+- `T?` is shorthand for `T | null | undefined`. `null` and `undefined` are
+  assignable to a nullable or union type that includes them; assigning
+  `null` to a non-nullable `integer` reports
+  `Cannot assign 'null' to 'x' of type 'integer'`.
+- Union members are matched in declaration order at runtime, and argument
+  errors report the whole union — `expected '(string|integer)'` — so a
+  `string | integer` parameter accepts either, while a `string?` parameter
+  message reads `expected 'string?'`.
+- `??`, `?.`, and `if (x == null)` are the idioms for narrowing a nullable
+  value before use; the checker does not yet narrow automatically inside
+  `if` branches.
+
 ## Conditionals
 
 `if` / `else if` / `else` with any condition value — see

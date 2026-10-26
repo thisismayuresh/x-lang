@@ -3464,10 +3464,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             type_name = type_name[:-1]
             if self.config.enabled("primitive_aliases"):
                 type_name = self._fold_primitive_type_name(type_name)
-        if value is UNDEFINED:
-            return 1 if type_name in ("undefined", "Object", "object") else None
-        if value is None:
-            return 1 if type_name in ("null", "Object", "object") else None
+        # Unions must be split *before* the null/undefined checks below:
+        # otherwise `integer | null` rejects a `null` argument because the
+        # whole annotation string is compared against "null".
         union_parts = (
             _split_type_annotation_union(type_name) if "|" in type_name else []
         )
@@ -3478,6 +3477,10 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 if (score := self._type_match_score(part, value)) is not None
             ]
             return max(scores) if scores else None
+        if value is UNDEFINED:
+            return 1 if type_name in ("undefined", "Object", "object") else None
+        if value is None:
+            return 1 if type_name in ("null", "Object", "object") else None
         if len(type_name) >= 2 and type_name[0] == '"' and type_name[-1] == '"':
             # String-literal type ("theme"); the literals survive in the
             # annotation even though user type aliases are erased.  A quoted

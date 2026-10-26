@@ -704,25 +704,9 @@ class Parser:
     def _type_declaration(self, modifiers: set[str]) -> TypeDeclaration:
         name = self._consume("IDENTIFIER", "Expected type alias name").value
         self._consume("=", "Expected '=' after type alias name")
-        if self._match("{"):
-            self._require_feature("records", self._previous())
-            fields: list[str] = []
-            while not self._check("}") and not self._check("EOF"):
-                start_position = self.position
-                try:
-                    field_type = self._parse_type()
-                    field_name = self._consume(
-                        "IDENTIFIER", "Expected field name"
-                    ).value
-                    fields.append(f"{field_type} {field_name}")
-                    self._consume_statement_terminator(
-                        "Expected ';' after type field"
-                    )
-                except ParseError as error:
-                    self._record_error(error)
-                    self._synchronize(start_position, stop_at_block_end=True)
-            self._consume("}", "Expected '}' after type fields")
-            type_name = "record{" + ";".join(fields) + "}"
+        if self._check("{"):
+            # Inline record alias — both `{a: integer}` and `{integer a}` work.
+            type_name = self._record_type()
         else:
             type_name = self._parse_type()
         self._match(";")
@@ -898,6 +882,9 @@ class Parser:
         if self._match("?"):
             self._require_feature("unions", self._previous())
             type_suffix += "?"
+        if self._match("|"):
+            self._require_feature("unions", self._previous())
+            type_suffix += "|" + self._parse_type()
         type_name = None
         name = ".".join(type_name_parts)
         if self._check("IDENTIFIER"):
@@ -1999,6 +1986,16 @@ class Parser:
             type_name = "void"
         elif self._match("function"):
             type_name = "Function"
+        elif (
+            self._check("null")
+            or self._check("Null")
+            or self._check("undefined")
+            or self._check("Undefined")
+        ):
+            keyword = self._advance()
+            type_name = (
+                "null" if keyword.kind in {"null", "Null"} else "undefined"
+            )
         elif self._is_record_type_start():
             type_name = self._record_type()
         elif self._check("STRING"):
@@ -2031,23 +2028,42 @@ class Parser:
             self._check("IDENTIFIER")
             and self._peek().value == "record"
             and self._peek(1).kind == "{"
-        )
+        ) or self._check("{")
 
     def _record_type(self) -> str:
-        """Parse ``record{int id; string name}`` into its canonical string form."""
+        """Parse a record type into its canonical ``record{type name;...}`` form.
+
+        Accepts both the X spelling (``record{integer id; string name}``,
+        also allowed without the ``record`` keyword) and TypeScript-style
+        fields (``{ id: integer, name: string }``) so inline type literals
+        like ``Promise<{obj: {...}}>`` work.
+        """
         self._require_feature("records", self._peek())
-        self._advance()
+        if self._check("IDENTIFIER") and self._peek().value == "record":
+            self._advance()
         self._consume("{", "Expected '{' after 'record'")
         fields: list[str] = []
         while not self._check("}") and not self._check("EOF"):
             start_position = self.position
             try:
                 field_type = self._parse_type()
-                field_name = self._consume(
-                    "IDENTIFIER", "Expected record field name"
-                ).value
+                if self._check(":"):
+                    # `name: type` — what we parsed so far was the field name.
+                    field_name = field_type
+                    self._advance()
+                    field_type = self._parse_type()
+                else:
+                    field_name = self._consume(
+                        "IDENTIFIER", "Expected record field name"
+                    ).value
                 fields.append(f"{field_type} {field_name}")
-                if not self._match(";") and not self._check("}"):
+                if self._match(";") or self._match(","):
+                    pass
+                elif self._check("}") or self._line_terminator_before_current():
+                    # `}` closes the record; a line break also separates
+                    # fields, matching the historical alias style.
+                    pass
+                else:
                     raise ParseError(
                         "Expected ';' after record field",
                         self._peek(),
@@ -2109,12 +2125,21 @@ class Parser:
             offset += 1
 
     def _looks_like_return_type_function(self) -> bool:
+        def name_like(kind: str) -> bool:
+            # `null`/`undefined` are keywords but valid return-type names.
+            return kind == "IDENTIFIER" or kind in {
+                "null",
+                "Null",
+                "undefined",
+                "Undefined",
+            }
+
         offset = 0
-        if not self._check("IDENTIFIER") and not self._check("void"):
+        if not name_like(self._peek().kind) and not self._check("void"):
             return False
         if self._check("void"):
             offset = 1
-        while self._peek(offset).kind == "IDENTIFIER":
+        while name_like(self._peek(offset).kind):
             offset += 1
             while self._peek(offset).kind == ".":
                 offset += 2
