@@ -4631,6 +4631,36 @@ hardened, and `tests/test_security.py` pins each property:
   — security-sensitive checks (tokens, roles, input validation) must use
   `===`, which also rejects `null === undefined`.
 
+## Milestones
+
+Development runs as four milestones. Milestone 1 has landed, so every item
+under it is ticked; the later milestones stay unticked until they ship.
+
+- [x] **Milestone 1 — production-grade hardening**
+  - [x] Per-file module scopes: every source file executes with its own
+    top-level environment, so imports expose exactly what they name
+  - [x] `parseFloat`, `parseInt`, and `JSON.parse` builtins
+  - [x] `typeOf` reports `function` for class and interface values
+  - [x] `??` nullish coalescing
+  - [x] Nullable (`string?`) and union (`A | B`) types
+  - [x] `System.concurrent.Lock` reentrant mutex
+  - [x] TypeScript-style `Promise<T>` async/await — no `Promise`
+    constructor, no `.then`/`.catch`
+  - [x] Generic type-parameter enforcement
+  - [x] `for ... of` over collections with element-type inference
+  - [x] Security hardening (lexer, printing, durations, literals) with a
+    dedicated `tests/test_security.py` suite
+  - [x] The showcase passes `x check --feature strict_typing=on`
+  - [x] Editor completions and hovers for every new feature, in the VS Code
+    server and the playground catalog
+  - [x] The `examples/aadhar/` try-with-resources CSV generator
+  - [x] Documentation, changelog, and a rebuilt WebAssembly wheel for the
+    playground
+- [ ] **Milestone 2 — self-hosting: bootstrap X in itself**
+- [ ] **Milestone 3 — `x-server`: an HTTP/QUIC server written in X**
+- [ ] **Milestone 4 — native Rust core** (bytecode VM later): replace the
+  Python host so X runs without Python installed
+
 ## Current limitations
 
 The specification includes features beyond this prototype. These are the
