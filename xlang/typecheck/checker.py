@@ -6,7 +6,7 @@ import difflib
 import os
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1580,6 +1580,31 @@ class TypeChecker:
             dimensions=element.dimensions + 1,
         )
 
+    @staticmethod
+    def _strip_nullish(type_value: XType) -> XType | None:
+        """Remove ``null``/``undefined`` from a type; ``None`` when nothing remains."""
+        stripped = type_value
+        if stripped.is_nullable:
+            stripped = replace(stripped, is_nullable=False)
+        if stripped.union_parts:
+            kept = tuple(
+                part
+                for part in stripped.union_parts
+                if part.name not in {"null", "undefined"}
+            )
+            if not kept:
+                return None
+            stripped = (
+                XType("union", union_parts=kept)
+                if len(kept) > 1
+                else kept[0]
+            )
+            if stripped.is_nullable:
+                stripped = replace(stripped, is_nullable=False)
+        elif stripped.name in {"null", "undefined"}:
+            return None
+        return stripped
+
     def _collapse(self, types: list[XType]) -> XType:
         if not types:
             return ANY
@@ -1745,11 +1770,11 @@ class TypeChecker:
                 return FLOAT
             return ANY
         if operator == "??":
-            if is_compatible(left, right, relations=self):
+            # TypeScript's rule: NonNullable<typeof left> | typeof right.
+            stripped = self._strip_nullish(left)
+            if stripped is None:
                 return right
-            if is_compatible(right, left, relations=self):
-                return left
-            return ANY
+            return self._collapse([stripped, right])
         if operator in {
             "==",
             "!=",

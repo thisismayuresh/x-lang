@@ -39,6 +39,7 @@ KEYWORDS = {
 }
 
 MULTI_CHARACTER_TOKENS = (
+    "??",
     "===", "!==", "?.", "?[",
     "...",
     "=>",

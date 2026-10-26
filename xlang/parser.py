@@ -61,6 +61,7 @@ from .ast_nodes import (
 )
 from .lexer import (
     INTERPOLATION_CLOSED,
+    KEYWORDS,
     Lexer,
     Token,
     scan_template_interpolation,
@@ -98,7 +99,7 @@ def token_end_column(token: Token) -> int:
 class Parser:
     PRECEDENCE = {
         "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1,
-        "||": 2, "&&": 3,
+        "||": 2, "??": 2, "&&": 3,
         "==": 4, "!=": 4, "===": 4, "!==": 4,
         "<": 5, ">": 5, "<=": 5, ">=": 5, "in": 5,
         "+": 6, "-": 6,
@@ -126,6 +127,8 @@ class Parser:
         self.source_name = source_name
         self.in_async_function = False
         self.function_depth = 0
+        self._expr_logical_seen = False
+        self._expr_nullish_seen = False
         self.recover_errors = recover_errors
         self.errors: list[ParseError] = []
         self._reported_errors: set[tuple[str, int, int, str | None]] = set()
@@ -1487,11 +1490,36 @@ class Parser:
 
     def _expression(self, minimum_precedence: int = 1) -> Any:
         expression = self._unary()
+        # JavaScript rejects unparenthesized mixes of `??` with `||`/`&&`
+        # (at any depth of the same operand chain).  The flags live on the
+        # parser so a nested right-operand parse shares them; every
+        # minimum_precedence == 1 entry (statements, initialisers, ternary
+        # branches, call arguments) starts a fresh chain, and parenthesised
+        # groups save/restore around their inner parse.
+        if minimum_precedence == 1:
+            self._expr_logical_seen = False
+            self._expr_nullish_seen = False
         while True:
             operator = self._peek().kind
             precedence = self.PRECEDENCE.get(operator, 0)
             if precedence < minimum_precedence:
                 break
+            if operator == "??" and self._expr_logical_seen:
+                raise ParseError(
+                    "'??' cannot be mixed with '||' or '&&' without parentheses",
+                    self._peek(),
+                    self.source_name,
+                )
+            if operator in {"||", "&&"} and self._expr_nullish_seen:
+                raise ParseError(
+                    "'||' and '&&' cannot be mixed with '??' without parentheses",
+                    self._peek(),
+                    self.source_name,
+                )
+            if operator == "??":
+                self._expr_nullish_seen = True
+            elif operator in {"||", "&&"}:
+                self._expr_logical_seen = True
             if operator in {"==", "!=", "===", "!=="}:
                 self._require_feature("equality", self._peek())
             self._advance()
@@ -1630,9 +1658,9 @@ class Parser:
                             OptionalChainSegment("index", Literal(value), optional=True)
                         )
                     else:
-                        name = self._consume(
-                            "IDENTIFIER", "Expected member name after '?.'"
-                        ).value
+                        name = self._consume_member_name(
+                            "Expected member name after '?.'"
+                        )
                         chain_segments.append(
                             OptionalChainSegment("member", name, optional=True)
                         )
@@ -1663,9 +1691,9 @@ class Parser:
                         expression = Index(expression, Literal(value))
                         self._attach_span(expression, chain_start)
                 else:
-                    name = self._consume(
-                        "IDENTIFIER", "Expected member name after '.'"
-                    ).value
+                    name = self._consume_member_name(
+                        "Expected member name after '.'"
+                    )
                     if optional_chain_started:
                         chain_segments.append(OptionalChainSegment("member", name))
                     else:
@@ -1778,8 +1806,12 @@ class Parser:
             arrow = self._parenthesized_arrow()
             if arrow is not None:
                 return arrow
+            saved_logical = self._expr_logical_seen
+            saved_nullish = self._expr_nullish_seen
             expression = self._expression()
             self._consume(")", "Expected ')' after expression")
+            self._expr_logical_seen = saved_logical
+            self._expr_nullish_seen = saved_nullish
             return expression
         if self._match("["):
             items: list[Any] = []
@@ -2114,6 +2146,18 @@ class Parser:
         if self._check(kind):
             return self._advance()
         raise ParseError(message, self._peek())
+
+    def _consume_member_name(self, message: str) -> str:
+        """Consume a property name after `.` / `?.`.
+
+        JavaScript allows reserved words as property names
+        (`promise.catch(...)`, `object.new`, ...), so X accepts any keyword
+        token here and uses its lexeme as the member name.
+        """
+        token = self._peek()
+        if token.kind == "IDENTIFIER" or token.kind in KEYWORDS:
+            return self._advance().value
+        raise ParseError(message, token)
 
     def _object_entry(self, key: str, key_token: Token, value: Any) -> ObjectEntry:
         """Build an object-literal entry, carrying the key token's span."""

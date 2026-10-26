@@ -2358,6 +2358,12 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return self._is_truthy(left) and self._is_truthy(self._evaluate(expression.right, environment))
         if operator == "||":
             return self._is_truthy(left) or self._is_truthy(self._evaluate(expression.right, environment))
+        if operator == "??":
+            # JavaScript nullish coalescing: only null/undefined fall through
+            # to the right operand (0, "", and false are kept).
+            if left is None or left is UNDEFINED:
+                return self._evaluate(expression.right, environment)
+            return left
         if operator == "?:":
             true_expression, false_expression = expression.right
             selected = true_expression if self._is_truthy(left) else false_expression
