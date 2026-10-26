@@ -290,7 +290,10 @@ KEYWORDS = [
     "constructor",
 ]
 
-TYPES = ["int", "string", "float", "boolean", "void", "any", "null", "undefined"]
+TYPES = [
+    "int", "integer", "string", "float", "boolean", "void", "any", "var",
+    "null", "undefined", "Promise", "Lock", "ThreadHandle",
+]
 
 BUILTINS = ["print", "range", "typeOf", "delete", "sleep", "input", "parseInt", "parseFloat"]
 
@@ -1464,6 +1467,16 @@ _BUILTIN_MEMBERS: dict[str, list[tuple[str, str, str]]] = {
         ("deleteFile", "method", "deleteFile(path)"),
         ("deleteDirectory", "method", "deleteDirectory(path)"),
     ],
+    "Lock": [
+        ("lock", "method", "lock() — block until held"),
+        ("tryLock", "method", "tryLock() / tryLock(ms)"),
+        ("unlock", "method", "unlock() — release once"),
+        ("isLocked", "method", "isLocked() → boolean"),
+    ],
+    "ThreadHandle": [
+        ("join", "method", "join(timeoutSeconds?)"),
+        ("isAlive", "method", "isAlive() → boolean"),
+    ],
 }
 
 # Aliases the runtime reports for the same shape, so `let names = [...]` and a
@@ -1908,6 +1921,20 @@ HOVER_INFO = {
         "not there raises the same error reading it would raise."
     ),
     "sleep": "sleep(ms: int): Promise<void>\n\nSleeps for the specified milliseconds.",
+    "integer": "Primitive integer type.",
+    "var": "Inferred variable type.",
+    "Promise": (
+        "Promise<T>\n\n"
+        "Result type of an async function call. Await it with `await`; there is "
+        "no constructor and no .then/.catch — use async/await."
+    ),
+    "Lock": (
+        "System.concurrent.Lock\n\n"
+        "Re-entrant mutex: lock(), tryLock(ms?), unlock(), isLocked()."
+    ),
+    "ThreadHandle": (
+        "ThreadHandle\n\nHandle for Thread.start(...): join(timeoutSeconds?), isAlive()."
+    ),
     "input": "input(prompt?: string): string\n\nReads a line from stdin.",
     "int": "Primitive integer type.",
     "string": "Primitive string type.",

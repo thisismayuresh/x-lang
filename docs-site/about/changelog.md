@@ -101,6 +101,17 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Editor / LSP
 
+- **New completion and hover entries for Milestone 1 features** — the
+  language server (`vscode-xlang/server/server.py`) and the playground
+  catalog (`docs-site/playground/completions.js`) both offer `Promise<T>`,
+  `Lock`, and `ThreadHandle` in type positions, the `Lock` members
+  (`lock`/`tryLock`/`unlock`/`isLocked`) and `ThreadHandle` members
+  (`join`/`isAlive`) after a `.`, the `System.concurrent` namespace
+  children (`Lock`, `Thread`, `Async`) with `Async.delay`/`Async.all` and
+  `Thread.start`, and the `sleep` builtin. The server's type list also
+  gains the previously missing `integer` and `var` spellings, with hovers
+  for `integer`, `var`, `Promise`, `Lock`, and `ThreadHandle`.
+
 - **Quick fixes for missing imports**: the checker's
   ``add `import utils.greet` `` suggestion now surfaces as an
   ``Add `import utils.greet` `` code action in the VS Code extension,
