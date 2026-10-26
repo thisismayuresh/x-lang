@@ -2449,6 +2449,11 @@ declaration — `export type`, `export const`, `export let`, `export function`,
 `export class`, `export enum` — or be written as a bulk list,
 `export { name, other as alias };`, which also exports variables. A file cannot
 re-export a name it only imported; declare it in the file where it is used.
+A member import (`import tools.Greeting`) binds only the named declaration,
+and every file executes in its own environment: an imported module's other
+declarations stay private even at runtime, two files may declare the same
+top-level name without a `'X' is already declared` collision, and an imported
+function still resolves its own file's helpers.
 
 Grouped imports are also supported:
 
@@ -3903,6 +3908,18 @@ parent fields before child fields, then selects and invokes the matching
 constructor. A derived constructor calls `super(arguments...)` explicitly to
 run a parent constructor. `super.method()` resolves to a parent implementation.
 
+Loader-built programs execute with one top-level `Environment` per source
+file: the module loader records what each file's imports bind
+(`Program.import_bindings`) and the order in which files completed
+(`Program.modules`), and the interpreter runs them dependencies-first with
+every module environment chained to the builtins. A file's own declarations
+and its import bindings land in that file's environment, so two files may
+declare the same top-level name without colliding, an imported function
+still resolves its own module's helpers through its closure, and sibling
+declarations stay private to their file at runtime — the type checker's
+per-file visibility and the runtime scope now agree. Programs built by hand
+(the REPL) keep the single flat scope.
+
 The synchronous evaluator is the common execution engine. Async X functions
 produce Python awaitables; the runtime uses `asyncio` for delays and
 `Async.all`, and dispatches their synchronous statement execution through
@@ -4368,101 +4385,52 @@ remaining implementation goals and documented constraints:
 - Recursive algorithms (flood fill, deep trees) can hit Python's default recursion limit on large inputs
 - The run-length codec example is intended for letter-only input, not a general-purpose escaping format
 
-### Known issue: `import B.greet` leaks the whole module scope
+### Fixed: `import B.greet` no longer exposes the whole module scope
 
-**Status:** known limitation, not yet fixed. Documented here rather than
-silently worked around so the shape of the bug and the options for fixing it
-are recorded.
-
-**Symptom.** A member import such as `import main_tests.greet("Maya")` (the
-feature shown in the import-function section above) is supposed to bind only
-`greet`. Instead the loader pulls in *every* top-level declaration of the
-imported module — interfaces, classes, enums, helpers — into the importing
-file's global scope. If the importing file happens to declare a name with the
-same identifier, loading fails with a confusing collision error that appears
-to be a duplicate declaration in your own file:
+**Status:** fixed. A member import (`import lib.greet`) now binds only the
+declaration it names. Sibling declarations of the imported module are no
+longer visible in the importing file; using one is a type error that suggests
+the exact import line to add:
 
 ```text
-$ x run examples/main.x
-error: 'Serializable' is already declared in this scope
-   --> main.x:297:1
-    |
-297 | interface Serializable {
-    | ^ 'Serializable' is already declared in this scope
+$ x check app.x
+error: Name 'Marker' is not defined in this module
+ --> app.x:3:1
+  |
+3 | interface Marker {
+  | ^ Name 'Marker' is not defined in this module
+  |
+  = help: add `import lib.Marker`
 ```
 
-**Reproduction.** `examples/main.x` (unmodified, present on `development`)
-hits it today:
+Whole-module (`import lib`), grouped (`import lib.{A, B as C}`), alias
+(`import lib.A as X`), and wildcard (`import lib.*`) imports behave as
+before: they expose exactly what they name. Enum and interface names imported
+by any form are types, not values — `print(Gender)` reports
+`Enum 'Gender' is a type, not a value`, while `typeOf(Gender)` and
+`Gender.MALE` are accepted.
 
-- `main.x:4` — `import main_tests.greet("Maya")`
-- `main.x:297` — declares `interface Serializable { string serialize(); }`
-- `main_tests.x:236` — declares `interface Serializable { string serialize();
-  void deserialize(string data); }`
+The runtime now agrees with the checker: every source file executes with its
+own top-level environment (see
+[Interpreter architecture](#interpreter-architecture)), so sibling
+declarations are invisible across files at runtime too — calling an
+unimported helper raises `Name 'greet' is not defined` instead of silently
+working. Because bindings no longer land in one shared global scope, two
+files may declare the same top-level name: `examples/main.x` and each module
+it imports can have their own `interface Serializable` with no
+`'Serializable' is already declared` crash. Helpers used by an imported
+function still resolve through that function's defining module, so isolation
+never breaks a module's own private state.
 
-Because the import flattens `main_tests`' scope into `main.x`, the two
-`Serializable` interfaces collide and `x run examples/main.x` aborts. Note
-`x check examples/main.x` reports `syntax is valid` / `types are valid` — the
-collision is raised by the **module loader** when declarations are merged at
-load time, not by the parser or the type checker. A minimal standalone
-repro (any name works, not just `Serializable`):
-
-```x
-// lib.x
-export string function greet(string name) { return "Hello, " + name; }
-interface Marker { void m(); }
-```
-
-```x
-// app.x
-import lib.greet
-interface Marker { void m(); }   // error: 'Marker' is already declared in this scope
-print(greet("Ada"));
-```
-
-**Root cause.** `xlang/module_loader.py`, the member-import branch of
-`_load_file` (around line 257): after loading the source module it does
-`combined_declarations.extend(imported_declarations)`, splicing the whole
-module's declarations into the importer. The collision check that runs just
-before (`_check_flatten_collision(import_name, ...)`) only guards the single
-name you asked for (`greet`), so every *other* leaked name bypasses it.
-
-**Why it is a spec conflict, not a typo.** The two authoritative documents
-disagree:
-
-- `README.md` (import-function section) says the import "behaves exactly
-  like `import B.greet`" — implying only `greet` binds.
-- The `module_loader.py` module docstring says declarations are "no longer
-  arbitrarily flattened ... flattening occurs only when necessary for
-  backward compatibility and never when it would create a collision between
-  different exported declarations. When a collision would occur from
-  flattening, an error is raised."
-
-So the loader is behaving as *its* design intends (flatten for backward
-compat, then raise on collision), while the README describes the *intended*
-member-import semantics. That contradiction is why this was documented rather
-than patched in place.
-
-**What we can do (options).**
-
-1. *Minimal unblock (no interpreter change).* Rename one of the colliding
-   declarations — e.g. give `examples/main.x`'s `Serializable` a distinct
-   name — so `main.x` runs. Cheapest and safest, but leaves the scope leak
-   for the next file to trip over.
-2. *Correct fix (interpreter change).* Make member imports bind only the
-   named declaration and stop flattening siblings. The catch: module-level
-   helpers referenced by the imported `greet` resolve today *because*
-   everything shares one flattened scope, so the real fix is per-module
-   scope isolation — which is exactly the separate open limitation
-   *"Independent module namespaces"* in the list above. This is
-   architectural: full test suite, WebAssembly playground wheel rebuild
-   (`x playground`), and doc updates are all required.
-3. *Status quo (chosen).* Leave the code as-is and document the issue here,
-   as recorded above.
-
-**Practical guidance until fixed.** Avoid declaring a top-level name in an
-importing file that also exists in any module you member-import; or import
-the module wholesale (`import main_tests`) and reference members through the
-namespace rather than splicing a single member's scope in.
+Historical note: this used to be an open limitation — the loader flattened
+every imported module's declarations into the importer, so `import
+main_tests.greet` also pulled in `main_tests`' interfaces, classes, and
+helpers, colliding with any same-named local declaration. The first fix
+recorded per-module visibility in the loader and enforced it in the checker;
+the runtime side was completed afterwards by executing each file in its own
+environment (`Program.modules`, `Program.import_bindings`) instead of
+hoisting everything into one shared scope. Re-importing a module now simply
+re-binds it in place of raising.
 
 The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
 behavior is narrower than that draft, this README describes what can currently

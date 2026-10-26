@@ -1,13 +1,15 @@
 """
-X language interpreter with module namespace support.
+Shared imports and small helpers for the interpreter package.
 
-Module imports create Environment-backed namespace objects containing
-exported declarations accessible via dot access. Flattened top-level
-bindings are preserved only when they do not create collisions between
-different declarations; when flattening would introduce a conflicting
-binding for an existing name, a RuntimeErrorX is raised. This prevents
-silent cross-module name collisions while maintaining backward
-compatibility where safe.
+Re-exports the AST node classes, runtime value types, configuration, and
+diagnostics that the interpreter modules use, so they import their surface
+from one place, and holds the couple of cross-cutting helpers
+(`ComparatorItem`, `_is_class_method`).
+
+Module execution lives in `xlang.interpreter.__init__`: each source file
+runs in its own top-level `Environment` (driven by the loader's
+`Program.modules` and `Program.import_bindings`), so files share no global
+scope and import bindings cannot collide with a file's own declarations.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from ..ast_nodes import (
     ImportCall,
     ImportDeclaration,
     ImportAlias,
-    ImportNamespaceAlias,
+    ImportBinding,
     ImportNamespaceAlias,
     Identifier,
     IfStatement,

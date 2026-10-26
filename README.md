@@ -721,7 +721,10 @@ function main() {
 declared inside a top-level namespace. A file cannot re-export a name it only
 imported. A member import (`import tools.Greeting`) binds only the named
 declaration; the imported module's other declarations stay private to that
-module, and using one is a type error that suggests the missing import line. The
+module, and using one is a type error that suggests the missing import line.
+Privacy holds at runtime as well: each file executes in its own environment,
+so two files may declare the same top-level name and an imported function
+still resolves its own file's helpers. The
 [settings types example](./examples/settings_types/) declares types in one file,
 imports them into a second, and uses them from a third.
 
@@ -2611,6 +2614,18 @@ parent fields before child fields, then selects and invokes the matching
 constructor. A derived constructor calls `super(arguments...)` explicitly to
 run a parent constructor. `super.method()` resolves to a parent implementation.
 
+Loader-built programs execute with one top-level `Environment` per source
+file: the module loader records what each file's imports bind
+(`Program.import_bindings`) and the order in which files completed
+(`Program.modules`), and the interpreter runs them dependencies-first with
+every module environment chained to the builtins. A file's own declarations
+and its import bindings land in that file's environment, so two files may
+declare the same top-level name without colliding, an imported function
+still resolves its own module's helpers through its closure, and sibling
+declarations stay private to their file at runtime — the type checker's
+per-file visibility and the runtime scope now agree. Programs built by hand
+(the REPL) keep the single flat scope.
+
 The synchronous evaluator is the common execution engine. Async X functions
 produce Python awaitables; the runtime uses `asyncio` for delays and
 `Async.all`, and dispatches their synchronous statement execution through
@@ -2940,17 +2955,27 @@ Whole-module (`import lib`), grouped (`import lib.{A, B as C}`), alias
 before: they expose exactly what they name. Enum and interface names imported
 by any form are types, not values — `print(Gender)` reports
 `Enum 'Gender' is a type, not a value`, while `typeOf(Gender)` and
-`Gender.MALE` are accepted. The runtime still shares one namespace across
-modules (helpers used by an imported function resolve through that shared
-scope), but the type checker gates what user-visible code can reference, so
-the old silent leak and its confusing `'X' is already declared` collisions
-are gone.
+`Gender.MALE` are accepted. The runtime now agrees with the checker: every
+source file executes with its own top-level environment (see
+[Interpreter architecture](#interpreter-architecture)), so sibling
+declarations are invisible across files at runtime too — calling an
+unimported helper raises `Name 'greet' is not defined` instead of silently
+working. Because bindings no longer land in one shared global scope, two
+files may declare the same top-level name: `examples/main.x` and each
+module it imports can have their own `interface Serializable` with no
+`'Serializable' is already declared` crash. Helpers used by an imported
+function still resolve through that function's defining module, so
+isolation never breaks a module's own private state.
 
 Historical note: this used to be an open limitation — the loader flattened
 every imported module's declarations into the importer, so `import
 main_tests.greet` also pulled in `main_tests`' interfaces, classes, and
-helpers, colliding with any same-named local declaration. The fix records
-per-module visibility in the loader and enforces it in the checker.
+helpers, colliding with any same-named local declaration. The first fix
+recorded per-module visibility in the loader and enforced it in the
+checker; the runtime side was completed afterwards by executing each file
+in its own environment (`Program.modules`, `Program.import_bindings`)
+instead of hoisting everything into one shared scope. Re-importing a module
+now simply re-binds it in place of raising.
 
 The detailed syntax proposal is in [Draft.md](./Draft.md). Where the interpreter
 behavior is narrower than that draft, this README describes what can currently

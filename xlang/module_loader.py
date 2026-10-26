@@ -2,10 +2,23 @@
 Module loader with namespace-aware import semantics.
 
 Imports produce module namespace objects containing exported declarations
-accessible via dot access. Flattened bindings into the importing scope
-are retained only when collision-free for backward compatibility; when
-flattening would create a different binding for an existing name, a
-RuntimeErrorX is raised.
+accessible via dot access. The loader resolves every file the program needs
+transitively (dependencies first) and records two runtime views on the
+`Program`:
+
+- `modules` — each file's own top-level declarations, in completion order,
+  which the interpreter runs in one top-level `Environment` per file.
+- `import_bindings` — what each file's import statements bind (`name`,
+  `dict`, `namespace`, or `builtin`), applied to that file's environment,
+  before its own declarations are hoisted.
+
+The flat `declarations` list (all files' declarations in one list, imports
+spliced in place) is still built and remains what the type checker, the
+TypeScript codegen, and the REPL consume; `module_visibility` and
+`name_provenance` carry the per-file visibility the checker enforces. Since
+bindings no longer land in one shared global scope, re-importing a module
+re-binds it instead of raising a collision, and type aliases are never
+runtime-bound (they have no runtime value).
 """
 
 from __future__ import annotations
@@ -22,6 +35,7 @@ from .ast_nodes import (
     FunctionDeclaration,
     Identifier,
     ImportAlias,
+    ImportBinding,
     ImportDeclaration,
     ImportNamespaceAlias,
     NamespaceDeclaration,
@@ -34,46 +48,10 @@ from .lexer import Lexer
 from .parser import Parser
 from .runtime import RuntimeErrorX, qualified_exception_paths
 
-"""
-Module loader for X language programs.
-
-This module is responsible for loading and resolving module dependencies.
-When importing modules, the loader creates module namespace objects
-containing exported declarations accessible via dot access. Flattening
-of declarations into the importing scope occurs only when necessary for
-backward compatibility and only when it does not create collisions between
-different bindings; otherwise, a RuntimeErrorX is raised.
-"""
-
-"""
-Module loader for X language programs.
-
-This module is responsible for loading and resolving module dependencies.
-When importing modules, the loader creates module namespace objects
-containing exported declarations accessible via dot access. Flattening
-of declarations into the importing scope occurs only when necessary for
-backward compatibility and only when it does not create collisions between
-different bindings; otherwise, a RuntimeErrorX is raised.
-"""
-
-
-"""
-Module loader for X language programs.
-
-This module is responsible for loading and resolving module dependencies.
-When importing modules, the loader must create module namespace objects
-containing the exported declarations of imported modules, accessible via
-dot access (e.g., `module.declaration`). Declarations are no longer
-arbitrarily flattened into the importing scope; flattening occurs only
-when necessary for backward compatibility and never when it would create
-a collision between different exported declarations. When a collision
-would occur from flattening, an error is raised.
-"""
-
-
 class ModuleLoader:
     STANDARD_LIBRARY_MODULES = {
         "System.concurrent.Async",
+        "System.concurrent.Lock",
         "System.concurrent.Thread",
         "System.io.FileSystem",
         "System.io.Console",
@@ -112,7 +90,21 @@ class ModuleLoader:
         self.recover_errors = recover_errors
         self.loaded_files: set[Path] = set()
         self.loading_files: set[Path] = set()
+        # Files in completion order: every module's imports finish before the
+        # module itself, so the entry file is always last.  ``load_program``
+        # turns this into ``Program.modules`` / ``Program.import_bindings``.
+        self.load_order: list[Path] = []
         self.direct_declarations: dict[Path, list[Any]] = {}
+        # What each file's imports bind, recorded while it loads; consumed
+        # by the interpreter to scope imports per module instead of hoisting
+        # them into one shared global scope.
+        self.file_import_bindings: dict[Path, list[ImportBinding]] = {}
+        # Per file: modules whose declarations were extended flat into this
+        # file's combined list (the narrow branches bind only a member but
+        # still flatten the source).  `_combined_origin` walks this chain so
+        # a transitive importer's binding points at the module that really
+        # declares the name.
+        self.flat_parents: dict[Path, list[Path]] = {}
         self.sources: dict[Path, str] = {}
         self.warnings: list[ModuleWarning] = []
         self.errors: list[BaseException] = []
@@ -153,6 +145,16 @@ class ModuleLoader:
             unique_declarations.append(declaration)
         return Program(
             unique_declarations,
+            # Completion order — dependencies before importers, entry last —
+            # so the interpreter can run each module's file in turn.
+            modules={
+                str(path): list(self.direct_declarations[path])
+                for path in self.load_order
+            },
+            import_bindings={
+                str(path): list(self.file_import_bindings.get(path, ()))
+                for path in self.load_order
+            },
             module_visibility=dict(self._module_visibility),
             name_provenance=dict(self._name_provenance),
         )
@@ -226,6 +228,9 @@ class ModuleLoader:
         self.loading_files.add(resolved_path)
 
         combined_declarations: list[Any] = []
+        # Every import below records what it binds into this file, next to
+        # the flat declarations it appends to `combined_declarations`.
+        bindings: list[ImportBinding] = []
         for declaration in program.declarations:
             if not isinstance(declaration, ImportDeclaration):
                 continue
@@ -249,6 +254,7 @@ class ModuleLoader:
                             alias,
                             visible,
                             combined_declarations,
+                            bindings,
                         )
                     ):
                         continue
@@ -264,17 +270,50 @@ class ModuleLoader:
                         resolved_path,
                         direct_declarations,
                     )
-                    visible.update(
-                        self._combined_names.get(
-                            imported_resolved_path,
-                            self._names_of(imported_declarations),
-                        )
+                    combined_names = self._combined_names.get(
+                        imported_resolved_path,
+                        self._names_of(imported_declarations),
                     )
+                    visible.update(combined_names)
+                    for name in combined_names:
+                        origin = self._combined_origin(
+                            imported_resolved_path, name
+                        )
+                        if origin is None:
+                            continue  # type alias: no runtime value
+                        bindings.append(
+                            ImportBinding(
+                                local=name,
+                                kind="name",
+                                source=origin[0],
+                                source_name=origin[1],
+                            )
+                        )
                     combined_declarations.extend(imported_declarations)
+                    self.flat_parents.setdefault(resolved_path, []).append(
+                        imported_resolved_path
+                    )
                     if alias is not None:
                         visible.add(alias)
                         combined_declarations.append(
                             ImportNamespaceAlias(exported_names, alias)
+                        )
+                        bindings.append(
+                            ImportBinding(
+                                local=alias,
+                                kind="dict",
+                                source=str(imported_resolved_path),
+                                members=tuple(
+                                    (name, name)
+                                    for name in exported_names
+                                    if not isinstance(
+                                        self._declaration_at(
+                                            imported_resolved_path, name
+                                        ),
+                                        TypeDeclaration,
+                                    )
+                                ),
+                            )
                         )
                     continue
 
@@ -306,11 +345,42 @@ class ModuleLoader:
                         self._record_flatten(import_name, imported_resolved_path)
                         # Member imports bind only the named declaration:
                         # `import util.Gender` lets you say `Gender`, not the
-                        # rest of util's scope.
+                        # rest of util's scope.  A type alias member
+                        # (`import util.Info`) stays type-only: it has no
+                        # runtime value to bind.
                         visible.add(import_name)
+                        if not isinstance(
+                            self._declaration_at(imported_resolved_path, import_name),
+                            TypeDeclaration,
+                        ):
+                            bindings.append(
+                                ImportBinding(
+                                    local=import_name,
+                                    kind="name",
+                                    source=str(imported_resolved_path),
+                                    source_name=import_name,
+                                )
+                            )
                         if alias is not None:
                             visible.add(alias)
+                            if not isinstance(
+                                self._declaration_at(
+                                    imported_resolved_path, import_name
+                                ),
+                                TypeDeclaration,
+                            ):
+                                bindings.append(
+                                    ImportBinding(
+                                        local=alias,
+                                        kind="name",
+                                        source=str(imported_resolved_path),
+                                        source_name=import_name,
+                                    )
+                                )
                         combined_declarations.extend(imported_declarations)
+                        self.flat_parents.setdefault(resolved_path, []).append(
+                            imported_resolved_path
+                        )
                         if alias is not None:
                             combined_declarations.append(
                                 ImportAlias(import_name, alias)
@@ -331,6 +401,7 @@ class ModuleLoader:
                         alias,
                         visible,
                         combined_declarations,
+                        bindings,
                     )
                 ):
                     continue
@@ -341,6 +412,13 @@ class ModuleLoader:
                     visible.add(alias or import_name)
                     combined_declarations.append(
                         ImportAlias(module_path, alias or import_name)
+                    )
+                    bindings.append(
+                        ImportBinding(
+                            local=alias or import_name,
+                            kind="builtin",
+                            source=module_path,
+                        )
                     )
                     continue
                 imported_path = self._path_for_module(module_path, resolved_path)
@@ -353,11 +431,26 @@ class ModuleLoader:
                 )
                 import_name = module_path.split(".")[-1]
                 exported_names = self._exported_names(imported_resolved_path)
-                visible.update(
-                    self._combined_names.get(
-                        imported_resolved_path,
-                        self._names_of(imported_declarations),
+                combined_names = self._combined_names.get(
+                    imported_resolved_path,
+                    self._names_of(imported_declarations),
+                )
+                visible.update(combined_names)
+                for name in combined_names:
+                    origin = self._combined_origin(imported_resolved_path, name)
+                    if origin is None:
+                        continue  # type alias: no runtime value
+                    bindings.append(
+                        ImportBinding(
+                            local=name,
+                            kind="name",
+                            source=origin[0],
+                            source_name=origin[1],
+                        )
                     )
+                combined_declarations.extend(imported_declarations)
+                self.flat_parents.setdefault(resolved_path, []).append(
+                    imported_resolved_path
                 )
                 if alias is not None:
                     if import_name in exported_names:
@@ -366,13 +459,25 @@ class ModuleLoader:
                         )
                         self._record_flatten(import_name, imported_resolved_path)
                         visible.add(alias)
-                        combined_declarations.extend(imported_declarations)
                         combined_declarations.append(
                             ImportAlias(import_name, alias)
                         )
+                        if not isinstance(
+                            self._declaration_at(
+                                imported_resolved_path, import_name
+                            ),
+                            TypeDeclaration,
+                        ):
+                            bindings.append(
+                                ImportBinding(
+                                    local=alias,
+                                    kind="name",
+                                    source=str(imported_resolved_path),
+                                    source_name=import_name,
+                                )
+                            )
                     else:
                         visible.add(alias)
-                        combined_declarations.extend(imported_declarations)
                         combined_declarations.append(
                             NamespaceDeclaration(
                                 alias,
@@ -381,11 +486,20 @@ class ModuleLoader:
                                 ),
                             )
                         )
+                        bindings.append(
+                            ImportBinding(
+                                local=alias,
+                                kind="namespace",
+                                source=str(imported_resolved_path),
+                                members=self._value_members(
+                                    imported_resolved_path, exported_names
+                                ),
+                            )
+                        )
                     continue
                 for name in exported_names:
                     self._check_flatten_collision(name, imported_resolved_path)
                     self._record_flatten(name, imported_resolved_path)
-                combined_declarations.extend(imported_declarations)
                 if exported_names and not self._declares(
                     imported_resolved_path, import_name
                 ):
@@ -396,10 +510,22 @@ class ModuleLoader:
                         exported_names,
                     )
                     visible.add(import_name)
+                    bindings.append(
+                        ImportBinding(
+                            local=import_name,
+                            kind="namespace",
+                            source=str(imported_resolved_path),
+                            members=self._value_members(
+                                imported_resolved_path, exported_names
+                            ),
+                        )
+                    )
 
         combined_declarations.extend(direct_declarations)
         self.loading_files.remove(resolved_path)
         self.loaded_files.add(resolved_path)
+        self.load_order.append(resolved_path)
+        self.file_import_bindings[resolved_path] = bindings
         self._module_visibility[str(resolved_path)] = frozenset(visible)
         self._combined_names[resolved_path] = self._names_of(
             combined_declarations
@@ -493,6 +619,7 @@ class ModuleLoader:
         alias: str | None,
         visible: set[str],
         combined_declarations: list[Any],
+        bindings: list[ImportBinding],
     ) -> bool:
         """Bind `import util.MyNamespace.fun`: a namespace chain inside the
         shortest existing prefix module file.
@@ -542,15 +669,41 @@ class ModuleLoader:
         self._check_flatten_collision(import_name, imported_resolved_path)
         self._record_flatten(import_name, imported_resolved_path)
         visible.add(import_name)
+        # The dotted path inside the prefix file (`MyNamespace.fun`): the
+        # runtime binding walks it from that module's own environment.  A
+        # type-alias member has no runtime value, so it stays type-only.
+        is_value = not isinstance(member, TypeDeclaration)
+        source_name = ".".join(remaining)
+        if is_value:
+            bindings.append(
+                ImportBinding(
+                    local=import_name,
+                    kind="name",
+                    source=str(imported_resolved_path),
+                    source_name=source_name,
+                )
+            )
         if alias is not None:
             visible.add(alias)
+            if is_value:
+                bindings.append(
+                    ImportBinding(
+                        local=alias,
+                        kind="name",
+                        source=str(imported_resolved_path),
+                        source_name=source_name,
+                    )
+                )
         combined_declarations.extend(declarations)
+        self.flat_parents.setdefault(importer_path.resolve(), []).append(
+            imported_resolved_path
+        )
         if len(remaining) > 1:
             # The member lives inside a namespace: bind the ORIGINAL value via
             # ImportAlias. Re-declaring it flat would rebind with a globals
             # closure and break sibling references like `print(obj)`.
             self._append_flat_alias(
-                combined_declarations, ".".join(remaining), import_name
+                combined_declarations, source_name, import_name
             )
         if alias is not None:
             combined_declarations.append(ImportAlias(import_name, alias))
@@ -564,6 +717,7 @@ class ModuleLoader:
         alias: str | None,
         visible: set[str],
         combined_declarations: list[Any],
+        bindings: list[ImportBinding],
     ) -> bool:
         """Bind `import util.MyNamespace.*`: every exported member of the
         namespace chain inside the shortest existing prefix module file.
@@ -606,16 +760,57 @@ class ModuleLoader:
         # Bind the namespace itself so the flat aliases below resolve through
         # it even when nothing else has imported the module.
         combined_declarations.append(namespace)
-        target = remaining[-1]
-        for name, _member in members:
+        source_name = ".".join(remaining)
+        # The namespace enters this file's flattened scope through the append
+        # above, so record it too: a transitive importer of this file may
+        # reference it, and its binding must walk the chain in the prefix
+        # file's own module scope.
+        bindings.append(
+            ImportBinding(
+                local=namespace.name,
+                kind="name",
+                source=str(imported_resolved_path),
+                source_name=source_name,
+            )
+        )
+        for name, member in members:
             self._check_flatten_collision(name, imported_resolved_path)
             self._record_flatten(name, imported_resolved_path)
             visible.add(name)
-            self._append_flat_alias(combined_declarations, f"{target}.{name}", name)
+            # The flat alias stays rooted at the namespace name appended
+            # above (top-level in the flat scope); the ImportBinding walks
+            # the full chain in the prefix module's own scope instead.
+            # Type-alias members have no runtime value to bind.
+            self._append_flat_alias(
+                combined_declarations,
+                f"{remaining[-1]}.{name}",
+                name,
+            )
+            if not isinstance(member, TypeDeclaration):
+                bindings.append(
+                    ImportBinding(
+                        local=name,
+                        kind="name",
+                        source=str(imported_resolved_path),
+                        source_name=f"{source_name}.{name}",
+                    )
+                )
         if alias is not None:
             visible.add(alias)
             combined_declarations.append(
                 ImportNamespaceAlias([name for name, _ in members], alias)
+            )
+            bindings.append(
+                ImportBinding(
+                    local=alias,
+                    kind="dict",
+                    source=str(imported_resolved_path),
+                    members=tuple(
+                        (name, f"{source_name}.{name}")
+                        for name, member in members
+                        if not isinstance(member, TypeDeclaration)
+                    ),
+                )
             )
         return True
 
@@ -636,9 +831,67 @@ class ModuleLoader:
             for declaration in self.direct_declarations.get(source_module, [])
         )
 
+    def _value_members(
+        self, source_module: Path, names: list[str]
+    ) -> tuple[tuple[str, str], ...]:
+        """``(local, dotted)`` pairs for names that are runtime values.
+
+        Type aliases are type-checker-only — a namespace object built from
+        these names must skip them, exactly like the flat
+        ``_define_namespace`` pass does.
+        """
+        return tuple(
+            (name, name)
+            for name in names
+            if not isinstance(
+                self._declaration_at(source_module, name), TypeDeclaration
+            )
+        )
+
+    def _declaration_at(self, source_module: Path, name: str) -> Any | None:
+        """Top-level declaration named ``name`` in ``source_module``."""
+        for declaration in self.direct_declarations.get(source_module, []):
+            if self._declaration_name(declaration) == name:
+                return declaration
+        return None
+
+    def _combined_origin(
+        self, source_module: Path, name: str
+    ) -> tuple[str, str] | None:
+        """Where ``name`` in ``source_module``'s flattened scope comes from.
+
+        Returns ``(module path, dotted name)`` so an importer's binding can
+        walk the declaring module's own environment instead of the (possibly
+        narrower) intermediate scope.  Follows this file's recorded bindings
+        and its flat-flattened parents transitively; falls back to resolving
+        the name directly in ``source_module``.  Returns ``None`` when the
+        name is a type alias — those exist only for the type checker and
+        never materialise as a runtime value.
+        """
+        declaration = self._declaration_at(source_module, name)
+        if declaration is not None:
+            if isinstance(declaration, TypeDeclaration):
+                return None
+            return str(source_module), name
+        for binding in self.file_import_bindings.get(source_module, ()):
+            if binding.local != name:
+                continue
+            if binding.kind == "name":
+                return binding.source, binding.source_name
+            # dict/namespace/builtin bindings are installed under this
+            # file's own scope, so the name resolves there.
+            return str(source_module), name
+        for parent in self.flat_parents.get(source_module, ()):
+            if name in self._combined_names.get(parent, ()):
+                # The parent's chain has the definitive answer — a real
+                # origin, or None when it is a type alias.
+                return self._combined_origin(parent, name)
+        return str(source_module), name
+
     def _require_standard_library_feature(self, module_path: str) -> None:
         feature_for_module = {
             "System.concurrent.Async": "async",
+            "System.concurrent.Lock": "threads",
             "System.concurrent.Thread": "threads",
             "System.io.FileSystem": "filesystem",
         }

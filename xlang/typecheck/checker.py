@@ -285,21 +285,18 @@ class TypeChecker:
 
     def _check_program(self, program: Program) -> None:
         self._apply_program_info(program)
+        # The checker walks the flat declaration list exactly once: names
+        # resolve against one shared scope, and `module_visibility` gates
+        # which file may reference each name.  `program.modules` is the
+        # runtime's per-file grouping — re-checking it here would only
+        # duplicate every diagnostic.
         self._collect_types(program.declarations)
-        for module_declarations in program.modules.values():
-            self._collect_types(module_declarations)
         self._check_type_name_references(program.declarations)
-        for module_declarations in program.modules.values():
-            self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
         self._check_strict_typing(program.declarations, self._source_name)
-        for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations, self._source_name)
         scope = self._builtin_scope()
         self._root_scope = scope
         self._check_declarations(program.declarations, scope)
-        for module_declarations in program.modules.values():
-            self._check_declarations(module_declarations, scope.child())
 
     def check_or_raise(
         self, program: Program, source_name: str | None = None, config=None
@@ -326,16 +323,12 @@ class TypeChecker:
 
     def _check_program_declarations(self, program: Program) -> None:
         self._apply_program_info(program)
+        # See `_check_program`: one pass over the flat list; `program.modules`
+        # is the runtime's grouping and must not re-emit diagnostics.
         self._collect_types(program.declarations)
-        for module_declarations in program.modules.values():
-            self._collect_types(module_declarations)
         self._check_type_name_references(program.declarations)
-        for module_declarations in program.modules.values():
-            self._check_type_name_references(module_declarations)
         self._validate_interface_implementations()
         self._check_strict_typing(program.declarations, self._source_name)
-        for module_declarations in program.modules.values():
-            self._check_strict_typing(module_declarations, self._source_name)
 
     # ------------------------------------------------------------------
     # Scopes and collection

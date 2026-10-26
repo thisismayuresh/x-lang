@@ -109,6 +109,10 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         self.function_stack: list[XFunction] = []
         self.globals = Environment()
         self._builtin_bindings: dict[str, Any] = {}
+        #: One Environment per executed module (loader-built programs), so
+        #: runtime type lookups like `_interface_type` can resolve names a
+        #: module declares instead of finding only globals.
+        self._module_envs: list[Environment] = []
         self.output = output
         #: The REPL type-checks each entry against the whole session before
         #: execution, so the per-program gate is skipped when this is False.
@@ -179,12 +183,13 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             self.annotate_error(wrapped)
             raise wrapped from None
 
-    def _inject_default_imports(self, declarations: list[Any]) -> None:
-        """Prepend ``ImportAlias`` nodes for every ``[imports].default`` entry.
+    def _default_import_aliases(self, declarations: list[Any]) -> list[Any]:
+        """``ImportAlias`` nodes for every ``[imports].default`` entry.
 
         Acts exactly like a top-level ``import System.x`` line, so projects
         that rely on the same set of standard-library namespaces no longer
-        repeat the import in every file.
+        repeat the import in every file.  An alias the program already
+        binds (directly or through the loader) is skipped.
         """
         from ..ast_nodes import ImportAlias, ImportNamespaceAlias
 
@@ -201,18 +206,26 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                 continue
             injected.append(ImportAlias(module_path, alias))
             bound_aliases.add(alias)
-        declarations[:0] = injected
+        return injected
 
-    def _resolve_import_call_target(self, source_name: str, alias: str | None) -> Any:
+    def _inject_default_imports(self, declarations: list[Any]) -> None:
+        """Prepend the ``[imports].default`` aliases to a flat declaration list."""
+        declarations[:0] = self._default_import_aliases(declarations)
+
+    def _resolve_import_call_target(
+        self, source_name: str, alias: str | None, environment: Environment | None = None
+    ) -> Any:
         """Resolve the callee of ``import B.greet("Maya")``.
 
-        The loader flattens the imported module's declarations, so the target
-        is normally already bound under its (aliased) local name; the dotted
-        import path is the fallback when flattening bound nothing.
+        The loader binds the imported name in the calling module's scope
+        (or, for hand-built flat programs, in globals), so the target is
+        normally already bound under its (aliased) local name; the dotted
+        import path is the fallback when nothing bound it.
         """
+        lookup_environment = self.globals if environment is None else environment
         local_name = alias or source_name.split(".")[-1]
         try:
-            callee = self._lookup(self.globals, local_name)
+            callee = self._lookup(lookup_environment, local_name)
         except RuntimeErrorX:
             callee = None
         if callee is None:
@@ -235,8 +248,8 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
     def _interpret_program(self, program: Program) -> Any:
         if self.validate and self.config.enabled("type_checker"):
             self._validate_declarations(program)
+        self._module_envs = []
         declarations = [declaration for declaration in program.declarations if declaration]
-        self._inject_default_imports(declarations)
         has_top_level_statements = any(
             not isinstance(
                 declaration,
@@ -264,6 +277,16 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             and declaration.statement is not None
             for declaration in declarations
         )
+        modules = program.modules or {}
+        if modules:
+            # Loader-built program: one Environment per file, executed in
+            # dependency order with imports bound per file.  The flat
+            # `declarations` list above stays for the type checker and
+            # codegen but is never executed here.
+            return self._interpret_modular(
+                program, declarations, has_top_level_statements, modules
+            )
+        self._inject_default_imports(declarations)
         # Bind in dependency order: namespaces first (dotted names and
         # ImportAlias sources walk through namespace objects), then
         # functions, enums, and classes in declaration order — except
@@ -334,35 +357,191 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
 
         if has_top_level_statements or not self.auto_call_main:
             return None
-        main_value = self.globals.values.get("main")
-        if main_value is not None:
-            main_functions = main_value if isinstance(main_value, list) else [main_value]
-            valid_entries = [
-                function for function in main_functions
-                if len(function.declaration.parameters) in (0, 1)
-            ]
-            if len(valid_entries) != 1:
-                if not valid_entries:
-                    raise RuntimeErrorX(
-                        "main may accept zero parameters or one string[] parameter"
-                    )
-                raise RuntimeErrorX("Program declares multiple main functions")
-            main_function = valid_entries[0]
-            if len(main_function.declaration.parameters) == 1:
-                arguments = self.globals.get("args")
-                result = self._select_overload("main", [main_function], [arguments]).call(
-                    [arguments]
+        return self._auto_call_main(self.globals.values.get("main"))
+
+    # ------------------------------------------------------------------
+    # Modular execution: one Environment per source file
+    # ------------------------------------------------------------------
+
+    def _interpret_modular(
+        self,
+        program: Program,
+        declarations: list[Any],
+        has_top_level_statements: bool,
+        modules: dict[str, list[Any]],
+    ) -> Any:
+        """Run a loader-built program with per-file module scopes.
+
+        ``modules`` is ordered dependencies-first (the entry file is last),
+        so every import's target module has already executed when its
+        importer binds it.  Each file gets an ``Environment`` chained to the
+        builtins; its own declarations and recorded ``import_bindings`` land
+        there instead of in one shared global scope, which is what keeps
+        sibling declarations private to their file.
+        """
+        import_bindings = program.import_bindings or {}
+        # `[imports].default` acts like a top-level `import System.x` in
+        # every file.  Bind the namespaces into globals once, before any
+        # module runs, so every module's environment chain reaches them.
+        for alias in self._default_import_aliases(declarations):
+            self._bind_import_value(
+                alias.alias_name,
+                self._resolve_import(alias.source_name),
+                self.globals,
+            )
+        module_envs: dict[str, Environment] = {}
+        for module_path, module_declarations in modules.items():
+            environment = Environment(self.globals)
+            environment.display_label = f"module {module_path}"
+            # Registered before the module runs so runtime type lookups
+            # (e.g. interface checks) can resolve its declarations even
+            # while its own statements are executing.
+            self._module_envs.append(environment)
+            module_envs[module_path] = environment
+            for binding in import_bindings.get(module_path, ()):
+                self._apply_import_binding(binding, environment, module_envs)
+            self._run_module_unit(module_declarations, environment)
+        if has_top_level_statements or not self.auto_call_main:
+            return None
+        # Auto-main mirrors the flat behaviour: every declaration named
+        # `main` across the loaded modules (the flat scope merged them into
+        # one list), de-duplicated by identity because a whole-module
+        # import re-binds the callee under the same name.
+        main_candidates: list[Any] = []
+        seen: set[int] = set()
+        for environment in module_envs.values():
+            main_value = environment.values.get("main")
+            if main_value is None:
+                continue
+            for function in main_value if isinstance(main_value, list) else [main_value]:
+                if id(function) in seen:
+                    continue
+                seen.add(id(function))
+                main_candidates.append(function)
+        if not main_candidates:
+            return None
+        return self._auto_call_main(
+            main_candidates[0] if len(main_candidates) == 1 else main_candidates
+        )
+
+    def _run_module_unit(
+        self, declarations: list[Any], environment: Environment
+    ) -> None:
+        """Bind and run one file's own declarations inside *environment*.
+
+        Same phases as the flat path — namespaces, then functions/enums/
+        classes (with parents that are not bound yet deferred), then top
+        level statements — but scoped to this file instead of globals.
+        """
+        for declaration in declarations:
+            if isinstance(declaration, NamespaceDeclaration):
+                self._define_namespace(declaration, environment)
+        deferred_classes: list[ClassDeclaration] = []
+        for declaration in declarations:
+            if isinstance(declaration, FunctionDeclaration):
+                self._define_function(declaration, environment)
+            elif isinstance(declaration, EnumDeclaration):
+                self._define_enum(declaration, environment)
+            elif isinstance(declaration, ClassDeclaration):
+                if self._defer_class_definition(declaration, environment):
+                    deferred_classes.append(declaration)
+                else:
+                    self._define_class(declaration, environment)
+        for declaration in deferred_classes:
+            self._define_class(declaration, environment)
+        for declaration in declarations:
+            if isinstance(declaration, VariableDeclaration):
+                self._execute(declaration, environment)
+            elif isinstance(declaration, TypeDeclaration):
+                continue
+            elif isinstance(
+                declaration,
+                (
+                    FunctionDeclaration,
+                    ClassDeclaration,
+                    EnumDeclaration,
+                    NamespaceDeclaration,
+                    ImportAlias,
+                    ImportNamespaceAlias,
+                ),
+            ):
+                continue
+            elif isinstance(declaration, ImportDeclaration):
+                # `import B.greet("Maya")` is an import plus an immediate
+                # call; the import itself was bound before this module ran.
+                if declaration.statement is not None:
+                    self._execute(declaration.statement, environment)
+                continue
+            else:
+                self._execute(declaration, environment)
+
+    def _apply_import_binding(
+        self,
+        binding: ImportBinding,
+        environment: Environment,
+        module_envs: dict[str, Environment],
+    ) -> None:
+        """Install one recorded import binding into a module Environment."""
+        if binding.kind == "builtin":
+            value = self._resolve_import(binding.source)
+        elif binding.kind == "name":
+            source_env = module_envs[binding.source]
+            value = self._resolve_name(source_env, binding.source_name)
+        elif binding.kind in ("dict", "namespace"):
+            source_env = module_envs[binding.source]
+            exported_values: dict[str, Any] = {}
+            for local, source_name in binding.members:
+                member_value = self._resolve_name(source_env, source_name)
+                if isinstance(member_value, list) and member_value and all(
+                    isinstance(function, XFunction) for function in member_value
+                ):
+                    member_value = OverloadedFunction(local, member_value)
+                exported_values[local] = member_value
+            if binding.kind == "dict":
+                value = exported_values
+            else:
+                namespace_environment = Environment(environment)
+                namespace_environment.display_label = f"namespace {binding.local}"
+                namespace_environment.values.update(exported_values)
+                value = namespace_environment
+        else:  # pragma: no cover - loader only records the kinds above
+            raise RuntimeErrorX(
+                f"Unknown import binding kind '{binding.kind}' "
+                f"for '{binding.local}'"
+            )
+        self._bind_import_value(binding.local, value, environment)
+
+    def _auto_call_main(self, main_value: Any) -> Any:
+        """Invoke the program's ``main`` when exactly one valid entry exists."""
+        if main_value is None:
+            return None
+        main_functions = main_value if isinstance(main_value, list) else [main_value]
+        valid_entries = [
+            function
+            for function in main_functions
+            if len(function.declaration.parameters) in (0, 1)
+        ]
+        if len(valid_entries) != 1:
+            if not valid_entries:
+                raise RuntimeErrorX(
+                    "main may accept zero parameters or one string[] parameter"
                 )
-                if inspect.isawaitable(result):
-                    return asyncio.run(self._await_result(result))
-                return result
-            if main_function.declaration.parameters:
-                raise RuntimeErrorX("main may accept zero parameters or one string[] parameter")
-            result = main_function.call([])
+            raise RuntimeErrorX("Program declares multiple main functions")
+        main_function = valid_entries[0]
+        if len(main_function.declaration.parameters) == 1:
+            arguments = self.globals.get("args")
+            result = self._select_overload("main", [main_function], [arguments]).call(
+                [arguments]
+            )
             if inspect.isawaitable(result):
                 return asyncio.run(self._await_result(result))
             return result
-        return None
+        if main_function.declaration.parameters:
+            raise RuntimeErrorX("main may accept zero parameters or one string[] parameter")
+        result = main_function.call([])
+        if inspect.isawaitable(result):
+            return asyncio.run(self._await_result(result))
+        return result
 
     async def _await_result(self, awaitable: Awaitable[Any]) -> Any:
         return await awaitable
@@ -375,26 +554,45 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         return value
 
     def _bind_import_alias(self, declaration: ImportAlias, imported_value: Any) -> None:
-        alias = declaration.alias_name
-        # If the name already exists in globals (e.g. a builtin collection
-        # short-name) allow the import to silently re-bind it.  One
-        # exception: importing an exception namespace
-        # (System.Throwable.Exception.IOException) over its own builtin
-        # constructor keeps the constructor, so `throw IOException(...)`
-        # still works after the import — the namespace stays reachable
-        # through the full System... path, or via an alias.
-        if alias in self.globals.values:
-            existing_value = self.globals.values[alias]
+        self._bind_import_value(declaration.alias_name, imported_value, self.globals)
+
+    def _bind_import_value(
+        self, name: str, imported_value: Any, environment: Environment
+    ) -> None:
+        """Bind an imported value under *name* in *environment*.
+
+        If the name already exists there (e.g. a builtin collection
+        short-name) allow the import to silently re-bind it.  One
+        exception: importing an exception namespace
+        (System.Throwable.Exception.IOException) over its own builtin
+        constructor keeps the constructor, so `throw IOException(...)`
+        still works after the import — the namespace stays reachable
+        through the full System... path, or via an alias.  For a module
+        environment (whose parent chain reaches the builtins) the same
+        keep-rule consults the chain, so a module-scoped import cannot
+        shadow the builtin constructor either.
+        """
+        if name in environment.values:
+            existing_value = environment.values[name]
             if isinstance(existing_value, (BuiltinFunction, XClass)) and (
                 isinstance(imported_value, (Environment, dict))
             ):
                 pass
             else:
-                self.globals.values[alias] = imported_value
-        else:
-            self.globals.define(alias, imported_value)
+                environment.values[name] = imported_value
+            return
+        if isinstance(imported_value, (Environment, dict)):
+            try:
+                chained_value = environment.get(name)
+            except RuntimeErrorX:
+                chained_value = None
+            if isinstance(chained_value, (BuiltinFunction, XClass)):
+                return  # keep the builtin; the namespace stays reachable
+        environment.define(name, imported_value)
 
-    def _defer_class_definition(self, declaration: ClassDeclaration) -> bool:
+    def _defer_class_definition(
+        self, declaration: ClassDeclaration, environment: Environment | None = None
+    ) -> bool:
         """True when the parent's root name is not bound yet.
 
         Namespace-chain import aliases (`import util.N.Square` binds
@@ -1664,7 +1862,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             # this only performs the call the import statement carries.
             self._set_location(expression)
             callee = self._resolve_import_call_target(
-                expression.import_path, expression.alias
+                expression.import_path, expression.alias, environment
             )
             arguments = self._evaluate_call_arguments(expression.arguments, environment)
             self._set_location(expression)
@@ -3187,12 +3385,16 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         return isinstance(value, (XFunction, BuiltinFunction, OverloadedFunction))
 
     def _interface_type(self, type_name: str) -> XClass | None:
-        try:
-            value = self._resolve_name(self.globals, type_name)
-        except RuntimeErrorX:
-            return None
-        if isinstance(value, XClass) and value.declaration.is_interface:
-            return value
+        # Interfaces may be declared in any module scope, so fall back from
+        # the builtins to every module environment when globals has no such
+        # (or no interface) type.
+        for environment in (self.globals, *self._module_envs):
+            try:
+                value = self._resolve_name(environment, type_name)
+            except RuntimeErrorX:
+                continue
+            if isinstance(value, XClass) and value.declaration.is_interface:
+                return value
         return None
 
     def _interface_members(self, interface: XClass) -> list[Any]:

@@ -16,6 +16,13 @@ class Program:
     # flat-scope behaviour.
     module_visibility: dict[str, frozenset[str]] | None = None
     name_provenance: dict[str, str] | None = None
+    # Runtime import bindings, one list per source file, recorded by the
+    # module loader alongside ``modules``: exactly what each file's imports
+    # bind and where the value comes from.  The interpreter applies them to
+    # that file's own Environment, so declarations stay module-scoped instead
+    # of being hoisted into one shared global scope.  ``None`` means "no
+    # binding information" — programs built by hand keep the flat behaviour.
+    import_bindings: dict[str, list[ImportBinding]] | None = None
 
 
 @dataclass
@@ -62,6 +69,34 @@ class ImportAlias:
 class ImportNamespaceAlias:
     exported_names: list[str]
     alias_name: str
+
+
+@dataclass
+class ImportBinding:
+    """One name an import binds in the importing file's module scope.
+
+    Recorded by the module loader so the interpreter can re-create the
+    binding in that file's Environment instead of hoisting the imported
+    declarations into a shared global scope.
+
+    ``kind`` is one of:
+
+    - ``"name"`` — a value looked up as the dotted ``source_name`` inside
+      the module at ``source`` (a resolved file path).
+    - ``"dict"`` — an ``import util.* as u``-style namespace object: a plain
+      mapping of ``members`` (``(local name, dotted source name)`` pairs
+      resolved against ``source``).
+    - ``"namespace"`` — same members, but exposed as a namespace Environment
+      (what a whole-module import's implicit namespace object is).
+    - ``"builtin"`` — a standard-library path: ``source`` is the dotted
+      module path (``System.utils.Math``), resolved from the builtins.
+    """
+
+    local: str
+    kind: str
+    source: str
+    source_name: str = ""
+    members: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
