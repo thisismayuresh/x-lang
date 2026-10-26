@@ -524,30 +524,13 @@ def _split_generic(text: str) -> tuple[str, list[str]]:
         return text, []
     name = text[:open_index]
     inner = text[open_index + 1 : -1]
-    arguments: list[str] = []
-    depth = 0
-    current: list[str] = []
-    for character in inner:
-        if character == "<":
-            depth += 1
-            current.append(character)
-        elif character == ">":
-            depth -= 1
-            current.append(character)
-        elif character == "," and depth == 0:
-            arguments.append("".join(current).strip())
-            current = []
-        else:
-            current.append(character)
-    if current:
-        arguments.append("".join(current).strip())
-    return name, arguments
+    return name, split_top_level(inner, ",")
 
 
 def _parse_record(text: str) -> XType:
     body = text[len("record{") : -1]
     fields: list[tuple[str, XType]] = []
-    for piece in body.split(";"):
+    for piece in split_top_level(body, ";"):
         piece = piece.strip()
         if not piece:
             continue

@@ -17,3 +17,12 @@ dev = ["pytest>=8", "pygls>=2.1", "lsprotocol>=2024"]
 
 [tool.setuptools.packages.find]
 include = ["xlang*"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # X's async functions are Python coroutines under the hood; user code may
+    # store or pass them around, and CPython's GC-time "never awaited" warning
+    # is an implementation detail. xlang/__init__.py applies the same filter
+    # at runtime; pytest's warning capture overrides package filters.
+    "ignore:coroutine .* was never awaited:RuntimeWarning",
+]

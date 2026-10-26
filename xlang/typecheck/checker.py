@@ -250,6 +250,7 @@ class TypeChecker:
         self._callable_kind: str | None = None
         self._callable_name: str | None = None
         self._in_constructor = False
+        self._in_async_body = False
         self._try_depth = 0
         self._current_node: Any | None = None
         # Import-scoping state, filled from Program by _apply_program_info.
@@ -654,8 +655,18 @@ class TypeChecker:
                 self._error(self._void_return_message(), declaration)
                 return
             expected = self._expected_return
+            comparable = actual
+            if (
+                self._in_async_body
+                and actual.name == "Promise"
+                and len(actual.arguments) == 1
+            ):
+                # An async body may `return somePromise` (implicitly awaited)
+                # exactly as TypeScript allows; only the unwrapped type is
+                # compared against the body's expected return type.
+                comparable = actual.arguments[0]
             if expected is not None and not self._value_matches(
-                declaration.value, actual, expected
+                declaration.value, comparable, expected
             ):
                 self._error(
                     f"Return type '{actual.display()}' is not compatible with "
@@ -744,10 +755,29 @@ class TypeChecker:
                 True,
             )
         expected = self._resolve_return_type(declaration.return_type)
+        declared_void = self._is_void_annotation(declaration.return_type)
+        body_expected = expected
+        if (
+            declaration.is_async
+            and expected is not None
+            and expected.name == "Promise"
+            and len(expected.arguments) == 1
+        ):
+            # TS-style `Promise<T> async function`: the body returns the
+            # unwrapped T; call sites still see the declared Promise<T>.
+            inner = expected.arguments[0]
+            if inner.name == "void":
+                body_expected = None
+                declared_void = True
+            elif inner.is_any:
+                body_expected = None
+            else:
+                body_expected = inner
         previous_expected = self._expected_return
         previous_saw = self._saw_value_return
         previous_in_constructor = self._in_constructor
         previous_void = self._returns_void
+        previous_async = self._in_async_body
         previous_kind = self._callable_kind
         previous_name = self._callable_name
         is_constructor = (
@@ -755,10 +785,11 @@ class TypeChecker:
             and declaration.name == self._class_stack[-1]
             and declaration.return_type is None
         )
-        self._expected_return = expected
+        self._expected_return = body_expected
         self._saw_value_return = False
         self._in_constructor = is_constructor
-        self._returns_void = self._is_void_annotation(declaration.return_type)
+        self._in_async_body = bool(declaration.is_async)
+        self._returns_void = declared_void
         self._callable_kind = callable_kind(
             declaration.name,
             self._class_stack[-1] if self._class_stack else None,
@@ -768,18 +799,19 @@ class TypeChecker:
             self._collect_local_functions(declaration.body)
             self._check_statements(declaration.body, body_scope)
             if (
-                expected is not None
+                body_expected is not None
                 and not self._saw_value_return
                 and not self._contains_throw(declaration.body)
             ):
                 self._error(
                     f"{self._callable_kind} '{declaration.name}' must return a value of type "
-                    f"'{expected.display()}'",
+                    f"'{body_expected.display()}'",
                     declaration,
                 )
         self._expected_return = previous_expected
         self._saw_value_return = previous_saw
         self._in_constructor = previous_in_constructor
+        self._in_async_body = previous_async
         self._returns_void = previous_void
         self._callable_kind = previous_kind
         self._callable_name = previous_name
@@ -1444,6 +1476,31 @@ class TypeChecker:
             resolved = substitute(resolved, mapping)
         return resolved
 
+    def _call_result_type(
+        self,
+        declaration: Any,
+        generic_parameters: list[str],
+        type_arguments: list[XType],
+        base_mapping: dict[str, XType] | None = None,
+    ) -> XType:
+        """Result type of *calling* `declaration`.
+
+        Non-async functions return their declared annotation.  An `async`
+        function always produces an awaitable at runtime, so its call type is
+        `Promise<T>` where T is the declared annotation — unless the
+        annotation is already a `Promise<T>` (the `Promise<T> async function`
+        spelling, whose body returns the unwrapped T) or `void`/`any`.
+        """
+        resolved = self._signature_type(
+            declaration.return_type, generic_parameters, type_arguments
+        )
+        if getattr(declaration, "is_async", False) and not resolved.is_any:
+            if resolved.name == "Promise":
+                return resolved
+            if resolved.name not in {"void", "null", "undefined"}:
+                return XType("Promise", arguments=(resolved,))
+        return resolved
+
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
@@ -1505,8 +1562,14 @@ class TypeChecker:
         if isinstance(expression, MatchExpression):
             return self._infer_match(expression, scope)
         if isinstance(expression, AwaitExpression):
-            self._infer(expression.value, scope)
-            return ANY
+            inner = self._infer(expression.value, scope)
+            if inner.is_any:
+                return ANY
+            if inner.name == "Promise":
+                return inner.arguments[0] if inner.arguments else ANY
+            # JavaScript semantics: awaiting a non-promise yields the value
+            # itself, so the static type is simply the operand's type.
+            return inner
         if isinstance(expression, Spread):
             self._infer(expression.value, scope)
             return ANY
@@ -2396,8 +2459,8 @@ class TypeChecker:
                 getattr(node, "arguments", []),
             )
             if not failures:
-                return self._signature_type(
-                    declaration.return_type, generic_parameters, explicit
+                return self._call_result_type(
+                    declaration, generic_parameters, explicit
                 )
         if first_arity_match is None:
             available = ", ".join(

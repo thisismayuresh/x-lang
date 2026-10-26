@@ -263,6 +263,9 @@ class Parser:
             return self._function_declaration(modifiers, None, is_async, decorators)
         if self._looks_like_return_type_function():
             return_type = self._parse_type()
+            if self._match("async"):
+                self._require_feature("async", self._previous())
+                is_async = True
             self._consume("function", "Expected 'function' after return type")
             return self._function_declaration(
                 modifiers, return_type, is_async, decorators
@@ -989,6 +992,9 @@ class Parser:
             return self._function_declaration(set(), None, is_async)
         if self._looks_like_return_type_function():
             return_type = self._parse_type()
+            if self._match("async"):
+                self._require_feature("async", self._previous())
+                is_async = True
             self._consume("function", "Expected 'function' after return type")
             return self._function_declaration(set(), return_type, is_async)
         if is_async:
@@ -2165,6 +2171,10 @@ class Parser:
                 offset += 1
                 continue
             break
+        if self._peek(offset).kind == "async":
+            # `Promise<T> async function f() {}` — async may follow the
+            # return type, as it does in the Promise-annotation style.
+            offset += 1
         return self._peek(offset).kind == "function"
 
     def _consume(self, kind: str, message: str) -> Token:

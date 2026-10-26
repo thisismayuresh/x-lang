@@ -1477,6 +1477,15 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     "The fetch() result was discarded — did you forget "
                     "'await' before fetch(...)?"
                 )
+            if inspect.iscoroutine(value):
+                # Discard it quietly first so Python never leaks a
+                # "coroutine was never awaited" RuntimeWarning to stderr,
+                # then report the real mistake to the user.
+                value.close()
+                raise RuntimeErrorX(
+                    "The asynchronous result was discarded — did you "
+                    "forget 'await'?"
+                )
         elif isinstance(statement, IfStatement):
             if self._is_truthy(self._evaluate(statement.condition, environment)):
                 self._execute_block(statement.then_branch.statements, Environment(environment))
@@ -1973,10 +1982,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if isinstance(expression, AwaitExpression):
             value = self._evaluate(expression.value, environment)
             if not inspect.isawaitable(value):
-                raise RuntimeErrorX(
-                    "await requires an asynchronous operation; "
-                    "use it with an async function or async API"
-                )
+                # JavaScript semantics: `await x` on a non-promise yields x
+                # itself (unwrapping is a no-op rather than an error).
+                return value
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -2833,7 +2841,13 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
     ) -> Any:
         # An unawaited fetch()/readTextAsync() coroutine: explain the real
         # problem instead of "Value has no member".
-        if inspect.iscoroutine(object_value) or isinstance(object_value, FetchCall):
+        if inspect.iscoroutine(object_value):
+            object_value.close()
+            raise RuntimeErrorX(
+                f"Cannot read '{name}' from an asynchronous result — "
+                f"did you forget 'await'?"
+            )
+        if isinstance(object_value, FetchCall):
             raise RuntimeErrorX(
                 f"Cannot read '{name}' from an asynchronous result — "
                 f"did you forget 'await'?"

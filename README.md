@@ -308,8 +308,10 @@ Implemented and currently demonstrated features:
   enum.
 - [x] A compact `Object` helper namespace: `keys`, `values`, `entries`, `assign`,
   and `hasOwn`.
-- [x] `async` functions, `await`, concurrent `Async.all`, and OS threads through
-  `Thread.start` and `join`.
+- [x] `async` functions returning TypeScript-style `Promise<T>` call types,
+  `await` (with implicit promise flattening on `return`), concurrent
+  `Async.all`, OS threads through `Thread.start` and `join`, and re-entrant
+  `System.concurrent.Lock` mutexes (`lock`/`tryLock`/`unlock`/`isLocked`).
 - [x] Program arguments through `args`, plus the `print`, `range`, and `Exception`
   built-ins, and the `typeOf` runtime type helper.
 - [x] Project-relative named imports, grouped imports, wildcard imports,
@@ -1888,7 +1890,8 @@ This checklist covers both what is implemented and what remains. Items added or 
 
 ### Async/await
 
-Import the asynchronous helpers and mark async functions with `async`:
+Import the asynchronous helpers and mark async functions with `async`, which
+comes *after* the return type — exactly like a TypeScript method signature:
 
 ```x
 import System.concurrent.Async
@@ -1910,25 +1913,63 @@ async function main() {
 }
 ```
 
-An async function call returns an awaitable result. `Async.all` starts the
-provided awaitable operations concurrently and returns their results in input
-order. `await` is valid only inside an `async` function and requires an
-asynchronous operation; awaiting an ordinary value is an error. The built-in
-`sleep(milliseconds)` returns an asynchronous operation that waits for the
-specified non-negative number of milliseconds. Its API is:
+**Promise types.** Every `async` function's call type is a `Promise<T>`,
+where `T` is the declared return type. The annotation may say `Promise<T>`
+explicitly or just `T` — the two are the same:
+
+```x
+async function loadName(string name) { return "Ada"; }   // call type Promise<string>
+
+Promise<string> function wrap(string name) {             // non-async: returns a promise
+    return loadName(name);                               // value, as in TypeScript
+}
+
+Promise<{ obj: { string name ; integer age } }> async function loadUser() {
+    return { obj: { name: "Ada", age: 36 } };  // mixed record syntax works
+}
+
+async function plainName() { return "Grace"; }  // call type is Promise<string>
+```
+
+- With `async`, the body is checked against the unwrapped `T` (so
+  `Promise<integer> async function outer() { return inner(); }` is fine —
+  the returned promise is implicitly awaited). Without `async`, a `Promise<T>`
+  function is a normal function that *returns* a promise value (the result of
+  calling an async function), exactly as in TypeScript; returning a plain
+  value is a type error.
+- `await` on a promise call unwraps `T`; awaiting a plain (non-promise)
+  value yields the value itself, as in JavaScript.
+- Returning a promise from an `async` function body is awaited implicitly,
+  so promise results flatten one level (JavaScript semantics).
+- `typeOf(promiseCall)` is `"Promise"`.
+- There is deliberately **no `Promise` constructor and no `.then`/`.catch`**:
+  `new Promise(...)`, `p.then(...)`, and `p.catch(...)` are rejected (the
+  checker even parses `.catch` — keywords are legal member names — and fails
+  at the call with a "did you forget `await`?" style error). Use `async`
+  functions and `await`.
+- Calling an async function and discarding the result as a plain statement
+  raises a runtime error suggesting `await` (or assigning the promise),
+  because the work would otherwise be silently dropped.
+
+`Async.all` starts the provided awaitable operations concurrently and returns
+their results in input order. `await` is valid only inside an `async`
+function. The built-in `sleep(milliseconds)` returns an asynchronous
+operation that waits for the specified non-negative number of milliseconds
+(inf/NaN durations are rejected). Its API is:
 
 | Method | Signature | Behavior |
 | --- | --- | --- |
-| `delay` | `delay(milliseconds, result?)` | Accepts a non-negative integer/float duration; resolves to the optional result, or `null`. |
+| `delay` | `delay(milliseconds, result?)` | Accepts a non-negative finite integer/float duration; resolves to the optional result, or `null`. |
 | `all` | `all(operations)` | Accepts one array of values/awaitables; waits for every awaitable and returns results in input order. |
-| `sleep` | `sleep(milliseconds)` | Waits asynchronously for the specified non-negative integer/float duration. |
+| `sleep` | `sleep(milliseconds)` | Waits asynchronously for the specified non-negative finite integer/float duration. |
 
 An `async main` is awaited by the interpreter. Async function bodies execute on
 Python worker threads because the current language interpreter evaluates
 statements synchronously; each `await` suspends that body while the awaited
 operation runs. This provides overlapping I/O-style work for awaitable
-operations, but is an experimental prototype rather than TypeScript-compatible
-Promise scheduling. CPU-heavy X code is not made faster by `async`.
+operations. The *type-level* model is TypeScript's `Promise<T>`, but
+scheduling is not a microtask queue: CPU-heavy X code is not made faster by
+`async`.
 
 ### OS threads
 
