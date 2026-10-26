@@ -2921,8 +2921,8 @@ folder and its WebAssembly playground. Enable it once under **Settings → Pages
 
 ## Tests
 
-There are two test suites: the interpreter test suite under `tests/`, and the
-CSV regression corpus under `csv_tests/`.
+Everything lives under `tests/`: the interpreter tests plus the generated
+regression corpus, so one command runs the whole suite.
 
 ### Running the interpreter tests
 
@@ -2946,43 +2946,45 @@ objects, project configuration and feature flags, source diagnostics and
 type diagnostics, string indexing, grouped project imports, filesystem
 operations, rest/spread, async/await, and OS threads.
 
-### Running the CSV test corpus
+### Running the regression corpus
 
-[`csv_tests/`](./csv_tests/) holds 1381 generated regression rows split across
-four CSV files (`run_tests.csv`, `check_tests.csv`, `error_tests.csv`,
-`format_tests.csv`). Each row is one source program plus its expected stdout,
-error, or formatted output, and the runner executes every row as a subtest:
+[`tests/corpus_data.py`](./tests/corpus_data.py) is a generated module
+holding 1403 regression rows (run, check, error, and format). Each row is one
+source program plus its expected stdout, error, or formatted output, and
+[`tests/test_corpus.py`](./tests/test_corpus.py) executes every row as a
+subtest through the real pipeline:
 
 ```sh
-python -m pytest csv_tests/test_corpus.py -q
+python -m pytest tests/test_corpus.py -q
 ```
 
 The runner also works without pytest:
 
 ```sh
-python csv_tests/test_corpus.py
+python tests/test_corpus.py
 ```
 
 Keep a subset of rows with `X_CORPUS_FILTER`, which matches against the row
-id, file, category, or name:
+id, kind, category, or name:
 
 ```sh
-X_CORPUS_FILTER=switch python csv_tests/test_corpus.py
+X_CORPUS_FILTER=switch python tests/test_corpus.py
 ```
 
-Rows are generated, not hand-written. Regenerating rewrites all four CSVs and
+Rows are generated, not hand-written. Regenerating rewrites the module and
 aborts if any authored expectation disagrees with what the interpreter
 actually produces:
 
 ```sh
-python csv_tests/generate_corpus.py            # regenerate and verify
-python csv_tests/generate_corpus.py --sample 5 # print sample rows per kind
-python csv_tests/generate_corpus.py --no-verify # write without verifying
+python tests/generate_corpus.py            # regenerate and verify
+python tests/generate_corpus.py --sample 5 # print sample rows per kind
+python tests/generate_corpus.py --no-verify # write without verifying
 ```
 
-Regeneration is deterministic: running the generator twice produces
-byte-identical CSVs, so a diff after regeneration means the corpus or the
-interpreter changed.
+Regeneration is deterministic: running the generator twice produces a
+byte-identical module, so a diff after regeneration means the corpus builders
+or the interpreter changed. The corpus lives in the suite's own directory, so
+`python -m pytest tests/ -q` alone runs everything CI runs.
 
 ### Continuous integration
 
@@ -2992,10 +2994,10 @@ interpreter changed.
 - **pytest** on Python **3.10** and **3.14**: installs the package with the
   dev extra (`python -m pip install -e ".[dev]"` — pytest plus the
   `pygls`/`lsprotocol` dependencies the LSP tests need), installs `tsc` for
-  the TypeScript-compile tests, then runs
-  `python -m pytest tests/ csv_tests/ -q`. A commented `--deselect` list keeps
-  the known typeOf/showcase failures from turning CI red — remove an entry as
-  soon as its test is fixed.
+  the TypeScript-compile tests, then runs `python -m pytest tests/ -q`, which
+  covers the interpreter tests and the regression corpus in one command. No
+  `--deselect` list: the Milestone 1 fixes cleared the typeOf and
+  strict-showcase failures it used to mask, so every test must pass.
 - **playground wheel freshness**: `python docs-site/playground/build.py --check`
   fails when anything under `xlang/` changed but the wheel in
   `docs-site/playground/wheels/` was not rebuilt, so the browser playground

@@ -262,18 +262,34 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Tooling / CI
 
+- **Regression corpus moved into `tests/` as generated Python** — the
+  `csv_tests/` directory and its four CSV files are gone.
+  `tests/generate_corpus.py` now writes a single generated
+  `tests/corpus_data.py` (1403 rows: run, check, error, format) that
+  `tests/test_corpus.py` executes as subtests, so the whole suite —
+  interpreter tests included — runs with one `python -m pytest tests/ -q`,
+  locally and in CI. Regeneration stays deterministic and verification-gated;
+  it also picked up the drift the CSVs had accumulated: the stale
+  "nullish coalescing is unsupported" error row is gone now that `??` parses,
+  mutation row `E0112` records the record-field parser message, the
+  `new Collections.HashMap()` instance style is encoded in the generator
+  instead of hand-patched into the CSV, and the check/format rows for the
+  newer examples (aadhar, banking platform, try-with-resources, ...) joined
+  the corpus.
 - **GitHub Actions test workflow** (`.github/workflows/tests.yml`): runs the
-  full suite (interpreter tests + CSV corpus) on Python 3.10 and 3.14, checks
-  the playground wheel is not stale against `xlang/`, and `node --check`s the
-  authored docs-site JavaScript on every push and pull request. Known
-  typeOf/showcase failures are deselected with a commented list to burn down.
+  full suite (interpreter tests + regression corpus) on Python 3.10 and 3.14,
+  checks the playground wheel is not stale against `xlang/`, and
+  `node --check`s the authored docs-site JavaScript on every push and pull
+  request. The old `--deselect` list is gone: Milestone 1 fixed the typeOf
+  and strict-showcase failures it used to mask, so every test now gates CI.
 - `pyproject.toml` gained a `dev` extra (`pip install -e ".[dev]"`: pytest
   plus `pygls`/`lsprotocol` for the LSP tests) so CI and local runs install
   the same test dependencies.
 - The suite's config-discovery test now passes `--config` explicitly (the
   repository's own `x.toml` used to shadow the fixture's), and corpus row
-  `R0441` was updated to the documented `new Collections.HashMap()` instance
-  style — so the pre-CI baseline is green apart from the deselected list.
+  `R0441` uses the documented `new Collections.HashMap()` instance style —
+  now recorded in the generator itself, so regeneration cannot silently
+  revert it again.
 
 ### Documentation
 
