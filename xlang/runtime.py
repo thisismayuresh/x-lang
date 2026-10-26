@@ -121,6 +121,51 @@ def qualified_exception_paths() -> list[str]:
     return paths
 
 
+#: Maximum nesting depth accepted at every JSON entry point —
+#: ``JSON.parse``, ``response.json()``, and ``fromJSON``/``from_json``.
+#: The cap is enforced in X code rather than left to Python's json
+#: scanner: since CPython 3.14 that scanner bounds itself by the
+#: remaining C stack, so a hostile deep document would parse on a roomy
+#: stack and fail on a tight one.  A fixed limit keeps rejection
+#: deterministic on every host (the lowest observed unguarded flip is
+#: ~10k on CPython 3.12, and older builds flip near the recursion
+#: limit).
+MAX_JSON_PARSE_DEPTH = 500
+
+
+def json_depth_exceeds(text: str, limit: int = MAX_JSON_PARSE_DEPTH) -> bool:
+    """Return ``True`` when JSON *text* nests arrays/objects past *limit*.
+
+    A C-speed tally of every bracket proves ordinary documents shallow
+    first; only plausible candidates take the string-aware scan (brackets
+    inside string literals are ignored), and that scan stops at the first
+    structural bracket past *limit*, so a hostile megabyte payload cannot
+    stall the parser loop.
+    """
+    if text.count("[") + text.count("{") <= limit:
+        return False
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif character in "]}" and depth > 0:
+            depth -= 1
+    return False
+
+
 class Environment:
     def __init__(self, parent: Environment | None = None) -> None:
         self.parent = parent

@@ -59,7 +59,12 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from ..runtime import BuiltinFunction, RuntimeErrorX
+from ..runtime import (
+    BuiltinFunction,
+    RuntimeErrorX,
+    MAX_JSON_PARSE_DEPTH,
+    json_depth_exceeds,
+)
 
 _TYPE_KEY = "__xtype__"
 _DEFAULT_CACHE_CAPACITY = 16
@@ -673,6 +678,11 @@ def _dump(value: Any) -> str:
 def _loads(text: str) -> Any:
     if not isinstance(text, str):
         raise RuntimeErrorX("from_json expects a JSON string")
+    if json_depth_exceeds(text):
+        raise RuntimeErrorX(
+            f"from_json: input nests too deeply "
+            f"(maximum nesting depth {MAX_JSON_PARSE_DEPTH})"
+        )
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as error:

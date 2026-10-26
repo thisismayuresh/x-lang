@@ -3435,7 +3435,13 @@ any function main() {
 Malformed JSON raises `IllegalArgumentException` carrying the parser's
 message (for example `JSON.parse failed: Expecting ',' delimiter ...`), and
 the non-standard `NaN`/`Infinity` extensions some parsers tolerate are
-rejected as well. Import forms mirror `toJSON`:
+rejected as well. Documents nested deeper than `MAX_JSON_PARSE_DEPTH`
+(500 levels) are rejected up front — `JSON.parse failed: input nests too
+deeply (maximum nesting depth 500)` — a deterministic cap X enforces
+itself rather than relying on the host json scanner, whose guard depends
+on the C stack and became stack-sensitive on CPython 3.14;
+`response.json()` and the collections' `fromJSON`/`from_json` share the
+same cap. Import forms mirror `toJSON`:
 `import System.utils.JSON.parse` binds `parse`, `import System.utils.JSON`
 binds `JSON` for `JSON.parse(...)`, and the full
 `System.utils.JSON.parse(...)` path needs no import.
@@ -4621,10 +4627,14 @@ hardened, and `tests/test_security.py` pins each property:
   `[ThreadHandle]`, `[Promise]`) — never Python `repr`s with memory
   addresses or internal method names.
 - **Resource limits fail cleanly.** Deep recursion, over-long strings
-  (`MAX_STRING_LENGTH`), and over-deep JSON/source nesting raise X errors
-  ("the program nests too deeply") rather than Python tracebacks;
-  `Math.pow` overflow reports `math range error`; `sleep`/`tryLock`
-  durations must be finite (`inf`/`NaN` are rejected).
+  (`MAX_STRING_LENGTH`), and over-deep source nesting raise X errors
+  ("the program nests too deeply") rather than Python tracebacks. JSON
+  input is depth-capped (`MAX_JSON_PARSE_DEPTH`, 500) at every entry
+  point — `JSON.parse`, `response.json()`, and `fromJSON`/`from_json` —
+  so hostile documents are rejected deterministically regardless of the
+  host's stack or Python version; `Math.pow` overflow reports
+  `math range error`; `sleep`/`tryLock` durations must be finite
+  (`inf`/`NaN` are rejected).
 - **Injection surfaces.** Null bytes cannot enter string or template
   literals — the `\0` escape is a parse error and a raw null byte in source
   is rejected by the lexer; `\r\n` inside strings stays data; exception

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from xlang.cli import main
+from xlang.runtime import MAX_JSON_PARSE_DEPTH
 
 
 def run_cli(source: str, check_only: bool = False):
@@ -224,6 +225,32 @@ class ResourceLimitTests(unittest.TestCase):
             "function main() {\n"
             '    let s = "' + "[" * depth + "]" * depth + '";\n'
             "    let v = JSON.parse(s);\n"
+            '    print("parsed");\n'
+            "}\n",
+            "nests too deeply",
+        )
+
+    def test_json_parse_depth_limit_is_exact(self):
+        at_limit = MAX_JSON_PARSE_DEPTH
+        ok_source = (
+            "import System.utils.JSON\n"
+            "function main() {\n"
+            '    let s = "' + "[" * at_limit + "]" * at_limit + '";\n'
+            "    JSON.parse(s);\n"
+            '    print("parsed");\n'
+            "}\n"
+        )
+        return_code, output, errors = run_cli(ok_source)
+        combined = output + errors
+        self.assertEqual(return_code, 0, combined)
+        self.assertIn("parsed", combined)
+
+        over_limit = at_limit + 1
+        self.assertCleanXError(
+            "import System.utils.JSON\n"
+            "function main() {\n"
+            '    let s = "' + "[" * over_limit + "]" * over_limit + '";\n'
+            "    JSON.parse(s);\n"
             '    print("parsed");\n'
             "}\n",
             "nests too deeply",
