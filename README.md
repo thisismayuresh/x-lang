@@ -3174,30 +3174,26 @@ remaining implementation goals and documented constraints:
 
 ### Language / Compiler
 
-- [ ] `??` nullish coalescing — the JS-style operator does not parse
-  (`a ?? b` is a syntax error); use `a == null ? b : a` until it lands
 - [ ] Native or bytecode compilation — `build` validates syntax, imports, and
   types, then reports that no executable was produced
-- [ ] Generic type checking and type-parameter substitution — generic
-  annotations parse and their type names are checked, but element types are
-  not enforced (`List<string>` in a `List<integer>` slot passes `x check`)
-- [ ] Union/nullable type semantics — `integer | null` does not exist and
-  `null` is rejected for non-null types; inline `record{...}` annotations are
-  checked structurally today
-- [ ] Independent module namespaces — imports are resolved but declarations are not isolated behind module namespace objects (this manifesting as a scope collision is documented under [Known issue: `import B.greet` leaks the whole module scope](#known-issue-import-bgreet-leaks-the-whole-module-scope))
+- [ ] Automatic type narrowing — `if (x == null)` does not yet refine the
+  type of `x` inside the branch (use `??`, `?.`, or an explicit annotation)
+- [ ] Inline `record{...}` annotations are checked structurally rather than
+  nominally (named `type X = record {...}` aliases are nominal)
 - Interfaces have no TypeScript-style `[key: number]: T` *source* syntax —
   declare the map as a [map interface](#map-interfaces)
   (`interface Participants { integer key { ... } }`) or as an alias over the
   builtin: `type Participants = object<integer, IParticipant>`
-- [ ] Thread-safe collections, locks, atomics, cancellation, and full Promise-style async compatibility
+- [ ] Atomics, thread-safe collection wrappers, and task cancellation —
+  `System.concurrent.Lock` and `Promise<T>` async exist; there are no
+  lock-free primitives or `AbortController`-style cancellation yet
 - [ ] A broader standard library beyond the built-ins documented here
 
 ### Collections (see full list in [Collections Implementation Status](#collections-implementation-status))
 
-- [ ] Iterator protocol — `for (T item of collectionInstance)` without `.toArray()` first
 - [ ] True O(log n) binary heap for PriorityQueue
 - [ ] Custom comparator and max-heap for PriorityQueue
-- [ ] Set, TreeMap/TreeSet, LinkedHashMap, LRU Cache
+- [ ] TreeMap/TreeSet, LinkedHashMap, LRU Cache
 - [ ] Thread-safe collection wrappers
 - [ ] Serialization round-trip (`toJSON` / `fromJSON`)
 

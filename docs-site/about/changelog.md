@@ -29,6 +29,117 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Language / interpreter
 
+- **`??` nullish coalescing** — `a ?? b` evaluates to `a` unless it is
+  `null`/`undefined` (then `b`), with JavaScript's mixing restriction:
+  `??` combined with `&&`/`||` without parentheses is a parse error. The
+  operator chains with `?.` (`user?.profile?.name ?? "anonymous"`), works
+  in both statement and expression positions, and the checker strips the
+  nullish step when inferring (`a ?? b` where `a` is `string?` infers
+  `string` for the non-null branch). Interaction with `?:` matches
+  JavaScript: `a ?? b ? c : d` groups as `(a ?? b) ? c : d`, ternary
+  branches are independent operand chains, and the no-mixing rule
+  applies inside the condition — pinned by
+  `NullishTernaryInteractionTests` (expected values cross-checked
+  against Node). Closes the `??` does-not-parse
+  limitation.
+- **Nullable and union types** — `T?` (shorthand for `T | null | undefined`)
+  and `A | B` unions now work in prefix (`let integer | null a`) and colon
+  annotations, parameters, and return types. `null`/`undefined` are
+  assignable where the type allows them; assigning `null` to `integer`
+  reports `Cannot assign 'null' to 'x' of type 'integer'`. Argument errors
+  show the whole union (`expected '(string|integer)'` /
+  `expected 'string?'`), and runtime matching scores union members in
+  declaration order. Closes the union/nullable limitation.
+- **TypeScript-style `Promise<T>` async/await** — an `async` function's call
+  type is always `Promise<T>` (declared `Promise<T>` kept as-is, plain `T`
+  wrapped, `void`/`any` untouched), `async` may follow the return type
+  (`Promise<{obj: {...}}> async function f()`), and async bodies are checked
+  against the unwrapped `T`. Returning a promise from an async body is
+  implicitly awaited (one level of flattening, as in JavaScript); `await` on
+  a plain value yields the value; `typeOf(promiseCall)` is `"Promise"`.
+  There is no `Promise` constructor and no `.then`/`.catch` — `new
+  Promise(...)`, `.then(...)`, and `.catch(...)` are rejected (keywords are
+  legal member names after `.`, so `p.catch(...)` parses and then fails at
+  the call). Discarding an async call's result as a statement raises a
+  runtime error suggesting `await`, and Python's "coroutine never awaited"
+  warning is suppressed. `Promise<void>` functions need no return.
+- **Generic type-parameter substitution is enforced** — `_signature_type`
+  resolves through class + base mappings, member/field access substitutes
+  receiver arguments (`Box<integer>.item` is `integer`), `new` infers type
+  arguments from constructor arguments, call sites infer them from argument
+  types, and overloads see the substituted signatures (method argument and
+  arity errors included). `List<string>` in a `List<integer>` slot, and now
+  `List<integer>.add("x")`, are type errors; Python-backed collection
+  methods get a dedicated rule table (`add`/`push`/`enqueue`/`has`/`get`…
+  against the element type, map `set`/`get`/`getOrDefault`/`computeIf*`
+  against `K`/`V`), while dynamic collections without type arguments stay
+  permissive.
+- **`for ... of` over collections with element-type inference** — arrays,
+  strings, `range`, and the collection classes (LinkedList/List, Stack,
+  Queue, PriorityQueue, Set, HashMap keys) iterate directly without
+  `.toArray()`; the checker infers the loop variable's element type from
+  what is iterated (`for (Student s of students)` types `s` as `Student`)
+  and validates annotated loop variables. Closes the iterator-protocol
+  limitation.
+- **`System.concurrent.Lock`** — a re-entrant mutex for coordinating OS
+  threads: `lock()`, `tryLock()`/`tryLock(ms)` (non-blocking or bounded
+  wait), `unlock()` (friendly not-owner error), `isLocked()`. Constructed
+  as `System.concurrent.Lock()` (short `Lock` after import), typed as
+  `Lock` in annotations, `typeOf` reports `"Lock"`, printing yields `[Lock]`,
+  and the `threads` feature flag gates the module. Closes part of the
+  "no locks" limitation.
+- **Security hardening + `tests/test_security.py` (27 tests)** — printing
+  functions, builtins, thread handles, locks, and promises no longer leaks
+  Python `repr`s with memory addresses (`[function greet]`, `[Lock]`,
+  `[ThreadHandle]`, `[Promise]`; unknown objects render as their class
+  name); `sleep`/`tryLock`/`delay` durations must be finite (`inf`/`NaN`
+  rejected instead of hanging `asyncio.sleep` or overflowing `time_t`);
+  raw null bytes in string and template literals are lex errors (the `\0`
+  escape already was). The suite also pins: no `eval`/`exec`/`Function`/
+  `open`/`globals`/`getattr`/`__import__`, dunder and tuple-literal
+  rejection, the `.x` import sandbox, clean X errors for recursion/depth/
+  repeat/`Math.pow` overflow (no Python tracebacks), and the JS-compatible
+  loose/strict equality semantics security checks must account for.
+
+- **Per-file module scopes — imports no longer share one global namespace**
+  (closes the `Independent module namespaces` roadmap item and the
+  `import B.greet` scope-leak limitation). The loader now records what each
+  file's imports bind (`Program.import_bindings`) and the order in which
+  files completed (`Program.modules`), and the interpreter executes each
+  source file in its own top-level `Environment` chained to the builtins,
+  dependencies first. Sibling declarations stay private at runtime (calling
+  an unimported helper raises `Name 'greet' is not defined` instead of
+  resolving through a shared scope), an imported function still resolves its
+  own file's helpers through its closure, type aliases are never bound at
+  runtime (matching the flat path), and two files may declare the same
+  top-level name without `'Serializable' is already declared in this scope` —
+  **`x run examples/main.x` runs again** instead of failing at load. The flat
+  `program.declarations` list is still built for the type checker, TypeScript
+  codegen, and hand-built programs such as the REPL, which keep a single
+  shared scope.
+- **`typeOf` reports `"function"` for class and interface values again**,
+  matching the documented JavaScript-style mapping (a regression from the
+  interface work had it return `"class"` / `"interface"` and broke three
+  tests while README and the builtin's own docstring said `"function"`).
+- **`parseFloat(text)` and `parseInt(text, radix?)` builtins** — strict
+  whole-string number parsing with no import. `parseFloat` returns a
+  `float` (optional sign, decimal point, `e`-exponent, surrounding
+  whitespace); `parseInt` returns an `integer` in a radix of 2–36
+  (default 10). Empty input, trailing garbage (`"12px"`), and digits
+  outside the radix raise `IllegalArgumentException` instead of returning
+  `NaN` or a prefix value. The checker types the results `float` and
+  `integer`; both names are also registered in the VS Code completions
+  (they were already listed there) and the playground catalog.
+- **`System.utils.JSON.parse(text)`** — strict RFC 8259 parsing back into
+  X objects/arrays/scalars, the inverse of `toJSON`. Malformed JSON raises
+  `IllegalArgumentException`, and non-standard `NaN`/`Infinity` literals are
+  rejected. The loader allowlists `System.utils.JSON.parse` for member
+  imports (`import System.utils.JSON.parse` binds `parse`), and the
+  playground catalog gains the `JSON.parse` completion.
+- **`examples/main.x` passes `--feature strict_typing=on`**: the showcase's
+  23 untyped `let` declarations in `examples/main_tests.x` now carry
+  explicit annotations, and `deserialize` converts its string with the new
+  `parseFloat` instead of the string-concatenating `0 + parts[2]`.
 - **Integer and float keys** in object literals: `{ 200: "a", 1.5: "b" }`
   type-checks against `object<integer, ...>` / `object<float, ...>`, runs
   with `m[200]`, destructures as `{ 200: x }`, matches as `{ 200: v } =>`,
@@ -166,6 +277,37 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Documentation
 
+- **New example: `examples/aadhar/`** — the JS resume-aware Aadhaar CSV
+  generator, transpiled to statically-typed X. `aadhar_generator.x`
+  validates Verhoeff checksums with module-private tables; `main.x` resumes
+  from the last `id,value` row and writes each record through a `CsvWriter`
+  opened in `try (...)` parens — `close()` runs on every exit path, before
+  the optional `catch` reports a failed append as `[STOP]`. Both files pass
+  `x check --feature strict_typing=on`; linked from the try-with-resources
+  section and the examples tree in both READMEs.
+
+- **Milestone 1 language docs** across `README.md` and `docs-site/README.md`:
+  new `### Nullish coalescing: ??` and `### Nullable and union types`
+  sections, a rewritten `### Async/await` section documenting
+  `Promise<T>`/await/implicit flattening and the deliberate absence of
+  `new Promise`/`.then`/`.catch`, a `### Locks` section with the full
+  `System.concurrent.Lock` API table, a `for ... of` collections example in
+  the loops chapter, a `## Security` section describing the hardened
+  interpreter model (with the warning that X has the OS user's
+  permissions), collection-method argument checking in the generics
+  bullet and DSA chapter, and refreshed "Language features implemented"
+  bullets. The stale limitation bullets (`??` does not parse, unions do
+  not exist, generics not enforced, iterator protocol TODO, no locks) and
+  the collections "Iterator protocol" / "Static type enforcement" TODOs
+  are now marked done; the remaining limitations list names automatic type
+  narrowing, nominal inline records, and atomics/cancellation instead.
+
+- Both READMEs describe the new per-file module scopes: the interpreter
+  architecture section explains `Program.modules` / `Program.import_bindings`
+  and one environment per file, the import section notes runtime privacy, and
+  the root README's `import B.greet` entry plus the docs README's `Known
+  issue` write-up are re-marked as fixed (the roadmap's `Independent module
+  namespaces` item is gone).
 - The docs renderer understands **CommonMark code spans**: closing on an
   equal run of backticks, so help strings like ``add `import X` `` and the
   inline `` ```x file.x `` examples in how-it-works render correctly.
