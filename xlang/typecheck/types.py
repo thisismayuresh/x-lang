@@ -88,6 +88,10 @@ BUILTIN_TYPE_NAMES = frozenset(
         "Thread",
         "Async",
         "ThreadHandle",
+        "Lock",
+        # Async result annotation — type-level only: the language has no
+        # Promise constructor, .then, or .catch, only async/await.
+        "Promise",
         # Built-in exception hierarchy.
         "Throwable",
         "Exception",

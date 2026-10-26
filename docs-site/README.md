@@ -2801,10 +2801,62 @@ function main() {
 - `worker.isAlive()` reports whether the worker is currently running.
 - A worker failure is reported when `join` is called after it has completed.
 
-X threads share the same interpreter and object values. The prototype does not
-provide locks, atomics, or thread-safe collection guarantees. Coordinate shared
-mutable state yourself; prefer returning results and collecting them through
-`join`.
+### Locks
+
+`System.concurrent.Lock` is a re-entrant mutual-exclusion lock for
+coordinating shared mutable state between OS threads:
+
+```x
+import System.concurrent.Thread
+
+let integer counter = 0;
+let System.concurrent.Lock guard = System.concurrent.Lock();
+
+integer function bump() {
+    for (integer i in range(0, 1000)) {
+        guard.lock();
+        counter = counter + 1;
+        guard.unlock();
+    }
+    return 0;
+}
+
+function main() {
+    print(guard.isLocked());   // false
+    let ThreadHandle a = Thread.start(bump, []);
+    let ThreadHandle b = Thread.start(bump, []);
+    a.join();
+    b.join();
+    print(counter);            // 2000 — increments are serialised
+    print(guard.isLocked());   // false
+}
+```
+
+```output
+false
+2000
+false
+```
+
+| Method | Signature | Behavior |
+| --- | --- | --- |
+| `lock` | `lock()` | Blocks until the lock is acquired. Re-entrant: the same thread may lock repeatedly and must unlock the same number of times. |
+| `tryLock` | `tryLock()` / `tryLock(milliseconds)` | Non-blocking. With no argument, returns `true` if the lock was acquired immediately. With a non-negative finite timeout in milliseconds, waits at most that long and returns `false` if it expires. |
+| `unlock` | `unlock()` | Releases one acquisition. Unlocking from a thread that does not hold the lock raises a friendly error (not a Python traceback). |
+| `isLocked` | `isLocked()` | `true` while any thread holds the lock. |
+
+- Creating a lock needs no import beyond the qualified path —
+  `System.concurrent.Lock()` works anywhere (import `System.concurrent.Lock`
+  to use the short name).
+- `typeOf(guard)` is `"Lock"`; printing one yields the stable token `[Lock]`.
+- Durations are validated: `tryLock(inf)`/`tryLock(NaN)` report
+  `Lock.tryLock duration must be a finite number of milliseconds`.
+
+X threads share the same interpreter and object values. `Lock` protects the
+sections you annotate with it; collections are still not thread-safe
+internally, so guard every read-modify-write of shared state. Prefer
+returning results and collecting them through `join` where a lock is not
+needed.
 
 ## Runtime types and typed objects
 

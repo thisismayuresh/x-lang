@@ -103,6 +103,7 @@ from ..runtime import (
     XExceptionValue,
     XFunction,
     XInstance,
+    XLockHandle,
     XObject,
     XSuper,
     XThreadHandle,

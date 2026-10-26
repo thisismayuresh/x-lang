@@ -362,6 +362,56 @@ class NativeBuiltins:
         handle.thread.start()
         return handle
 
+    # ------------------------------------------------------------------
+    # System.concurrent.Lock — reentrant mutual exclusion
+    # ------------------------------------------------------------------
+    def _lock_factory(self, arguments: list[Any]) -> XLockHandle:
+        if arguments:
+            raise RuntimeErrorX(
+                "Lock() takes no arguments — create it, then call "
+                "lock()/tryLock()/unlock() on the handle"
+            )
+        return XLockHandle(threading.RLock())
+
+    def _lock_lock(self, handle: XLockHandle, arguments: list[Any]) -> None:
+        if arguments:
+            raise RuntimeErrorX("Lock.lock takes no arguments")
+        handle.lock.acquire()
+        handle.holders += 1
+
+    def _lock_try_lock(self, handle: XLockHandle, arguments: list[Any]) -> bool:
+        if not arguments:
+            acquired = bool(handle.lock.acquire(blocking=False))
+        elif len(arguments) == 1:
+            milliseconds = arguments[0]
+            self._validate_milliseconds("Lock.tryLock", milliseconds)
+            acquired = bool(handle.lock.acquire(timeout=milliseconds / 1000))
+        else:
+            raise RuntimeErrorX(
+                "Lock.tryLock expects no arguments or one timeout in milliseconds"
+            )
+        if acquired:
+            handle.holders += 1
+        return acquired
+
+    def _lock_unlock(self, handle: XLockHandle, arguments: list[Any]) -> None:
+        if arguments:
+            raise RuntimeErrorX("Lock.unlock takes no arguments")
+        try:
+            handle.lock.release()
+        except RuntimeError:
+            raise RuntimeErrorX(
+                "Lock.unlock called on a lock this thread does not hold — "
+                "each lock()/tryLock() success must be matched by exactly "
+                "one unlock() by the same thread"
+            ) from None
+        handle.holders -= 1
+
+    def _lock_is_locked(self, handle: XLockHandle, arguments: list[Any]) -> bool:
+        if arguments:
+            raise RuntimeErrorX("Lock.isLocked takes no arguments")
+        return handle.holders > 0
+
     def _async_delay(self, arguments: list[Any]) -> Any:
         if len(arguments) not in (1, 2):
             raise RuntimeErrorX("Async.delay expects milliseconds and optional result")

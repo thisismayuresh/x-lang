@@ -690,6 +690,9 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         concurrent_namespace.display_label = "namespace concurrent"
         if self.config.enabled("threads"):
             concurrent_namespace.define("Thread", self._thread_members())
+            concurrent_namespace.define(
+                "Lock", BuiltinFunction("Lock", self._lock_factory)
+            )
         if self.config.enabled("async"):
             concurrent_namespace.define("Async", self._async_members())
         system_namespace.define("concurrent", concurrent_namespace)
@@ -1065,6 +1068,12 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
             return value.xclass.name
         if isinstance(value, XThreadHandle):
             return "ThreadHandle"
+        if isinstance(value, XLockHandle):
+            return "Lock"
+        if inspect.iscoroutine(value) or isinstance(value, FetchCall):
+            # Async function calls and fetch() produce awaitable operations;
+            # X reports them under the Promise annotation name.
+            return "Promise"
         return "object"
 
     def _builtin_range(self, arguments: list[Any]) -> range:
@@ -2870,6 +2879,31 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
                     "ThreadHandle.isAlive",
                     lambda arguments: self._thread_is_alive(object_value, arguments),
                 )
+        if isinstance(object_value, XLockHandle):
+            if name == "lock":
+                return BuiltinFunction(
+                    "Lock.lock",
+                    lambda arguments: self._lock_lock(object_value, arguments),
+                )
+            if name == "tryLock":
+                return BuiltinFunction(
+                    "Lock.tryLock",
+                    lambda arguments: self._lock_try_lock(object_value, arguments),
+                )
+            if name == "unlock":
+                return BuiltinFunction(
+                    "Lock.unlock",
+                    lambda arguments: self._lock_unlock(object_value, arguments),
+                )
+            if name == "isLocked":
+                return BuiltinFunction(
+                    "Lock.isLocked",
+                    lambda arguments: self._lock_is_locked(object_value, arguments),
+                )
+            raise RuntimeErrorX(
+                f"Lock has no method '{name}' — available methods: "
+                "lock, tryLock, unlock, isLocked"
+            )
         if isinstance(object_value, XInstance):
             # Check for Python class wrapper methods
             if hasattr(object_value.xclass, 'method_impls') and name in object_value.xclass.method_impls:
