@@ -3493,10 +3493,11 @@ print(students.size(), ints.size(), names.size())
 0 0 0
 ```
 
-The type parameter documents intent but is not enforced yet: `x check`
-accepts a `List<string>` value in a `List<integer>` variable, so treat the
-element type as a promise the code keeps, not a guarantee the toolchain
-checks.
+The type parameter is enforced: the checker substitutes the element type, so
+`let List<integer> nums = new List<string>()` reports
+`Cannot assign 'List<string>' to 'nums' of type 'List<integer>'`, method
+arguments are checked (`list.add("x")` on a `List<integer>` fails), and
+generic type arguments are inferred at call sites and from `new`.
 
 ### Available Data Structures
 
@@ -4418,8 +4419,13 @@ Implemented and currently demonstrated features:
       no import, returns `true`, and reports a target that is not there with the
       same error reading it would raise.
 - [x] Standalone functions, typed parameters, inferred/explicit return types,
-      first-class function references, generic declaration/call syntax, and
-      overload resolution by argument count and runtime value types. Generic
+      first-class function references, generic declaration/call syntax (with
+      type-parameter substitution and inference at call sites, receiver, `new`,
+      and member/field access — `List<string>` in a `List<integer>` slot is a
+      type error), and overload resolution by argument count and runtime value
+      types. Python-backed collection methods are checked too:
+      `List<integer>.add("x")` reports `expected 'integer'`, and map
+      `set`/`get` check key and value against `HashMap<K, V>` arguments. Generic
       `object<K, V>` annotations validate dictionary key/value types at runtime.
 - [x] `Function`/`function` callback annotations validate function values.
       `interface` declarations support comma- or semicolon-separated fields and
