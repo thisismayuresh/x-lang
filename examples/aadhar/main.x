@@ -4,6 +4,7 @@
 // try-with-resources: the CsvWriter is opened in the try parens and the
 // records are written to it inside the block.
 
+import System.io.FileSystem
 import aadhar_generator.getValidAadhar
 
 const string CSV_FILE = "data.csv";
@@ -95,4 +96,7 @@ try (let CsvWriter writer = new CsvWriter(CSV_FILE)) {
         }
         nextId = nextId + 1;
     }
+}
+catch (Exception error) {
+    print(`[STOP] {error.message}`);
 }
