@@ -643,14 +643,31 @@ class TypeChecker:
             self._infer(declaration.condition, scope)
             self._check_statements(declaration.body.statements, scope.child())
         elif isinstance(declaration, ForStatement):
-            self._infer(declaration.iterable, scope)
+            iterable_type = self._infer(declaration.iterable, scope)
+            element_type = self._iterable_element_type(iterable_type)
             loop_scope = scope.child()
             if declaration.variable:
-                loop_scope.define(
-                    declaration.variable,
-                    self._resolve_annotation(declaration.type_name),
-                    True,
-                )
+                if declaration.type_name:
+                    declared = self._resolve_annotation(declaration.type_name)
+                    if (
+                        not element_type.is_any
+                        and not is_compatible(element_type, declared, relations=self)
+                    ):
+                        self._error(
+                            f"Cannot assign '{element_type.display()}' to "
+                            f"'{declaration.variable}' of type "
+                            f"'{declared.display()}'",
+                            declaration,
+                            notes=[
+                                f"expected `{declared.display()}`, "
+                                f"found `{element_type.display()}`"
+                            ],
+                        )
+                    loop_scope.define(declaration.variable, declared, True)
+                else:
+                    # `for (v of ...)` with no annotation: the element type
+                    # flows into the loop variable.
+                    loop_scope.define(declaration.variable, element_type, True)
             self._check_statements(declaration.body.statements, loop_scope)
         elif isinstance(declaration, ClassicForStatement):
             loop_scope = scope.child()
@@ -2153,6 +2170,44 @@ class TypeChecker:
             return self._infer(object_expression, scope)
         finally:
             self._deferred_type_value = previous
+
+    def _iterable_element_type(self, iterable_type: XType) -> XType:
+        """Element type produced by `for (T v of iterable)` for *iterable_type*.
+
+        Covers the shapes `for-of` actually iterates: arrays (one dimension
+        per loop), strings (characters), and the generic collections/maps —
+        lists yield their element, maps yield their keys.  Anything else
+        stays `any`, so dynamic iterables keep their permissive behaviour.
+        """
+        if iterable_type.is_any:
+            return ANY
+        if iterable_type.union_parts or iterable_type.record_fields:
+            return ANY
+        if iterable_type.is_nullable:
+            iterable_type = _strip_nullable(iterable_type)
+        if iterable_type.is_array:
+            return _strip_array(iterable_type)
+        if iterable_type.name == "string":
+            return STRING
+        alias = _collection_alias(iterable_type.name)
+        if alias in {
+            "LinkedList",
+            "Stack",
+            "Queue",
+            "PriorityQueue",
+            "HashSet",
+            "Set",
+            "TreeSet",
+            "LinkedHashSet",
+            "ThreadSafeSet",
+        }:
+            return iterable_type.arguments[0] if iterable_type.arguments else ANY
+        if alias in {"HashMap", "Map", "TreeMap", "LinkedHashMap", "LruCache"} or (
+            iterable_type.name == "object" and iterable_type.arguments
+        ):
+            # `for (k of someMap)` walks the keys, matching Python/dict order.
+            return iterable_type.arguments[0] if iterable_type.arguments else ANY
+        return ANY
 
     def _infer_member(self, expression: Member, scope: TypeScope) -> XType:
         object_type = self._infer_qualified_object(expression.object, scope)

@@ -5,7 +5,7 @@ import main_tests.greet("Maya")
 
 let string[] entries = FileSystem.listDirectory("./");
 
-for(int entry of entries ){
+for(string entry of entries ){
     //print(entry)
     if(entry==="main.x"){
         //print(FileSystem.readText(entry))

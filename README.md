@@ -293,10 +293,17 @@ Implemented and currently demonstrated features:
   nested block scope.
 - [x] Arithmetic, comparison, equality, logical, assignment, and increment/
   decrement operators.
-- [x] Ternary conditional expressions and null-safe optional chaining for member
-  access (`?.`), calls (`?.()`), and indexing (`?[index]`).
+- [x] Ternary conditional expressions, null-safe optional chaining for member
+  access (`?.`), calls (`?.()`), and indexing (`?[index]`), and `??` nullish
+  coalescing (`a ?? b` evaluates to `a` unless it is `null`/`undefined`, in
+  which case it evaluates to `b`; mixing `??` with `&&`/`||` without
+  parentheses is rejected, matching JavaScript).
 - [x] `if`/`else`, `while`, `do ... while`, classic `for`, `for ... in`, `for ...
   of`, `break`, `continue`, and end-exclusive `range(start, end, step)`.
+  `for (T item of collection)` iterates arrays, strings, `range`, and the
+  collection classes (List, Stack, Queue, Set, and HashMap's keys) directly —
+  no `.toArray()` needed — and the checker infers the element type
+  (`for (Student s of students)` types `s` as `Student`).
 - [x] Rust-inspired `match` expressions with wildcard, binding, literal, enum,
   array/object destructuring, alternatives, guards, and rest patterns.
 - [x] Arrow functions (`let double = (value) => value * 2;`), `switch`
@@ -1825,7 +1832,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `toArray` conversion
 - [x] `clear`
 - [x] Create from initial array — `new List([1, 2, 3])`
-- [ ] Iterator protocol (for…of directly on instance without `.toArray()` first)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly, no `.toArray()` needed
 
 #### Stack ✅
 - [x] OOP dot-call style — `stack.push(x)`, `stack.pop()`, `stack.peek()` **[new]**
@@ -1834,7 +1841,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `size`, `isEmpty`, `clear`
 - [x] `toArray`
 - [x] Create from initial array
-- [ ] Iterator protocol (for…of directly on instance)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly
 
 #### Queue ✅
 - [x] OOP dot-call style — `queue.enqueue(x)`, `queue.dequeue()` **[new]**
@@ -1843,7 +1850,7 @@ This checklist covers both what is implemented and what remains. Items added or 
 - [x] `size`, `isEmpty`, `clear`
 - [x] `toArray`
 - [x] Create from initial array
-- [ ] Iterator protocol (for…of directly on instance)
+- [x] Iterator protocol — `for (T item of collection)` iterates the instance directly
 
 #### PriorityQueue ✅
 - [x] OOP dot-call style **[new]**
@@ -1881,11 +1888,11 @@ This checklist covers both what is implemented and what remains. Items added or 
 
 ### Remaining Work (Collections)
 
-- [ ] **Iterator protocol** — `for (Student s of students)` should work directly on an instance without calling `.toArray()` first
+- [x] **Iterator protocol** — `for (Student s of students)` iterates the instance directly and the checker types `s` as `Student`
 - [ ] **True binary heap** for PriorityQueue — current sort-based approach is O(n log n) per enqueue
 - [ ] **Custom comparator** for PriorityQueue — `new PriorityQueue((a, b) => a.priority - b.priority)`
 - [ ] **Max-heap** option for PriorityQueue
-- [ ] **Static type enforcement** for generics — `List<Student>` currently accepts any value
+- [x] **Static type enforcement** for generics — type parameters substitute and mismatched arguments are reported
 - [ ] **Immutable/frozen variants**
 - [ ] **`fromJSON()` reachable from X** for the extended collections (TreeMap/TreeSet/LinkedHashMap/LRUCache) — currently only callable from the Python embedding API
 - [ ] **Graph** — adjacency list and matrix representations
@@ -2561,6 +2568,36 @@ r 4
 
 Because `for ... in` over an object walks a snapshot of the keys, deleting
 inside the loop is safe.
+
+`for ... of` iterates the *values* of arrays, strings, ranges, and the
+collection classes directly — no `.toArray()` call needed — and the checker
+infers the element type from what is being iterated, so the annotation in
+`for (Student s of students)` really is `Student`:
+
+```x for-of-collections.x
+import System.utils.Collections.LinkedList
+
+function main() {
+    let names = new LinkedList();
+    names.add("Ada");
+    names.add("Grace");
+
+    for (string name of names) {
+        print(name);
+    }
+
+    for (string key of {a: 1, b: 2}) {
+        print(key);   // object keys: a, b
+    }
+}
+```
+
+```output
+Ada
+Grace
+a
+b
+```
 
 `for ... in` works the same way over a range — it yields the values:
 
