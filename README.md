@@ -3256,8 +3256,8 @@ hardened, and `tests/test_security.py` pins each property:
 
 ## Milestones
 
-Development runs as four milestones. Milestone 1 has landed, so every item
-under it is ticked; the later milestones stay unticked until they ship.
+Development runs as two milestones. Milestone 1 has landed, so every item
+under it is ticked; Milestone 2 stays unticked until it ships.
 
 - [x] **Milestone 1 — production-grade hardening**
   - [x] Per-file module scopes: every source file executes with its own
@@ -3280,9 +3280,13 @@ under it is ticked; the later milestones stay unticked until they ship.
   - [x] Documentation, changelog, and a rebuilt WebAssembly wheel for the
     playground
 - [ ] **Milestone 2 — self-hosting: bootstrap X in itself**
-- [ ] **Milestone 3 — `x-server`: an HTTP/QUIC server written in X**
-- [ ] **Milestone 4 — native Rust core** (bytecode VM later): replace the
-  Python host so X runs without Python installed
+
+Possible later directions — may or may not happen, nothing here is
+committed:
+
+- **`x-server`: an HTTP/QUIC server written in X**
+- **Native Rust core** (bytecode VM later): replace the Python host so X
+  runs without Python installed
 
 ## Current limitations
 
