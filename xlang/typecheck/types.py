@@ -151,6 +151,11 @@ class XType:
     is_any: bool = False
     dimensions: int = 0
     literal: str | None = None
+    # The spelling the annotation used when resolution changed the name
+    # (`number` -> `float`, `int` -> `integer`, `Score` -> its alias target).
+    # Diagnostics display it so messages echo the source; equality and
+    # compatibility ignore it.  None means the name already is the spelling.
+    spelling: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         depth = self.dimensions
@@ -175,7 +180,7 @@ class XType:
             if self.is_nullable:
                 text += "?"
             return text
-        text = self.name
+        text = self.spelling or self.name
         if self.arguments:
             inner = ", ".join(argument.display() for argument in self.arguments)
             text = f"{text}<{inner}>"
@@ -240,6 +245,7 @@ def parse_type(type_name: str | None) -> XType:
             is_any=inner.is_any,
             dimensions=inner.dimensions + 1,
             literal=inner.literal,
+            spelling=inner.spelling,
         )
     generic_name, arguments = _split_generic(text)
     normalized = PRIMITIVE_ALIASES.get(generic_name, generic_name)
@@ -249,6 +255,7 @@ def parse_type(type_name: str | None) -> XType:
         tuple(parse_type(argument) for argument in arguments),
         is_nullable=nullable,
         is_any=is_any,
+        spelling=generic_name if generic_name != normalized else None,
     )
 
 
@@ -307,6 +314,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
             record_fields=type_value.record_fields,
             is_any=type_value.is_any,
             dimensions=type_value.dimensions,
+            spelling=type_value.spelling,
         )
     if type_value.name in mapping and not type_value.arguments:
         replacement = mapping[type_value.name]
@@ -319,6 +327,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
             record_fields=replacement.record_fields,
             is_any=replacement.is_any,
             dimensions=max(type_value.dimensions, replacement.dimensions),
+            spelling=replacement.spelling,
         )
     return XType(
         type_value.name,
@@ -332,6 +341,7 @@ def substitute(type_value: XType, mapping: dict[str, XType]) -> XType:
         is_any=type_value.is_any,
         dimensions=type_value.dimensions,
         literal=type_value.literal,
+        spelling=type_value.spelling,
     )
 
 
@@ -348,6 +358,7 @@ def _strip_array(type_value: XType) -> XType:
         is_any=type_value.is_any,
         dimensions=depth,
         literal=type_value.literal,
+        spelling=type_value.spelling,
     )
 
 
@@ -362,6 +373,7 @@ def _strip_nullable(type_value: XType) -> XType:
         is_any=type_value.is_any,
         dimensions=type_value.dimensions,
         literal=type_value.literal,
+        spelling=type_value.spelling,
     )
 
 

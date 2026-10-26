@@ -259,7 +259,7 @@ class InterpreterTests(unittest.TestCase):
             }
             """
         with self.assertRaisesRegex(
-            RuntimeErrorX, "Cannot assign 'integer' to 'callback' of type 'function'"
+            RuntimeErrorX, "Cannot assign 'integer' to 'callback' of type 'Function'"
         ):
             self.run_x(function_mismatch)
         with self.assertRaisesRegex(RuntimeErrorX, "Expected 'Function'"):

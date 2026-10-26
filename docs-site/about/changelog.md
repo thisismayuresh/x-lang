@@ -29,6 +29,17 @@ trains, not published packages. The VS Code extension versions on its own
 
 ### Language / interpreter
 
+- **Diagnostics echo the source's type spelling** — error messages repeat the
+  annotation exactly as it was written instead of the internal canonical
+  name: `let number[] xs = ["a"];` reports `type 'number[]'` (not
+  `float[]`), `let int n = "text";` reports `type 'int'` (not `integer`),
+  and an aliased annotation reports the alias (`Score`, `Function`). The
+  "found" side still shows the inferred type. Compatibility and equality
+  are unchanged — only the wording. The `number` alias itself, its array
+  forms (`number[]` through `number[][][]`), and variables named after
+  their own type (`let number number = 5;`) are now pinned by
+  `tests/test_number_type.py` and documented in a new "The number type
+  and array annotations" section.
 - **`??` nullish coalescing** — `a ?? b` evaluates to `a` unless it is
   `null`/`undefined` (then `b`), with JavaScript's mixing restriction:
   `??` combined with `&&`/`||` without parentheses is a parse error. The

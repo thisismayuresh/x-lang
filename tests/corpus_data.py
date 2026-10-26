@@ -9244,7 +9244,7 @@ ROWS = [
         'name': 'example strict_typing_errors.x',
         'source': '// ============================================\n// STRICT TYPING ERROR EXAMPLES\n// ============================================\n// Run with: python -m xlang examples/strict_typing_errors.x --strict_typing=true\n// ============================================\n\n// Error 1: Missing return type on function\nfunction add(a, b) {\n    return a + b;\n}\n\n// Error 2: Missing parameter types\nint function greet(name) {\n    return "Hi " + name;\n}\n\n// Error 3: Missing return type AND parameter types\nfunction terrible(a, b) {\n    return a + b;\n}\n\n// Error 4: Untyped variable declaration\nlet untyped = 42;\n\n// Error 5: Untyped array\nlet badArray = [1, 2, 3];\n\n// Error 6: Missing return type on constructor\nclass BadClass {\n    BadClass() {}\n}\n\n// Error 7: Untyped class field\nclass BadClass2 {\n    string name;\n}\n\n// Error 8: Untyped method parameter\nclass BadClass3 {\n    void method(param) {}\n}\n\nint function main() { return 0; }',
         'expected_stdout': '',
-        'expected_error': "Return type 'string' is not compatible with 'integer'",
+        'expected_error': "Return type 'string' is not compatible with 'int'",
         'expected_exit': '',
         'notes': '',
     },

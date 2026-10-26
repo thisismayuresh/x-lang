@@ -255,7 +255,7 @@ class TypeCheckCliTests(unittest.TestCase):
                 take(true);
             }
             """,
-            "Argument 1 of 'take' has type 'boolean', expected '(integer|string)'",
+            "Argument 1 of 'take' has type 'boolean', expected '(int|string)'",
         )
 
     def test_check_accepts_values_covered_by_union(self):

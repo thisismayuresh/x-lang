@@ -243,7 +243,8 @@ Implemented and currently demonstrated features:
   `print` evaluates any number of arguments and separates their string forms
   with spaces.
 - [x] `let` variables, `const` constants, inferred and explicit variable types,
-  `int` as an alias for `integer` (built-in type spellings are case-sensitive;
+  `int` as an alias for `integer` and `number` as an alias for `float`
+  (built-in type spellings are case-sensitive;
   the optional `primitive_aliases` feature makes them case-insensitive),
   array literals/indexing, JavaScript-like
   object literals, array/object destructuring declarations and assignments,
@@ -442,6 +443,58 @@ accepts every value you store through it.
 They are interchangeable everywhere — `var` reads like "variable of any
 type", `any` matches the TypeScript habit. Pick one and use it consistently;
 internally there is no other difference.
+
+## The number type and array annotations
+
+`number` is the annotation for any numeric value: an alias of `float` that
+accepts integers and floats alike, so `let number x = 5;` and
+`let number y = 1.5;` share one type and `typeOf` reports `"number"` for
+both. Use it when the integer/float split does not matter; `integer` and
+`float` stay available when it does. Diagnostics echo the spelling the
+source used — annotating with `number` reports `number`, with `int` reports
+`int`, with `float` reports `float` — never an internal canonical name.
+
+Array annotations carry their element type and nest to any depth:
+
+```x number-arrays.x
+number[] function row(number[][] matrix, integer index) {
+    return matrix[index];
+}
+
+function main() {
+    let number[] xs = [1, 2, 3.5];         // one dimension
+    let number[][] grid = [[1, 2], [3]];    // two dimensions
+    let number[][][] cube = [[[1]]];        // three dimensions
+    xs.push(4);
+    grid[0][1] = 9;
+    print(xs, grid, cube, row(grid, 1));
+}
+```
+
+```output
+[1, 2, 3.5, 4] [[1, 9], [3]] [[[1]]] [3]
+```
+
+The checker enforces every element against the annotation:
+`let number[] xs = ["a"];` fails with
+`Cannot assign 'string[]' to 'xs' of type 'number[]'`.
+
+A variable may also be named after its own type — `number number` reads "a
+`number` named `number`". Type positions and value positions resolve
+independently, so the annotation keeps working after the name is taken:
+
+```x type-named-variable.x
+function main() {
+    let number number = 5;
+    let string string = "Maya";
+    let number[] numbers = [number, number + 1];
+    print(number, string, numbers);
+}
+```
+
+```output
+5 Maya [5, 6]
+```
 
 ## Runtime types and typed objects
 

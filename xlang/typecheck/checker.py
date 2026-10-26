@@ -1460,6 +1460,7 @@ class TypeChecker:
                 ),
                 is_any=type_value.is_any,
                 dimensions=type_value.dimensions,
+                spelling=type_value.spelling,
             )
         arguments = tuple(
             self._resolve_named(argument, generics, seen)
@@ -1480,6 +1481,7 @@ class TypeChecker:
                 record_fields=fields,
                 is_any=type_value.is_any,
                 dimensions=type_value.dimensions,
+                spelling=type_value.spelling,
             )
         if name in self._aliases and not arguments and name not in seen:
             alias = self._aliases[name]
@@ -1492,6 +1494,10 @@ class TypeChecker:
                 record_fields=alias.record_fields,
                 is_any=alias.is_any,
                 dimensions=max(type_value.dimensions, alias.dimensions),
+                # Echo what the annotation wrote (`Score`), not the target
+                # the alias resolved to, while the resolved name drives
+                # compatibility.
+                spelling=type_value.spelling or type_value.name,
             )
             return self._resolve_named(combined, generics, seen | {name})
         if (
@@ -1510,6 +1516,7 @@ class TypeChecker:
                 record_fields=fields,
                 is_any=type_value.is_any,
                 dimensions=type_value.dimensions,
+                spelling=type_value.spelling,
             )
         if self._primitive_aliases_enabled():
             canonical = canonical_primitive_alias(name)
@@ -1523,6 +1530,8 @@ class TypeChecker:
                     record_fields=fields,
                     is_any=canonical == "any" or type_value.is_any,
                     dimensions=type_value.dimensions,
+                    spelling=type_value.spelling
+                    or (name if name != canonical else None),
                 )
         return ANY
 
