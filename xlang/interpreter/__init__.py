@@ -1054,9 +1054,7 @@ class Interpreter(MathBuiltins, NativeBuiltins, CollectionBuiltins):
         if isinstance(value, BuiltinFunction):
             return "function"
         if isinstance(value, XClass):
-            if value.declaration.is_interface:
-                return "interface"
-            return "class"
+            return "function"
         if isinstance(value, list):
             return "Array"
         if isinstance(value, XCollectionInstance):
